@@ -317,6 +317,13 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
         return new Response(JSON.stringify(error.body), { status: error.status, headers: { "content-type": "application/json", [ERROR_HEADER]: "1" } })
       }
       const message = error instanceof Error ? error.message : String(error)
+      // Anything else after a write was sent may have come after it took effect.
+      if (!retrySafeMethod(relay.method)) {
+        return new Response(JSON.stringify(errorBody(outcomeUnknown(`mehen could not finish relaying the request: ${message}.`))), {
+          status: 424,
+          headers: { "content-type": "application/json", [ERROR_HEADER]: "1", "x-should-retry": "false", "stripe-should-retry": "false" },
+        })
+      }
       return errorResponse({ status: 502, error: "upstream_failed", message: `mehen could not reach the vault: ${message}. Check the network and try again.` })
     }
   }

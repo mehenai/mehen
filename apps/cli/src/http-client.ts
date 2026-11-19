@@ -266,18 +266,33 @@ export class HttpVaultApi implements VaultApi {
   async relay(request: RelayRequestInput, options?: VaultRequestOptions): Promise<Response> {
     const write = !retrySafeMethod(request.method)
     const response = await this.send("POST", "/v1/relay", JSON.stringify(request), options, write)
+    if (!write) return this.relayAnswer(request, response, false)
+    // Once a write may have gone, nothing that goes wrong reading the answer
+    // may look like a retryable failure: it is RelayOutcomeUnknownError,
+    // unless the vault said, readably, that it refused before forwarding.
+    try {
+      return await this.relayAnswer(request, response, true)
+    } catch (error) {
+      if (error instanceof VaultApiError || error instanceof RelayOutcomeUnknownError) throw error
+      throw new RelayOutcomeUnknownError(`mehen could not read the vault's answer to the request (${error instanceof Error ? error.message : String(error)}).`)
+    }
+  }
+
+  private async relayAnswer(request: RelayRequestInput, response: Response, write: boolean): Promise<Response> {
     if (response.headers.has(UPSTREAM_HEADER) && !response.headers.has(ERROR_HEADER)) return withDecodedHeaders(response)
     if (response.headers.has(ERROR_HEADER)) {
       if (!write) throw await readApiError(response, this.options.context ?? null, request.item ?? null)
       const text = await response.text().catch(() => null)
-      const error = await readApiError(new Response(text, response), this.options.context ?? null, request.item ?? null)
-      const readable = text !== null && readableError(text)
+      // Readable before anything is built from it: a 204, 205 or 304 takes no body.
+      if (text === null || !readableError(text)) throw new RelayOutcomeUnknownError(`The vault answered the write with HTTP ${response.status} and an error mehen cannot read.`)
+      const error = await readApiError(new Response(text, { status: response.status >= 200 && response.status <= 599 && ![204, 205, 304].includes(response.status) ? response.status : 500, headers: response.headers }), this.options.context ?? null, request.item ?? null)
       const forwarded = response.headers.get(FORWARDED_HEADER)?.trim().toLowerCase()
       const beforeForwarding = forwarded === "no" || (forwarded === undefined && RELAY_PRE_FORWARD_CODES.has(error.body.error))
-      if (readable && beforeForwarding && !(error.body.error === "internal" && response.status >= 500)) throw error
-      throw new RelayOutcomeUnknownError(readable ? error.body.message : `The vault answered the write with HTTP ${response.status} and an error mehen cannot read.`)
+      if (beforeForwarding && !(error.body.error === "internal" && response.status >= 500)) throw error
+      throw new RelayOutcomeUnknownError(error.body.message)
     }
-    await response.body?.cancel()
+    // Disposal is best effort: a body that already failed changes nothing.
+    await response.body?.cancel().catch(() => {})
     const message = `The vault answered the relay with HTTP ${response.status} but neither ${UPSTREAM_HEADER} nor ${ERROR_HEADER}, so mehen will not treat it as the upstream's answer.`
     // Something in front of the vault, such as a proxy, may have answered
     // after the vault sent the write upstream.

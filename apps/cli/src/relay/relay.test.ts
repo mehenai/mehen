@@ -282,6 +282,38 @@ describe("intercepted hosts", () => {
     }
   })
 
+  test("a write that hits any unexpected error after it was sent reaches the program as a 424 outcome_unknown, never try again; a read keeps its 502", async () => {
+    const write = await relayedFailure("POST", new TypeError("something nobody expected"))
+    expect(write.status).toBe(424)
+    expect([write.headers.get("x-should-retry"), write.headers.get("stripe-should-retry")]).toEqual(["false", "false"])
+    const body = (await write.json()) as { error: string; message: string; next: { say: string } }
+    expect(body.error).toBe("outcome_unknown")
+    expect(`${body.message} ${body.next.say}`).not.toMatch(/try again/i)
+    const read = await relayedFailure("GET", new TypeError("something nobody expected"))
+    expect(read.status).toBe(502)
+  })
+
+  test("the real client's answer to each traced hole reaches the program as a 424 with both no-retry headers", async () => {
+    const { HttpVaultApi } = await import("../http-client.ts")
+    const { ERROR_HEADER: E, FORWARDED_HEADER: F } = await import("@mehen/protocol/api")
+    const answers: (() => Response)[] = [
+      () => new Response(new ReadableStream({ start(c) { c.error(new Error("proxy reset")) } }), { status: 502 }),
+      ...[204, 205, 304].map((status) => () => new Response(null, { status, headers: { [E]: "1", [F]: "no" } })),
+    ]
+    for (const answer of answers) {
+      const real = new HttpVaultApi({ vaultUrl: "https://vault.test", tenant: "tn_test", signer: { sign: async () => "sig", jwk: {} } as never, fetch: async () => answer() })
+      api.relayHandler = (request) => real.relay(request)
+      try {
+        const response = await withTimeout(fetch(`https://${INTERCEPT}/send`, { method: "POST", body: "x", proxy: relay.proxyUrl, tls: { ca: ca.certPem } }), 5000, "write")
+        expect(response.status).toBe(424)
+        expect([response.headers.get("x-should-retry"), response.headers.get("stripe-should-retry")]).toEqual(["false", "false"])
+        expect(((await response.json()) as { error: string }).error).toBe("outcome_unknown")
+      } finally {
+        api.relayHandler = (request) => Response.json({ echoed: request }, { headers: { "Mehen-Upstream": "1" } })
+      }
+    }
+  })
+
   test("a read the vault answers upstream_failed keeps its retryable 502", async () => {
     const response = await relayedFailure("GET", new VaultApiError(502, { error: "upstream_failed", message: "Could not reach api.mehen.test. Nothing was changed by the vault; retry later.", retryAfter: 5 }))
     expect(response.status).toBe(502)

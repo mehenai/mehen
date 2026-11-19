@@ -232,6 +232,26 @@ describe("HttpVaultApi relay", () => {
     expect(write.next?.say).toBe(OUTCOME_UNKNOWN_SAY)
   })
 
+  test("after a write, an answer whose body already failed, a bodiless status with a refusal mark, or any other throw is outcome unknown", async () => {
+    const answered = (answer: () => Response) => client({ fetch: async () => answer() })
+    const write = { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] as [string, string][] }
+    // A proxy's answer whose stream already errored: disposing of it rejects.
+    const broken = await answered(() => new Response(new ReadableStream({ start(c) { c.error(new Error("proxy reset")) } }), { status: 502 }))
+    expect(await broken.relay(write).catch((e: unknown) => e)).toBeInstanceOf(RelayOutcomeUnknownError)
+    // A refusal mark on a status that carries no body.
+    for (const status of [204, 205, 304]) {
+      const bodiless = await answered(() => new Response(null, { status, headers: { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" } }))
+      const failed = await bodiless.relay(write).catch((e: unknown) => e)
+      expect(failed, String(status)).toBeInstanceOf(RelayOutcomeUnknownError)
+    }
+    // Anything else that throws once the request was sent.
+    const odd = await answered(() => { const r = Response.json({ error: "approval_required", message: "x" }, { status: 409, headers: { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" } }); Object.defineProperty(r, "text", { value: () => { throw new TypeError("unexpected") } }); return r })
+    expect(await odd.relay(write).catch((e: unknown) => e)).toBeInstanceOf(RelayOutcomeUnknownError)
+    // A read is judged as before: its unmarked answer is retryable.
+    const read = await broken.relay({ ...write, method: "GET" }).catch((e: unknown) => e)
+    expect(read).not.toBeInstanceOf(RelayOutcomeUnknownError)
+  })
+
   test("a write is safe to send again only after a readable refusal marked as made before forwarding, and not the vault's own failure", async () => {
     const api = await client()
     const write = async () => toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
