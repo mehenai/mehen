@@ -16,6 +16,12 @@ import { api, workspaceRead } from "./api.ts"
 import { all, el, find, markerNode, must, spelledNodes } from "./dom.ts"
 import { GROUP_WORDS, type PaletteEntry, type PaletteMatch, type PaletteScope, type PaletteSources, type PaletteTile, VAULT_SCOPE, buildEntries, filterEntries, timeLeftWords, titlePieces, workspacePaletteAsks } from "./palette-logic.ts"
 import type { ShellState } from "./shell-logic.ts"
+import { paletteKeyWords } from "./shortcut-keys.ts"
+
+function platformName(): string {
+  const data = (navigator as Navigator & { userAgentData?: { platform?: unknown } }).userAgentData
+  return typeof data?.platform === "string" && data.platform !== "" ? data.platform : navigator.platform
+}
 
 async function optional<T>(path: string): Promise<T | null> {
   try {
@@ -279,8 +285,11 @@ export function initPalette(shell: ShellState | null = null): PaletteHandle | nu
     input.focus()
   })
 
+  const keyWords = paletteKeyWords(platformName())
   for (const button of all<HTMLButtonElement>('[data-action="palette"]')) {
     button.addEventListener("click", () => open(button))
+    const key = find("kbd", button)
+    if (key !== null) key.textContent = keyWords
   }
   document.addEventListener("keydown", (event) => {
     if (event.key.toLowerCase() !== "k" || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return

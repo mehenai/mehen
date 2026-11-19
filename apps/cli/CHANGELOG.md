@@ -2,6 +2,17 @@
 
 The version is printed by `mehen version --json`, with the commit it was built from. Releases are served from `https://mehen.dev/dl/`; `mehen update` installs the latest one.
 
+## Unreleased
+
+### Fixed
+
+- **A `mehen up` that times out says to run it again, with the link it was waiting on.** It printed a warning that the vault had returned a link not on `https://app.mehen.dev`, because the local link was checked against Mehen Cloud. It now says "Run `mehen up` again when it is done; it picks up where it stopped." and names the local page in the message (exit 4, `timeout`, as before).
+- **After `mehen up`, the local vault is the default vault.** With `local-vault.json` in the Mehen home and `MEHEN_VAULT_URL` unset, a new enrolment, the links mehen checks and the message for an unknown `enr_` id use the local vault, not `https://app.mehen.dev`; `MEHEN_VAULT_URL` and an enrolled workspace still come first. `mehen doctor` names it as the vault a new enrolment uses.
+- **Plain-text `mehen up` prints real line breaks,** not `\u000A`, and under the enrolment link the fingerprint's coloured words and the group the page hides, as `mehen enrol` does. `--json` is unchanged.
+- **On a Linux desktop without `secret-tool`, `mehen up` and `mehen doctor` say how to move the local vault's key into the login keyring:** install `secret-tool` (`libsecret-tools` on Debian and Ubuntu, `libsecret` on Fedora and Arch), unlock the login keyring and restart the vault (`systemctl --user restart mehen-vault.service`), which then moves the key out of `keys.json`.
+- **`mehen up --remove` waits for the service to stop.** On macOS it asked `launchctl` once, straight after `bootout`, while the job was often still stopping, so remove failed and left the LaunchAgent, which brought the vault back at the next login. It now waits up to 5 seconds for the job to go, as `mehen up` does between `bootout` and `bootstrap`, and for the systemd unit after `disable --now`.
+- **The systemd user unit no longer waits for `network-online.target`;** the vault answers on loopback only.
+
 ## 0.4.0
 
 Mehen runs on your own machine. `mehen up` sets it up in one go: it starts a vault on this machine at `http://localhost:7787` as a service, opens the page where you make your passkey and your workspace, enrols this machine and wires your agents, and run again it picks up where it stopped. `mehen serve` runs the same vault in the foreground, on this machine or, with `--origin`, for other machines to reach over https. `mehen guard` installs guard hooks in Claude Code and pi that stop an agent reading `.env` and other key files or pasting a key into a command or a file, and `mehen hook` is the check they run. The vault engine is the hosted one, unchanged, and a machine can be enrolled in a local vault and Cloud workspaces at once. `mehen mcp` also answers in less: `vault_list` a short row per item a page at a time, `vault_templates` a short entry per template, and a tool list under 34,100 bytes; several result shapes change for MCP clients. Installed machines update themselves on their next call to the vault once this release is published, or at their next hourly check.

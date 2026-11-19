@@ -24,21 +24,25 @@ export const RECOVERY_SETUP_WORDS = "Before you can join or create a workspace, 
 
 // The recovery step, shared by sign-up and /account/recovery. Codes are
 // filled in by the browser from the vault's reply and never kept. Saving
-// codes is the one primary; a second passkey is the quiet alternative.
+// codes is the one primary; a second passkey is the quiet alternative,
+// below the codes once they show. Copy and Download hand over the codes
+// as they are; typing one back still proves they were kept.
 export function recoveryStep(heading: string): Html {
   return html`<section class="card narrow" data-region="recovery-step">
     <h2>${heading}</h2>
     <p class="lead">${RECOVERY_SETUP_WORDS}</p>
-    <div class="actions"><button type="button" class="btn primary" data-action="make-codes">${icon("passkey")}<span>Save recovery codes</span></button>
-      <button type="button" class="btn quiet" data-action="add-second-passkey">Or add a second passkey</button></div>
+    <div class="actions"><button type="button" class="btn primary" data-action="make-codes">${icon("passkey")}<span>Save recovery codes</span></button></div>
     <div data-region="codes-issued" hidden>
       <p>Save these somewhere only you can reach, away from this device. Each works once.</p>
       <ol class="codes mono" data-region="codes-list"></ol>
+      <div class="actions"><button type="button" class="btn secondary sm" data-action="copy-codes">${icon("copy")}<span>Copy</span></button>
+        <button type="button" class="btn secondary sm" data-action="download-codes"><span>Download</span></button></div>
       <label class="field"><span class="label">Type code number <b data-region="codes-position"></b> to show you saved them</span>
         <input type="text" class="mono" data-input="codes-confirm" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="64"></label>
       <p class="inline-error" role="alert" data-region="codes-error" hidden></p>
       <button type="button" class="btn primary" data-action="confirm-codes">Confirm</button>
     </div>
+    <div class="actions"><button type="button" class="btn quiet" data-action="add-second-passkey">Or add a second passkey</button></div>
     <p data-region="recovery-done" hidden>${icon("check")} Recovery is set up.</p>
   </section>`
 }
@@ -86,10 +90,11 @@ export const INVITE_TERMS_WORDS = ["This invitation works until ", ". Not expect
 // the vault has no account yet, so the code can only be its bootstrap code and
 // the page welcomes its owner instead of talking about invitations.
 export function workspaceSignupPage(state: { signedIn: boolean; recoveryReady: boolean; firstAccount?: boolean }): PageInput {
+  const first = state.firstAccount === true
   return {
-    title: "Join a workspace",
+    title: first ? "Welcome to your vault" : "Join a workspace",
     viewer: null,
-    boot: { page: "workspace-signup", signedIn: state.signedIn, recoveryReady: state.recoveryReady },
+    boot: { page: "workspace-signup", signedIn: state.signedIn, recoveryReady: state.recoveryReady, ...(first ? { firstAccount: true } : {}) },
     body: html`<section class="card narrow" data-region="signup-invite" hidden>
         <h1>You are invited to <b data-fill="workspace-name"></b> as <span data-fill="invite-role"></span>.</h1>
         ${steps(SIGNUP_STEPS.map((title) => ({ title, state: "todo" as const })))}
@@ -116,7 +121,7 @@ export function workspaceSignupPage(state: { signedIn: boolean; recoveryReady: b
           <label class="field"><span class="label">Your name</span><input type="text" data-input="name" autocomplete="name" maxlength="64" required></label>
           <button type="submit" class="btn primary" data-action="signup" disabled>${icon("passkey")}<span>Create passkey</span></button>
         </form>
-        <p class="muted">Already have an account here? <a href="/signin?next=%2Fsignup">Sign in</a>, then this page carries on with it.</p>
+        ${first ? "" : html`<p class="muted">Already have an account here? <a href="/signin?next=%2Fsignup">Sign in</a>, then this page carries on with it.</p>`}
       </section>
       <div data-region="signup-recovery" hidden>${recoveryStep("Set up recovery")}</div>
       <section class="card narrow" data-region="signup-join" hidden>

@@ -17,8 +17,25 @@ import { RECOVERY_POLL_MS, nextRecoveryPoll, sameOriginHref, waitForConfirmation
 import { formatTime } from "../../wording.ts"
 import { type EmailCodeOffer, isEmailProof, proofBody, wireEmailCode } from "../email-code.ts"
 import { INVITE_KEY } from "../oidc-logic.ts"
+import { COPIED_FOR_MS } from "../wires.ts"
 
 // ---------------------------------------------------------------- recovery
+
+export const RECOVERY_CODES_FILE = "mehen-recovery-codes.txt"
+
+// What Copy and Download hand over: the codes in the page's order, one a line.
+export function recoveryCodesLines(codes: readonly string[]): string {
+  return `${codes.join("\n")}\n`
+}
+
+function saveText(name: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }))
+  const link = document.createElement("a")
+  link.href = url
+  link.download = name
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
 
 // Codes made and one typed back, or a second passkey: then `done`.
 // `afterSignup`: /signup, where the vault makes an account's first codes
@@ -31,9 +48,13 @@ export function wireRecoveryStep(root: ParentNode, done: () => void, afterSignup
   const input = must<HTMLInputElement>('[data-input="codes-confirm"]', root)
   const error = must('[data-region="codes-error"]', root)
   const confirm = must<HTMLButtonElement>('[data-action="confirm-codes"]', root)
+  const copy = must<HTMLButtonElement>('[data-action="copy-codes"]', root)
+  const download = must<HTMLButtonElement>('[data-action="download-codes"]', root)
+  let codes: readonly string[] = []
   const finished = () => {
     issued.hidden = true
     list.replaceChildren()
+    codes = []
     must('[data-region="recovery-done"]', root).hidden = false
     done()
   }
@@ -52,12 +73,27 @@ export function wireRecoveryStep(root: ParentNode, done: () => void, afterSignup
     void withBusy(make, afterSignup ? "Making your codes..." : "Waiting for your passkey...", async () => {
       const reply = await generate()
       batch = reply.batch
+      codes = reply.codes
       list.replaceChildren(...reply.codes.map((code) => el("li", null, code)))
       must('[data-region="codes-position"]', root).textContent = String(reply.confirmPosition)
       issued.hidden = false
       // Pressed again, it would replace the codes just written down.
       make.hidden = true
     })
+  })
+  copy.addEventListener("click", () => {
+    if (codes.length === 0) return
+    void navigator.clipboard.writeText(recoveryCodesLines(codes)).then(() => {
+      const label = copy.querySelector("span") ?? copy
+      const before = label.textContent
+      label.textContent = "Copied"
+      setTimeout(() => {
+        label.textContent = before
+      }, COPIED_FOR_MS)
+    })
+  })
+  download.addEventListener("click", () => {
+    if (codes.length > 0) saveText(RECOVERY_CODES_FILE, recoveryCodesLines(codes))
   })
   confirm.addEventListener("click", () => {
     const current = batch
@@ -272,6 +308,9 @@ export function initWorkspaceSignup(boot: Boot): void {
   // An invitation opened in this tab replaces an earlier bootstrap's marker.
   store.drop(BOOTSTRAP_KEY)
   const signedIn = boot.signedIn === true
+  // A vault with no account yet has no invitation to peek at: the code can
+  // only be its bootstrap code, which only the signup answers for.
+  const firstAccount = boot.firstAccount === true
   let recoveryReady = boot.recoveryReady === true
   let peek: InvitePeek | null = null
   let bootstrap = false
@@ -412,7 +451,8 @@ export function initWorkspaceSignup(boot: Boot): void {
 
   // Where this browser is in the steps, worked out afresh on every load.
   const resume = async () => {
-    try {
+    if (firstAccount) peek = null
+    else try {
       peek = await api<InvitePeek>("/api/auth/invite/peek", { code: invite })
     } catch (failure) {
       if (!(failure instanceof VaultFailure) || failure.body.error !== "not_found") throw failure
@@ -493,9 +533,36 @@ export function initAccountRecovery(): void {
   if (step) wireRecoveryStep(step, () => undefined)
 }
 
+// The short name the workspace's name suggests: lower case, spaces to
+// dashes, only letters, digits and single dashes, starting with a letter,
+// at most 40; null when that leaves fewer than three characters.
+export function suggestWorkspaceSlug(name: string): string | null {
+  const slug = name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^[^a-z]+/, "")
+    .slice(0, 40)
+    .replace(/-+$/, "")
+  return slug.length >= 3 && !slug.startsWith("legacy-") ? slug : null
+}
+
 export function initWorkspaceCreate(): void {
   const form = find<HTMLFormElement>('[data-form="workspace-create"]')
   if (!form) return
+  // Filled from the name as it is typed, until the person edits it.
+  const nameInput = must<HTMLInputElement>('[data-input="workspace-name"]', form)
+  const slugInput = must<HTMLInputElement>('[data-input="workspace-slug"]', form)
+  let edited = slugInput.value !== ""
+  slugInput.addEventListener("input", () => {
+    edited = true
+  })
+  nameInput.addEventListener("input", () => {
+    if (!edited) slugInput.value = suggestWorkspaceSlug(nameInput.value) ?? ""
+  })
   form.addEventListener("submit", (event) => {
     event.preventDefault()
     const name = inputValue('[data-input="workspace-name"]', form).trim()

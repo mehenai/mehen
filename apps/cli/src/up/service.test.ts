@@ -1,7 +1,13 @@
-import { describe, expect, test } from "bun:test"
-import { isServeOf, LAUNCHD_LABEL, launchdPath, launchdPlist, serviceKind, systemdPath, systemdUnit } from "./service.ts"
+import { afterEach, describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
+import { CliError } from "../errors.ts"
+import { errorJson, errorLines } from "../output.ts"
+import { tempDir } from "../testing/run-mehen.ts"
+import { plainText, segments, styler } from "../tty.ts"
+import { isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, installService, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
 import { openerFor } from "./browser.ts"
-import { enrolLines } from "./index.ts"
+import { custodyLine, enrolLines, textLines, timedOut } from "./index.ts"
+import { keyringAdvice } from "../local-vault.ts"
 
 const plan = { kind: "launchd" as const, command: ["/Users/a/.local/bin/mehen", "serve", "--port", "7787", "--data", "/Users/a/Library/Application Support/Mehen/vault"], dataDir: "/Users/a/Library/Application Support/Mehen/vault", home: "/Users/a", logFile: "/Users/a/Library/Application Support/Mehen/vault/serve.log" }
 
@@ -29,6 +35,12 @@ describe("the systemd user unit", () => {
     expect(unit).toContain("UMask=0077")
     expect(unit).toContain("NoNewPrivileges=yes")
     expect(unit).toContain("WantedBy=default.target")
+  })
+
+  test("waits for nothing on the network: the vault answers on loopback only", () => {
+    const unit = systemdUnit({ ...plan, kind: "systemd" })
+    expect(unit).not.toContain("network-online.target")
+    expect(unit).not.toContain("After=")
   })
 
   test("quotes arguments with spaces and escapes what systemd would expand", () => {
@@ -63,8 +75,131 @@ describe("the browser", () => {
 
 describe("the enrolment lines", () => {
   test("a person at the terminal gets the fingerprint the page asks them to complete", () => {
-    expect(enrolLines("http://localhost:7787/w/home/e/ABCD", true, "M6W2 SXSX GAJJ 855Q")).toBe("Opened http://localhost:7787/w/home/e/ABCD\nThis machine's fingerprint is M6W2 SXSX GAJJ 855Q. The page shows all but one of its groups: type the one it hides, then accept with your passkey.\nThis carries on by itself.")
-    expect(enrolLines("http://localhost:7787/w/home/e/ABCD", false, null)).toBe("Open http://localhost:7787/w/home/e/ABCD\nAccept this machine with your passkey.\nThis carries on by itself.")
+    expect(enrolLines("http://localhost:7787/w/home/e/ABCD", true, "M6W2 SXSX GAJJ 855Q")).toEqual(["Opened http://localhost:7787/w/home/e/ABCD", "This machine's fingerprint is M6W2 SXSX GAJJ 855Q. The page shows all but one of its groups: type the one it hides, then accept with your passkey.", "This carries on by itself."])
+    expect(enrolLines("http://localhost:7787/w/home/e/ABCD", false, null)).toEqual(["Open http://localhost:7787/w/home/e/ABCD", "Accept this machine with your passkey.", "This carries on by itself."])
+  })
+
+  test("carries mehen enrol's coloured words and hidden group under the fingerprint, and none without one", () => {
+    const s = styler(true)
+    const words = [segments("  ", s.dim("words:  "), " puppy (violet)"), segments("  ", s.dim("hidden: "), " the page hides the third group, ", s.bold("PXT0"), ": type it on the page")]
+    const lines = enrolLines("http://localhost:7787/w/home/e/ABCD", true, "5NZV DP67 PXT0 DB6E", words)
+    expect(lines.map(plainText)).toEqual(["Opened http://localhost:7787/w/home/e/ABCD", "This machine's fingerprint is 5NZV DP67 PXT0 DB6E. The page shows all but one of its groups: type the one it hides, then accept with your passkey.", "  words:   puppy (violet)", "  hidden:  the page hides the third group, PXT0: type it on the page", "This carries on by itself."])
+    expect(enrolLines("http://localhost:7787/w/home/e/ABCD", true, null, words)).toHaveLength(3)
+  })
+})
+
+describe("plain text", () => {
+  test("the CLI's own text is one line per line break; lines given as a list stay one line each", () => {
+    expect(textLines("Agents (restart them to pick Mehen up):\n  pi: wired")).toEqual(["Agents (restart them to pick Mehen up):", "  pi: wired"])
+    expect(textLines(["Workspace: Home\nEvil (home)"])).toEqual(["Workspace: Home\nEvil (home)"])
+  })
+})
+
+describe("a timeout", () => {
+  const writer = { isTTY: false, write: () => true }
+
+  test("says to run mehen up again and shows the local link, with no warning about it", () => {
+    const error = timedOut("a passkey and a workspace", "http://localhost:7799/local/v1/start")
+    const vault = { vaultUrl: "https://app.mehen.dev", workspaceSlug: null }
+    const lines = errorLines(error, writer, { vaultUrl: vault }).map(plainText)
+    expect(lines).toEqual(["mehen: Still waiting for a passkey and a workspace on http://localhost:7799/local/v1/start.", "next: Run `mehen up` again when it is done; it picks up where it stopped."])
+    expect(errorJson(error, { vaultUrl: vault })).toMatchObject({ error: "timeout", message: "Still waiting for a passkey and a workspace on http://localhost:7799/local/v1/start.", next: { say: "Run `mehen up` again when it is done; it picks up where it stopped." } })
+  })
+
+  test("another command's link off the vault is still refused with the warning", () => {
+    const off = new CliError("timeout", "Still waiting.", { say: "Wait.", url: "http://localhost:7799/local/v1/start" })
+    const lines = errorLines(off, writer, { vaultUrl: { vaultUrl: "https://app.mehen.dev", workspaceSlug: null } }).map(plainText)
+    expect(lines[1]).toContain("The vault returned a link that is not on https://app.mehen.dev")
+  })
+})
+
+describe("the keyring advice", () => {
+  const desktop = { platform: "linux" as const, env: { DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" }, hasSecretTool: false }
+
+  test("on a Linux desktop with a session bus and no secret-tool, says what to install, unlock and restart", () => {
+    const advice = keyringAdvice(desktop, "systemd")
+    expect(advice).toContain("install secret-tool (Debian and Ubuntu: libsecret-tools; Fedora and Arch: libsecret)")
+    expect(advice).toContain("make sure the login keyring is unlocked")
+    expect(advice).toContain("`systemctl --user restart mehen-vault.service`")
+    expect(advice).toContain("it then moves the key into the keyring")
+    expect(keyringAdvice(desktop, "process")).toContain("`mehen up --remove`, then `mehen up`")
+    expect(custodyLine("file", advice)).toBe(` The vault's key is in a file only you can read; see \`mehen doctor\`. ${advice}`)
+  })
+
+  test("says nothing with secret-tool, without a session bus, off Linux, or for a key already out of a file", () => {
+    expect(keyringAdvice({ ...desktop, hasSecretTool: true }, "systemd")).toBeNull()
+    expect(keyringAdvice({ ...desktop, env: {} }, "systemd")).toBeNull()
+    expect(keyringAdvice({ ...desktop, platform: "darwin" }, "launchd")).toBeNull()
+    expect(custodyLine("keyring", "advice")).toBe(" The vault's key is in your login keyring.")
+    expect(custodyLine("file")).toBe(" The vault's key is in a file only you can read; see `mehen doctor`.")
+  })
+})
+
+describe("removing and reinstalling the service waits for the job to stop", () => {
+  let home: { path: string; remove(): Promise<void> } | null = null
+  afterEach(async () => {
+    await home?.remove()
+    home = null
+  })
+
+  // launchctl or systemctl answering "still there" for the first `loaded`
+  // asks, and the commands in the order they ran.
+  function fake(loaded: number, ask: string): { runner: Runner; ran: string[] } {
+    const ran: string[] = []
+    let asked = 0
+    const runner: Runner = (cmd) => {
+      ran.push(cmd.slice(0, 3).join(" "))
+      if (cmd.includes(ask)) return { code: asked++ < loaded ? 0 : 1, out: "" }
+      return { code: 0, out: "" }
+    }
+    return { runner, ran }
+  }
+  const sleep = () => undefined
+
+  test("launchd: a job still loaded for the first prints after bootout is removed, plist and all, once it goes", async () => {
+    home = await tempDir()
+    const { runner, ran } = fake(3, "print")
+    await Bun.write(launchdPath(home.path), "plist")
+    expect(removeService("launchd", "/data", home.path, {}, { runner, sleep })).toEqual([])
+    expect(existsSync(launchdPath(home.path))).toBe(false)
+    expect(ran.map((c) => c.split(" ").slice(0, 2).join(" "))).toEqual(["launchctl bootout", "launchctl print", "launchctl print", "launchctl print", "launchctl print"])
+  })
+
+  test("launchd: a job that never goes is reported, and its plist kept so the record stays", async () => {
+    home = await tempDir()
+    const { runner } = fake(Number.POSITIVE_INFINITY, "print")
+    await Bun.write(launchdPath(home.path), "plist")
+    const problems = removeService("launchd", "/data", home.path, {}, { runner, sleep })
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain(`launchctl still has ${LAUNCHD_LABEL} loaded`)
+    expect(existsSync(launchdPath(home.path))).toBe(true)
+  })
+
+  test("launchd: install waits between bootout and bootstrap", async () => {
+    home = await tempDir()
+    const { runner, ran } = fake(2, "print")
+    installService({ ...plan, home: home.path }, {}, { runner, sleep })
+    expect(ran.map((c) => c.split(" ").slice(0, 2).join(" "))).toEqual(["launchctl bootout", "launchctl print", "launchctl print", "launchctl print", "launchctl bootstrap"])
+  })
+
+  test("systemd: a unit still active for a moment after disable --now is removed once it stops", async () => {
+    home = await tempDir()
+    const { runner, ran } = fake(2, "is-active")
+    const env = { XDG_CONFIG_HOME: home.path }
+    await Bun.write(systemdPath(home.path, env), "unit")
+    expect(removeService("systemd", "/data", home.path, env, { runner, sleep })).toEqual([])
+    expect(existsSync(systemdPath(home.path, env))).toBe(false)
+    expect(ran.filter((c) => c === "systemctl --user is-active")).toHaveLength(3)
+    expect(ran.at(-1)).toBe("systemctl --user daemon-reload")
+  })
+
+  test("systemd: a unit that stays active is reported and its file kept", async () => {
+    home = await tempDir()
+    const { runner } = fake(Number.POSITIVE_INFINITY, "is-active")
+    const env = { XDG_CONFIG_HOME: home.path }
+    await Bun.write(systemdPath(home.path, env), "unit")
+    expect(removeService("systemd", "/data", home.path, env, { runner, sleep })).toEqual([`${SYSTEMD_UNIT} is still running; run \`systemctl --user disable --now ${SYSTEMD_UNIT}\``])
+    expect(existsSync(systemdPath(home.path, env))).toBe(true)
   })
 })
 

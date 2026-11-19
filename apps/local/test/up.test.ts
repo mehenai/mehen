@@ -26,7 +26,7 @@ function freePort(): number {
   return port
 }
 const port = freePort()
-const env = { ...process.env, HOME: root, MEHEN_HOME: home, MEHEN_SERVICE: "process", MEHEN_BROWSER: browser, MEHEN_NO_AUTO_UPDATE: "1", MEHEN_SELF_EXECUTABLE: "" }
+const env = { ...process.env, HOME: root, MEHEN_HOME: home, MEHEN_SERVICE: "process", MEHEN_BROWSER: browser, MEHEN_NO_AUTO_UPDATE: "1", MEHEN_SELF_EXECUTABLE: "", MEHEN_SESSION: undefined, MEHEN_VAULT_URL: undefined }
 
 afterAll(async () => {
   await Bun.spawn(["bun", CLI, "up", "--remove", "--json"], { env, stdout: "ignore", stderr: "ignore" }).exited
@@ -77,7 +77,14 @@ test("from nothing to an enrolled machine, with two touches in the browser", asy
       expect(ask.opened).toBe(true)
       const code = new URL(ask.url!).pathname.split("/").at(-1)!
       const record = await Bun.file(join(home, "pending", `http_localhost_${port}`, "home", "enrolment.json")).json()
+      // Asked from this machine, on a vault on this machine.
+      const enrolPage = await person.page(new URL(ask.url!).pathname)
+      expect(enrolPage).toContain('data-region="enrol-acceptor">on this machine<')
       await person.acceptMachine(dataDir, workspace!, code, ask.id!, record)
+      // No agent asked: the terminal carries on, and nothing says to restart an agent.
+      const accepted = await person.page(new URL(ask.url!).pathname)
+      expect(accepted).toContain("The terminal that asked carries on by itself.")
+      expect(accepted).not.toContain("restart the agent")
     }
   }
   const code = await up.exited
@@ -92,7 +99,18 @@ test("from nothing to an enrolled machine, with two touches in the browser", asy
   expect(links[0]).toBe(`${origin}/local/v1/start`)
   expect(seen.map((l) => JSON.stringify(l)).join("\n")).not.toMatch(/signup#/)
   expect(links[1]).toStartWith(`${origin}/w/home/e/`)
+  // This machine is enrolled, so the home no longer offers to connect one.
+  const homePage = await person.page("/w/home/")
+  expect(homePage).not.toContain("to connect this machine")
+  expect(homePage).not.toMatch(/get-started-title"><a href="[^"]*">Connect an agent/)
 }, 90_000)
+
+test("after mehen up, the local vault is the default, and mehen doctor names it", async () => {
+  const doctor = Bun.spawn(["bun", CLI, "doctor", "--json"], { env, stdout: "pipe", stderr: "pipe" })
+  const report = JSON.parse(await new Response(doctor.stdout).text()) as { machine: { check: string; detail: string }[] }
+  await doctor.exited
+  expect(report.machine.find((c) => c.check === "vault_url")?.detail).toBe(`http://localhost:${port} for a new enrolment (the local vault \`mehen up\` set up)`)
+}, 30_000)
 
 test("run again with no flags, it finds the vault, the workspace and the machine in place and asks nothing", async () => {
   const again = Bun.spawn(["bun", CLI, "up", "--json"], { env, stdout: "pipe", stderr: "pipe" })
@@ -130,6 +148,24 @@ test("refuses a vault on the port that is not the one in its data directory", as
     impostor.stop(true)
   }
 }, 30_000)
+
+test("a plain-text run that times out prints real lines and says to run it again, with the local link and no warning", async () => {
+  const home3 = join(root, "home3")
+  const data3 = join(root, "vault3")
+  const plain = { ...env, MEHEN_HOME: home3, MEHEN_BROWSER: "none" }
+  const port3 = freePort()
+  try {
+    const up = Bun.spawn(["bun", CLI, "up", "--port", String(port3), "--data", data3, "--no-agents", "--timeout", "2"], { env: plain, stdout: "pipe", stderr: "pipe" })
+    const [out, err, code] = await Promise.all([new Response(up.stdout).text(), new Response(up.stderr).text(), up.exited])
+    expect(code).toBe(4)
+    expect(out).not.toContain("\\u000A")
+    expect(out).toContain(`Open http://localhost:${port3}/local/v1/start\nMake your passkey`)
+    expect(err).toBe(`mehen: Still waiting for a passkey and a workspace on http://localhost:${port3}/local/v1/start.\nnext: Run \`mehen up\` again when it is done; it picks up where it stopped.\n`)
+    expect(err).not.toContain("warning")
+  } finally {
+    await Bun.spawn(["bun", CLI, "up", "--remove", "--json"], { env: plain, stdout: "ignore", stderr: "ignore" }).exited
+  }
+}, 60_000)
 
 test("--remove never signals a process that is not this vault's serve", async () => {
   const other = join(root, "stale")

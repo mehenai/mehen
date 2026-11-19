@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { DEFAULT_VAULT_URL, configPath, ensureConfigDir, readConfig, resolveVaultUrl, writeConfig } from "./config.ts"
 import { SOFTWARE_KEY_FILE, createDeviceKey, loadDeviceKey } from "./device-key.ts"
 import { CliError } from "./errors.ts"
+import { defaultVault } from "./local-vault.ts"
 import { tempDir } from "./testing/run-mehen.ts"
 
 let dir: { path: string; remove(): Promise<void> }
@@ -128,10 +129,32 @@ describe("software device key", () => {
 describe("vault URL", () => {
   const config = { vault: "https://enrolled.example", tenant: "t", device: "d", backend: "software" as const }
 
-  test("MEHEN_VAULT_URL wins, then the enrolled vault, then the default", () => {
-    expect(resolveVaultUrl({ MEHEN_VAULT_URL: "https://override.example/" }, config)).toBe("https://override.example")
-    expect(resolveVaultUrl({}, config)).toBe("https://enrolled.example")
-    expect(resolveVaultUrl({}, null)).toBe(DEFAULT_VAULT_URL)
+  test("MEHEN_VAULT_URL wins, then the enrolled vault, then the default", async () => {
+    dir = await tempDir()
+    const env = { MEHEN_HOME: dir.path }
+    expect(resolveVaultUrl({ ...env, MEHEN_VAULT_URL: "https://override.example/" }, config)).toBe("https://override.example")
+    expect(resolveVaultUrl(env, config)).toBe("https://enrolled.example")
+    expect(resolveVaultUrl(env, null)).toBe(DEFAULT_VAULT_URL)
+  })
+
+  test("after mehen up, the local vault comes before the default; MEHEN_VAULT_URL and an enrolled vault still win", async () => {
+    dir = await tempDir()
+    const env = { MEHEN_HOME: dir.path }
+    await writeFile(join(dir.path, "local-vault.json"), JSON.stringify({ origin: "http://localhost:7787", data: "/x", port: 7787, service: "systemd" }), { mode: 0o600 })
+    expect(resolveVaultUrl(env, null)).toBe("http://localhost:7787")
+    expect(defaultVault(env)).toEqual({ url: "http://localhost:7787", source: "local" })
+    expect(resolveVaultUrl({ ...env, MEHEN_VAULT_URL: "https://override.example" }, null)).toBe("https://override.example")
+    expect(resolveVaultUrl(env, config)).toBe("https://enrolled.example")
+  })
+
+  test("a local-vault.json that is broken or names no vault origin leaves the default", async () => {
+    dir = await tempDir()
+    const env = { MEHEN_HOME: dir.path }
+    for (const text of ["not json", "null", JSON.stringify({ data: "/x" }), JSON.stringify({ origin: "http://vault.example" }), JSON.stringify({ origin: "https://vault.example/path" })]) {
+      await writeFile(join(dir.path, "local-vault.json"), text, { mode: 0o600 })
+      expect(resolveVaultUrl(env, null)).toBe(DEFAULT_VAULT_URL)
+      expect(defaultVault(env).source).toBe("default")
+    }
   })
 
   test("plain http is refused except on this machine", () => {

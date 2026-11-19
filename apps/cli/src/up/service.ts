@@ -58,7 +58,6 @@ function systemdWord(word: string): string {
 export function systemdUnit(plan: ServicePlan): string {
   return `[Unit]
 Description=Mehen vault (local)
-After=network-online.target
 
 [Service]
 ExecStart=${plan.command.map(systemdWord).join(" ")}
@@ -83,9 +82,31 @@ export function systemdPath(home: string, env: Record<string, string | undefined
   return join(env.XDG_CONFIG_HOME || join(home, ".config"), "systemd", "user", SYSTEMD_UNIT)
 }
 
-function run(cmd: string[]): { code: number; out: string } {
+// Runs one command and waits for it; tests pass a fake.
+export type Runner = (cmd: string[]) => { code: number; out: string }
+
+const defaultRun: Runner = (cmd) => {
   const result = spawnSync(cmd[0] as string, cmd.slice(1), { encoding: "utf8" })
   return { code: result.status ?? 1, out: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() }
+}
+
+// How long a stopping job may take to go: launchctl bootout and systemctl
+// disable --now return while it is still stopping.
+export const STOP_WAIT_MS = 5000
+const STOP_POLL_MS = 100
+
+export type Waiting = { runner?: Runner; sleep?: (ms: number) => void; waitMs?: number }
+
+// Whether the job is gone within the wait: `still` answers true while it
+// is there. Asked once more at the end, so a slow last answer still counts.
+function goneWithin(still: () => boolean, options: Waiting): boolean {
+  const sleep = options.sleep ?? Bun.sleepSync
+  const tries = Math.ceil((options.waitMs ?? STOP_WAIT_MS) / STOP_POLL_MS)
+  for (let i = 0; i < tries; i++) {
+    if (!still()) return true
+    sleep(STOP_POLL_MS)
+  }
+  return !still()
 }
 
 // Which kind this machine supports, unless MEHEN_SERVICE names one.
@@ -94,7 +115,7 @@ export function serviceKind(env: Record<string, string | undefined>, platform: N
   if (chosen === "launchd" || chosen === "systemd" || chosen === "process") return chosen
   if (!installed) return "process"
   if (platform === "darwin") return "launchd"
-  if (platform === "linux" && run(["systemctl", "--user", "show-environment"]).code === 0) return "systemd"
+  if (platform === "linux" && defaultRun(["systemctl", "--user", "show-environment"]).code === 0) return "systemd"
   return "process"
 }
 
@@ -120,7 +141,7 @@ export function servePid(dataDir: string): number | null {
   if (!existsSync(path)) return null
   const pid = Number(readFileSync(path, "utf8").trim())
   if (!Number.isInteger(pid) || pid <= 1) return null
-  const args = run(["ps", "-o", "args=", "-p", String(pid)])
+  const args = defaultRun(["ps", "-o", "args=", "-p", String(pid)])
   if (args.code !== 0) return null
   return isServeOf(args.out, dataDir) ? pid : null
 }
@@ -133,12 +154,16 @@ export class ServiceError extends Error {}
 
 // Installs and starts the service, or starts the one already installed.
 // The caller waits for the vault to answer.
-export function installService(plan: ServicePlan, env: Record<string, string | undefined>): ServiceResult {
+export function installService(plan: ServicePlan, env: Record<string, string | undefined>, options: Waiting = {}): ServiceResult {
+  const run = options.runner ?? defaultRun
   if (plan.kind === "launchd") {
     const file = launchdPath(plan.home)
     writePrivateFile(file, launchdPlist(plan))
     const domain = `gui/${process.getuid?.() ?? 0}`
-    run(["launchctl", "bootout", `${domain}/${LAUNCHD_LABEL}`])
+    const target = `${domain}/${LAUNCHD_LABEL}`
+    // A job still stopping from the bootout refuses the bootstrap.
+    run(["launchctl", "bootout", target])
+    goneWithin(() => run(["launchctl", "print", target]).code === 0, options)
     const loaded = run(["launchctl", "bootstrap", domain, file])
     if (loaded.code !== 0) throw new ServiceError(`launchctl could not load ${file}: ${loaded.out}`)
     return { kind: "launchd", file, startsAtLogin: true }
@@ -159,18 +184,19 @@ export function installService(plan: ServicePlan, env: Record<string, string | u
 // Stops the service and removes what installService wrote, and says what it
 // could not do: a service still loaded or a vault still running is reported,
 // never taken for gone. The data stays.
-export function removeService(kind: ServiceKind, dataDir: string, home: string, env: Record<string, string | undefined>): string[] {
+export function removeService(kind: ServiceKind, dataDir: string, home: string, env: Record<string, string | undefined>, options: Waiting = {}): string[] {
+  const run = options.runner ?? defaultRun
   const problems: string[] = []
   if (kind === "launchd") {
     const target = `gui/${process.getuid?.() ?? 0}/${LAUNCHD_LABEL}`
     run(["launchctl", "bootout", target])
-    if (run(["launchctl", "print", target]).code === 0) problems.push(`launchctl still has ${LAUNCHD_LABEL} loaded; run \`launchctl bootout ${target}\``)
+    if (!goneWithin(() => run(["launchctl", "print", target]).code === 0, options)) problems.push(`launchctl still has ${LAUNCHD_LABEL} loaded; run \`launchctl bootout ${target}\``)
     else rmSync(launchdPath(home), { force: true })
     return problems
   }
   if (kind === "systemd") {
     run(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT])
-    if (run(["systemctl", "--user", "is-active", "--quiet", SYSTEMD_UNIT]).code === 0) problems.push(`${SYSTEMD_UNIT} is still running; run \`systemctl --user disable --now ${SYSTEMD_UNIT}\``)
+    if (!goneWithin(() => run(["systemctl", "--user", "is-active", "--quiet", SYSTEMD_UNIT]).code === 0, options)) problems.push(`${SYSTEMD_UNIT} is still running; run \`systemctl --user disable --now ${SYSTEMD_UNIT}\``)
     else {
       rmSync(systemdPath(home, env), { force: true })
       run(["systemctl", "--user", "daemon-reload"])

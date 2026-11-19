@@ -151,6 +151,15 @@ function cleanCity(value: unknown): string | null {
   return city === "" ? null : city
 }
 
+// Whether the connection came from this machine: a local vault (apps/local)
+// puts the peer's address in cf-connecting-ip, which Cloudflare sets for
+// itself and which is never loopback there. Only that one answer is read
+// from the address; nothing keeps or shows it.
+export function loopbackPeer(request: Request): boolean {
+  const ip = request.headers.get("cf-connecting-ip") ?? ""
+  return /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.test(ip)
+}
+
 // "Amsterdam, NL" from Cloudflare's view of the connection; null when it
 // says nothing. The address itself is never read.
 export function placeOf(request: Request): string | null {

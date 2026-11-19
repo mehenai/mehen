@@ -174,3 +174,15 @@
 .machines .device .fold.edit + .device-actions {
   margin-top: 12px;
 }
+
+/* Focusing the typed group scrolls it clear of the fixed decision bar,
+   not under it: the page's own scroll keeps the bar's height free. */
+html:has(body.has-bar [data-input="fingerprint-group"]) {
+  scroll-padding-bottom: 150px;
+}
+
+@media (min-width: 900px) {
+  html:has(body.has-bar [data-input="fingerprint-group"]) {
+    scroll-padding-bottom: 110px;
+  }
+}
