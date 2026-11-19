@@ -11,7 +11,7 @@ import { VaultError } from "../src/http.ts"
 import { projectFixture, projectState, inAccess, callProject } from "./projects-workspace-fixture.ts"
 import { credentialsFixture, deviceInvocation, devicePrincipal, seedCredential } from "./credentials-test-support.ts"
 import { authoriseWorkspaceRelay, workspaceRelayOps } from "../src/vault/areas/relay-workspace.ts"
-import { setSetting } from "../src/vault/areas/workspace-runtime.ts"
+import { openAskCount, setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import type { ApprovalBundleCreated } from "@mehen/protocol/api"
 const SUBJECT = { item: "key-project", method: "POST", url: "https://api.example.com/write", contentType: "application/json", contentEncoding: null, headersSha256: digestOf([]), bodySha256: digestOf("{}"), constraints: { uses: 1, ttlSeconds: 600 } }
 const PRESENTATION = { title: "Write a record", details: [{ label: "Action", value: "Write" }], body: "{}", headers: [] as [string, string][] }
@@ -299,6 +299,49 @@ describe("asking for a bundle", () => {
     ctx.sql.exec("UPDATE items SET policy=? WHERE slug='plan-key'", JSON.stringify({ default: "approve", rules: [] }))
   }
   const nothingAsked = (ctx: VaultContext) => [ctx.sql.exec("SELECT * FROM approval_bundles").toArray(), ctx.sql.exec("SELECT * FROM audit WHERE action='approval.bundle'").toArray()]
+
+  // Two asks racing at 19 open: each is checked and stored in one
+  // synchronous transaction, so exactly one opens and the other is refused.
+  it("lets exactly one of two asks racing at 19 open asks through, and refuses the other at the cap", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await held(ctx)
+      for (let n = 0; n < 19; n++) expect(await refused(async () => authoriseWorkspaceRelay(ctx, devicePrincipal(), request(100 + n), await deviceInvocation(ctx)))).toMatchObject({ error: "approval_required" })
+      // A transaction run while both are in flight shows they did race.
+      let active = 0, overlapped = false
+      const tx = ctx.storage.transactionSync.bind(ctx.storage)
+      const spy = vi.spyOn(ctx.storage, "transactionSync").mockImplementation(<T>(fn: () => T): T => { if (active === 2) overlapped = true; return tx(fn) })
+      const race = await Promise.all([1, 2].map((n) => refused(async () => { active++; try { return await authoriseWorkspaceRelay(ctx, devicePrincipal(), request(n), await deviceInvocation(ctx)) } finally { active-- } })))
+      spy.mockRestore()
+      expect(overlapped).toBe(true)
+      expect(race.map((r) => r.error).sort()).toEqual(["approval_required", "rate_limited"])
+      expect(openAskCount(ctx, "dev_member", ctx.now())).toBe(20)
+    })
+  })
+
+  // A bundle's first check is made before its requests are asked, one await
+  // at a time. Asks that land meanwhile can only turn the bundle's later
+  // requests into refusals, each at the cap: the machine never passes 20.
+  it("never lets a bundle and asks that interleave with it pass 20 open asks; the bundle's requests past the cap are refused one by one", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await held(ctx)
+      for (let n = 0; n < 17; n++) expect(await refused(async () => authoriseWorkspaceRelay(ctx, devicePrincipal(), request(100 + n), await deviceInvocation(ctx)))).toMatchObject({ error: "approval_required" })
+      const singles = (from: number) => [0, 1, 2].map((n) => refused(async () => authoriseWorkspaceRelay(ctx, devicePrincipal(), request(from + n), await deviceInvocation(ctx))))
+      // The bundle's first check sees 17 + 3 = 20 and lets it in; three more asks then race it.
+      const bundle = op(ctx, "approvals.bundle", { requests: [request(1), request(2), request(3)] }) as Promise<ApprovalBundleCreated>
+      const raced = await Promise.all([bundle, ...singles(200)])
+      const created = raced[0] as ApprovalBundleCreated, others = raced.slice(1) as { error: string }[]
+      const asked = created.results.filter((r) => r.outcome === "ask").length + others.filter((r) => r.error === "approval_required").length
+      expect(asked).toBe(3)
+      expect(openAskCount(ctx, "dev_member", ctx.now())).toBe(20)
+      // Every request that did not open an ask was refused at the cap, on its own.
+      for (const r of created.results.filter((r) => r.outcome !== "ask")) expect(r).toMatchObject({ outcome: "refused", error: { error: "rate_limited" } })
+      for (const r of others.filter((r) => r.error !== "approval_required")) expect(r).toMatchObject({ error: "rate_limited" })
+      // The asks did land between the bundle's own: it opened some and had some refused.
+      expect(created.results.some((r) => r.outcome === "ask") && created.results.some((r) => r.outcome === "refused")).toBe(true)
+    })
+  })
 
   it("refuses rate_limited before creating anything when the open asks and the requests would pass 20", async () => {
     const f = await credentialsFixture()

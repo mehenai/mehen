@@ -16,9 +16,9 @@ import { projectDeviceInvocation, projectFixture, projectState, inAccess } from 
 const UNSHARED = { project: "prj_b", env: "dev", envSource: "flag", remote: null, worktree: "/fixture", head: null, vars: [], command: "test", argv: ["test"] }
 const DAY = 86_400_000
 
-async function refused(ctx: VaultContext, input: unknown = UNSHARED): Promise<VaultError> {
+async function refused(ctx: VaultContext, input: unknown = UNSHARED, device = "dev_kim"): Promise<VaultError> {
   try {
-    await workspaceRunOps["runs.create"]!.handler(ctx, { kind: "device", deviceId: "dev_kim" }, input, await projectDeviceInvocation(ctx))
+    await workspaceRunOps["runs.create"]!.handler(ctx, { kind: "device", deviceId: device }, input, await projectDeviceInvocation(ctx, device))
   } catch (error) {
     if (error instanceof VaultError) return error
     throw error
@@ -66,6 +66,27 @@ describe("runs.create refused project_unshared", () => {
       } finally {
         ctx.now = now
       }
+    })
+  })
+
+  it("tells a member who manages the project by a share, not only owners and admins, and not a member who only uses it", async () => {
+    const f = await projectFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const share = (id: string, member: string, level: "manage" | "use") => ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", id, "prj_b", "member", member, JSON.stringify({ id, project: "prj_b", subject: { kind: "member", member }, level, protected: false, expiresAt: null }))
+      share("shr_member_b", "mem_member", "manage")
+      share("shr_guest_b", "mem_guest", "use")
+      expect((await refused(ctx)).code).toBe("project_unshared")
+      expect(shareNotices(ctx).map((n) => n.account)).toEqual(["acc_admin", "acc_member", "acc_owner"])
+    })
+  })
+
+  it("leaves a team machine's refusal as it was: no notice, and no link to the project", async () => {
+    const f = await projectFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const error = await refused(ctx, UNSHARED, "dev_service")
+      expect(error.code).toBe("project_unshared")
+      expect(error.extra.next?.url).toBeUndefined()
+      expect(shareNotices(ctx)).toEqual([])
     })
   })
 
