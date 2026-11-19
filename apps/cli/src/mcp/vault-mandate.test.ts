@@ -161,7 +161,7 @@ test("propose with no items or classes names what this machine asked for, 30 day
   const schema = z.toJSONSchema(vaultMandate.input, { io: "input" }) as { properties: Record<string, { description?: string }> }
   expect(schema.properties.items?.description).toContain("The vault refuses all and any other.")
   expect(schema.properties.classes?.description).toContain("The vault refuses others.")
-  expect(schema.properties.days?.description).toContain("30 (the default)")
+  expect(schema.properties.days?.description).toContain("30 days (the default and the most)")
 })
 
 test("refusal/propose with nothing asked for proposes nothing; a refusal for naming more carries mandateRefused", async () => {

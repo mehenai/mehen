@@ -1223,7 +1223,7 @@
     {
       "name": "vault_mandate",
       "title": "Mandates",
-      "description": "Mandates: ask a person to let this machine's held requests through without asking, with the credentials and kinds of request named, within daily caps, until a date and optionally only in certain hours. propose returns the ask to show, or the same open proposal again with existing true for the same terms; the person signs it with their passkey and may change any term. list, show and uses read its proposals, mandates, today's use (UTC) and what went through on trust, 500 at a time; pause stops this machine's mandate covering anything now, without id its live one here. A paused, tripped or ended mandate comes with next.url, its page, to pass to the person who signed it. Agents cannot sign, resume or stop a mandate. A mandate never covers credential, access or money changes, nor anything an ask's mandateCover says it cannot. Never returns a secret.",
+      "description": "Mandates: ask a person to let this machine's held requests through without asking, with the credentials and kinds named, within daily caps, until a date and optionally only in certain hours. propose returns the ask to show, or the same open proposal (existing true) for the same terms; the person signs it with their passkey and may change any term. list, show and uses read its proposals, mandates, today's use (UTC) and what went through on trust, 500 at a time; pause stops this machine's mandate covering anything now, without id its live one here. A paused, tripped or ended mandate comes with next.url, its page, to pass to the person who signed it. Agents cannot sign, resume or stop a mandate. A mandate never covers credential, access or money changes, nor anything an ask's mandateCover says it cannot. Never returns a secret.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1239,7 +1239,7 @@
             "description": "propose needs note; list takes nothing; show needs id; pause takes id, or none for this machine's live mandate; uses needs id and takes since and before. Supply only those fields."
           },
           "items": {
-            "description": "propose: credential slugs; by default the ones this machine asked for in 30 days. The vault refuses all and any other.",
+            "description": "propose: credential slugs; by default those this machine asked for in 30 days. The vault refuses all and any other.",
             "anyOf": [
               {
                 "type": "string",
@@ -1256,7 +1256,7 @@
             ]
           },
           "classes": {
-            "description": "propose: read, change, send, delete; by default read and the ones asked for. The vault refuses others.",
+            "description": "propose: read, change, send, delete; by default read and those asked for. The vault refuses others.",
             "minItems": 1,
             "type": "array",
             "items": {
@@ -1270,7 +1270,7 @@
             }
           },
           "days": {
-            "description": "propose: 1, 7, 30 (the default) or 90 days.",
+            "description": "propose: 1, 7 or 30 days (the default and the most).",
             "anyOf": [
               {
                 "type": "number",
@@ -1291,7 +1291,7 @@
             ]
           },
           "caps": {
-            "description": "propose: requests a day per class, such as { send: 5 }; a low default for any left out.",
+            "description": "propose: requests a day per class, such as { send: 5 }, at most the default, which fills any left out.",
             "type": "object",
             "properties": {
               "change": {

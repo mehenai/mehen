@@ -145,6 +145,16 @@ test("refusal/a proposal the vault refuses for naming more than was asked carrie
   expect(human.stderr).toContain(next.command)
 })
 
+test("refusal/a proposal the vault refuses as too long or too high carries mandateRefused and the allowed terms", async () => {
+  const next = { command: "mehen mandate propose --items github-work --classes change,read --days 30 --caps change=100,read=500 --note <why>", say: "Propose again for 30 days or fewer; the person signing can make it longer." }
+  for (const [refused, args] of [["term_too_long", ["--days", "90"]], ["caps_too_high", ["--caps", "change=2000"]]] as const) {
+    vault.overrides.set("POST /v1/mandates/proposals", () => vaultError("forbidden", "A machine can propose less.", { mandateRefused: refused, next }))
+    const result = await propose("--items", "github-work", "--classes", "change", ...args, "--json")
+    expect(result.code).toBe(EXIT_FOR_ERROR.forbidden)
+    expect(json(result)).toMatchObject({ error: "forbidden", mandateRefused: refused, next })
+  }
+})
+
 describe("refusal/propose terms the protocol would refuse, and a machine signing, resuming or stopping, never reach the vault", () => {
   for (const args of [
     ["mandate", "propose"],

@@ -3,7 +3,7 @@
 // caps and the rate trip, pause, resume and stop, the signer's standing at
 // each use, what each reader sees, the sweep and the switch.
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { MANDATE_CAP_DEFAULTS, MANDATE_RATE_LIMIT, base64UrlEncode, createProof, getTemplate, scopeChangeIsNarrowing, type ApprovalSubject, type WorkspaceRole, type WorkspaceStepUpAction, type MandateCandidates, type MandateList, type MandateProposalCreated, type MandateProposalView, type MandateReceiptsPage, type MandateView, type WorkspaceRunCreated } from "@mehen/protocol"
+import { MANDATE_CAP_DEFAULTS, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_RATE_LIMIT, base64UrlEncode, createProof, getTemplate, scopeChangeIsNarrowing, type ApprovalSubject, type WorkspaceRole, type WorkspaceStepUpAction, type MandateCandidates, type MandateList, type MandateProposalCreated, type MandateProposalView, type MandateReceiptsPage, type MandateView, type WorkspaceRunCreated } from "@mehen/protocol"
 import type { ApprovalBundleCreated } from "@mehen/protocol/api"
 import { mandateDigest } from "@mehen/protocol/mandates"
 import { policyAreaGrantTermsDigest, policyRuleTermsDigest } from "@mehen/protocol/policy-rules"
@@ -259,7 +259,7 @@ describe("signing a mandate", () => {
       await askedFor(ctx, "dev_owner", "github-work", ["change"])
       await askedFor(ctx, "dev_owner", "key-other", ["change"])
       await askedFor(ctx, "dev_member", "github-work", ["change"])
-      const proposed = proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } })
+      const proposed = proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS, send: 0, delete: 0 } })
       const older = await machineOp(ctx, "mandates.propose", "dev_owner", { terms: { ...proposed, items: ["github-work", "key-other"] }, reason: "Both" }) as MandateProposalCreated
       const newer = await machineOp(at(ctx, ctx.now() + 1), "mandates.propose", "dev_owner", { terms: proposed, reason: "Release work" }) as MandateProposalCreated
       const members = await machineOp(ctx, "mandates.propose", "dev_member", { terms: proposed, reason: "Theirs" }) as MandateProposalCreated
@@ -308,7 +308,7 @@ describe("a machine proposes only what it asked for", () => {
       expect((await relayAs(ctx, "dev_owner", OPEN_ISSUE)).error?.extra.mandateCover).toMatchObject({ classes: ["change"], state: "none" })
       expect(await machineOp(ctx, "mandates.mine_asked", "dev_owner")).toEqual({ items: ["github-work"], classes: ["change"] })
       expect(await machineOp(ctx, "mandates.mine_asked", "dev_member")).toEqual({ items: [], classes: [] })
-      const created = await propose(ctx, "dev_owner", proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } })) as MandateProposalCreated
+      const created = await propose(ctx, "dev_owner", proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS, send: 0, delete: 0 } })) as MandateProposalCreated
       expect(created.id).toMatch(/^mdp_/)
     })
   })
@@ -318,7 +318,7 @@ describe("a machine proposes only what it asked for", () => {
     await inAccess(f.tenant, async (ctx) => {
       await askedFor(ctx, "dev_owner")
       const refused = await refusal(() => propose(ctx, "dev_owner", proposedTerms({ items: "all" })))
-      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "items_all", next: { command: "mehen mandate propose --items asked-key --classes change,delete,send --note <why>" } } })
+      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "items_all", next: { command: "mehen mandate propose --items asked-key --classes change,delete,read,send --days 30 --caps change=100,delete=5,read=500,send=10 --note <why>" } } })
       expect(refused.message).toBe("A machine cannot propose a mandate for every credential: drop items all and name the credentials it asked for. It asked for asked-key in the last 30 days. A person can choose wider terms on the sign page.")
       expect(proposals(ctx)).toBe(0)
       // With nothing asked for, there is nothing to propose instead.
@@ -345,10 +345,10 @@ describe("a machine proposes only what it asked for", () => {
     await inAccess(f.tenant, async (ctx) => {
       await askedFor(ctx, "dev_owner", "asked-key", ["change"])
       const refused = await refusal(() => propose(ctx, "dev_owner", proposedTerms()))
-      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "class_unasked", next: { command: "mehen mandate propose --items asked-key --classes change --note <why>" } } })
+      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "class_unasked", next: { command: "mehen mandate propose --items asked-key --classes change,read --days 30 --caps change=100,read=500 --note <why>" } } })
       expect(refused.message).toContain("This machine has not asked to delete or send: drop delete and send from the proposal.")
       expect(proposals(ctx)).toBe(0)
-      expect(await propose(ctx, "dev_owner", proposedTerms({ classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+      expect(await propose(ctx, "dev_owner", proposedTerms({ classes: ["change", "read"], caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
       expect(await propose(ctx, "dev_owner", proposedTerms({ classes: ["read"], caps: { read: 10, change: 0, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
     })
   })
@@ -376,6 +376,28 @@ describe("a machine proposes only what it asked for", () => {
     })
   })
 
+  it("starts, on upgrade, from the held asks with a hint the vault still keeps, by machine, credential and class", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await seedGithub(ctx)
+      for (const [device, request] of [["dev_owner", OPEN_ISSUE], ["dev_owner", READ_ISSUES], ["dev_member", READ_ISSUES]] as const) expect((await relayAs(ctx, device, request)).error?.extra.mandateCover).toBeDefined()
+      const recorded = ctx.sql.exec("SELECT device,item_id,cls,at FROM mandate_asked ORDER BY device,cls").toArray()
+      expect(recorded.map((r) => [r.device, r.cls])).toEqual([["dev_member", "read"], ["dev_owner", "change"], ["dev_owner", "read"]])
+      // A vault from before this table: the asks are kept, the table is not.
+      ctx.sql.exec("DROP TABLE mandate_asked")
+      expect(ctx.sql.exec("SELECT COUNT(*) AS n FROM mandate_cover_asks").one().n).toBe(3)
+      ctx.sql.exec(MANDATE_ASKED_MIGRATION)
+      expect(ctx.sql.exec("SELECT device,item_id,cls,at FROM mandate_asked ORDER BY device,cls").toArray()).toEqual(recorded)
+      expect(await machineOp(ctx, "mandates.mine_asked", "dev_owner")).toEqual({ items: ["github-work"], classes: ["change"] })
+      expect(await propose(ctx, "dev_owner", proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+      // On an empty vault the migration makes the table and copies nothing.
+      ctx.sql.exec("DROP TABLE mandate_asked")
+      ctx.sql.exec("DELETE FROM mandate_cover_asks")
+      ctx.sql.exec(MANDATE_ASKED_MIGRATION)
+      expect(ctx.sql.exec("SELECT COUNT(*) AS n FROM mandate_asked").one().n).toBe(0)
+    })
+  })
+
   it("counts what its own mandate let through, so it can propose those terms again with one more kind", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
@@ -385,20 +407,47 @@ describe("a machine proposes only what it asked for", () => {
       expect(await machineOp(ctx, "mandates.mine_asked", "dev_owner")).toEqual({ items: ["github-work"], classes: ["change"] })
       // Another machine's mandate uses never count for this one.
       expect(await machineOp(ctx, "mandates.mine_asked", "dev_member")).toEqual({ items: [], classes: [] })
-      expect(await propose(ctx, "dev_owner", proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+      expect(await propose(ctx, "dev_owner", proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
     })
   })
 
-  it("lets the person who signs widen a narrow proposal on the sign page, with the passkey as before", async () => {
+  it("refuses more than 30 days, saying what to lower, and proposes the allowed length in next.command", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await askedFor(ctx, "dev_owner")
+      const refused = await refusal(() => propose(ctx, "dev_owner", proposedTerms({ ttlDays: 90 })))
+      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "term_too_long", next: { command: "mehen mandate propose --items asked-key --classes change,delete,read,send --days 30 --caps change=100,delete=5,read=500,send=10 --note <why>" } } })
+      expect(refused.message).toContain("A machine can propose a mandate for at most 30 days: lower 90 days to 30.")
+      expect(proposals(ctx)).toBe(0)
+      for (const ttlDays of [1, 7, 30] as const) expect(await propose(ctx, "dev_owner", { ...proposedTerms({ ttlDays }), note: `For ${ttlDays} days` })).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+    })
+  })
+
+  it("refuses a cap above the proposal defaults, naming each to lower, and proposes the allowed caps in next.command", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await askedFor(ctx, "dev_owner")
+      const refused = await refusal(() => propose(ctx, "dev_owner", proposedTerms({ caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS, send: 11, read: 5000 } })))
+      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "caps_too_high", next: { command: "mehen mandate propose --items asked-key --classes change,delete,read,send --days 30 --caps change=100,delete=5,read=500,send=10 --note <why>" } } })
+      expect(refused.message).toContain("A machine can propose at most 500 reads, 100 changes, 10 sends and 5 deletes a day: lower read from 5000 to 500, send from 11 to 10.")
+      expect(proposals(ctx)).toBe(0)
+      expect(await propose(ctx, "dev_owner", proposedTerms({ caps: { read: 1, change: 1, send: 1, delete: 1 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+    })
+  })
+
+  it("lets the person who signs widen a narrow proposal on the sign page, every term, length and caps included, with the passkey as before", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await askedFor(ctx, "dev_owner", "asked-key", ["change"])
-      const created = await propose(ctx, "dev_owner", proposedTerms({ classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } })) as MandateProposalCreated
-      const action = await mandateAction(ctx, "owner", { op: "sign", terms: terms(), proposal: created.id })
+      const created = await propose(ctx, "dev_owner", proposedTerms({ classes: ["change", "read"], caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS, send: 0, delete: 0 } })) as MandateProposalCreated
+      // Every credential, every kind, the protocol's own caps and 90 days.
+      const wide = terms({ ttlDays: 90, caps: { ...MANDATE_CAP_DEFAULTS } })
+      const action = await mandateAction(ctx, "owner", { op: "sign", terms: wide, proposal: created.id })
       expect(action).toMatchObject({ type: "mandate.sign" })
-      expect(await refusal(() => mandateOp(ctx, "mandates.sign", "owner", { terms: terms(), proposal: created.id }))).toMatchObject({ code: "forbidden", message: "This needs a passkey confirmation of the exact action." })
-      const signed = (await signMandate(ctx, "owner", terms(), created.id)).mandate
-      expect(signed).toMatchObject({ items: "all", classes: ["change", "delete", "read", "send"], proposal: created.id })
+      expect(await refusal(() => mandateOp(ctx, "mandates.sign", "owner", { terms: wide, proposal: created.id }))).toMatchObject({ code: "forbidden", message: "This needs a passkey confirmation of the exact action." })
+      const signed = (await signMandate(ctx, "owner", wide, created.id)).mandate
+      expect(signed).toMatchObject({ items: "all", classes: ["change", "delete", "read", "send"], caps: { ...MANDATE_CAP_DEFAULTS }, proposal: created.id })
+      expect(Date.parse(signed.expiresAt) - Date.parse(signed.createdAt)).toBe(90 * DAY)
     })
   })
 })

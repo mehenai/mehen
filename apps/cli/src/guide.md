@@ -58,7 +58,7 @@ Some requests need a human's approval first (sending email, deleting things). Th
 
 ## Mandates
 
-`mehen mandate propose --note "<why>" --json` asks a person to let this machine's held requests through without asking. By default it names the credentials and kinds this machine asked for in the last 30 days, with read, for 30 days at low caps. The vault refuses a proposal that names every credential, or a credential or kind besides read this machine has not asked for in that time (`forbidden`, `mandateRefused`): drop what the message names, never try wider. Only the person signing may widen the terms. Write the block and keep asking for each request as usual.
+`mehen mandate propose --note "<why>" --json` asks a person to let this machine's held requests through without asking. By default it names the credentials and kinds this machine asked for in the last 30 days, with read, for 30 days at low caps. The vault refuses every credential, a credential or kind besides read not asked for in that time, more days or higher caps (`forbidden`, `mandateRefused`): drop what the message names. Only the person signing may widen the terms. Write the block and keep asking for each request as usual.
 
 ## What `next` means
 

@@ -34,13 +34,15 @@ export const MANDATE_RECEIPT_KEEP_MS = 30 * 86_400_000
 // mandate in this window; read is always allowed. A person widens terms on
 // the sign page.
 export const MANDATE_ASKED_WINDOW_MS = 30 * 86_400_000
-// What mehen mandate propose and vault_mandate propose by default: the
-// protocol's low end, which the person signing may raise.
+// What mehen mandate propose and vault_mandate propose by default, and the
+// most a machine may propose: the person signing may raise them.
 export const MANDATE_PROPOSAL_DEFAULT_TTL_DAYS: MandateTtlDays = 30
 export const MANDATE_PROPOSAL_CAP_DEFAULTS: Readonly<MandateCaps> = { read: 500, change: 100, send: 10, delete: 5 }
 // Why the vault refused a machine's proposal (forbidden, mandateRefused):
-// it named every credential, a credential or a class it did not ask for.
-export const MANDATE_PROPOSAL_REFUSALS = ["items_all", "item_unasked", "class_unasked"] as const
+// it named every credential, a credential or a class it did not ask for,
+// more days than MANDATE_PROPOSAL_DEFAULT_TTL_DAYS or a cap above
+// MANDATE_PROPOSAL_CAP_DEFAULTS.
+export const MANDATE_PROPOSAL_REFUSALS = ["items_all", "item_unasked", "class_unasked", "term_too_long", "caps_too_high"] as const
 export type MandateProposalRefusal = (typeof MANDATE_PROPOSAL_REFUSALS)[number]
 export const MANDATE_MAX_ITEMS = 200
 export const MANDATE_NOTE_MAX = 200

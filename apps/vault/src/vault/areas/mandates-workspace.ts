@@ -7,7 +7,7 @@
 // the terms cover it. Behind MANDATES (mandatesOn); a managed workspace has
 // none.
 
-import { MANDATE_CLASSES, MANDATE_ENDING_NOTICE_MS, MANDATE_LIST_MAX, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_TTL_MS, MANDATE_PROPOSALS_DAY_MAX, MANDATE_PROPOSALS_OPEN_MAX, MANDATE_RATE_LIMIT, MANDATE_RATE_WINDOW_MS, MANDATE_RECEIPT_KEEP_MS, MANDATE_USES_PAGE, MANDATE_ASKED_WINDOW_MS, MandateActionRequestSchema, MandateIdSchema, MandateProposalIdSchema, MandateProposeSchema, MandateRevSchema, MandateSignSchema, mandateReceiptsCursor, parseMandateReceiptsCursor, type MandateChanged, type MandateClass, type MandateCounts, type MandateList, type MandateOpenProposal, type MandateProposalCreated, type MandateProposalView, type MandateProposedTerms, type MandateReceiptsPage, type MandateReceiptView, type MandateState, type MandateTerms, type MandateView, type MandateActionAnswer, type MandateAsked, type MandateProposalRefusal, type MandateCandidates, type MandateCappedAsk, type MandateCoverAsk, type MandateCoverHint, type MandateCoverState, type SessionIdentityCheck, type WorkspaceRole, type WorkspaceStepUpAction } from "@mehen/protocol"
+import { MANDATE_CLASSES, MANDATE_ENDING_NOTICE_MS, MANDATE_LIST_MAX, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_TTL_MS, MANDATE_PROPOSALS_DAY_MAX, MANDATE_PROPOSALS_OPEN_MAX, MANDATE_RATE_LIMIT, MANDATE_RATE_WINDOW_MS, MANDATE_RECEIPT_KEEP_MS, MANDATE_USES_PAGE, MANDATE_ASKED_WINDOW_MS, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MandateActionRequestSchema, MandateIdSchema, MandateProposalIdSchema, MandateProposeSchema, MandateRevSchema, MandateSignSchema, mandateReceiptsCursor, parseMandateReceiptsCursor, type MandateChanged, type MandateClass, type MandateCounts, type MandateList, type MandateOpenProposal, type MandateProposalCreated, type MandateProposalView, type MandateProposedTerms, type MandateReceiptsPage, type MandateReceiptView, type MandateState, type MandateTerms, type MandateView, type MandateActionAnswer, type MandateAsked, type MandateProposalRefusal, type MandateCandidates, type MandateCappedAsk, type MandateCoverAsk, type MandateCoverHint, type MandateCoverState, type SessionIdentityCheck, type WorkspaceRole, type WorkspaceStepUpAction } from "@mehen/protocol"
 import { canonicalJson } from "@mehen/protocol/canonical-json"
 import { mandateClassesOf, mandateCovers, mandateDigest, mandateHostNamed, mandateRequestFacts, mandateScheduleOpen } from "@mehen/protocol/mandates"
 import { policyCatalogueVerdict } from "@mehen/protocol/policy-safety"
@@ -61,7 +61,11 @@ export const MANDATE_PROPOSALS_MANDATE_MIGRATION = "CREATE INDEX mandate_proposa
 // The last time each machine asked for a credential in a class a mandate
 // could cover (a held request with a mandateCover hint), so a proposal of
 // its own names only what it asked for. Pruned after MANDATE_ASKED_WINDOW_MS.
-export const MANDATE_ASKED_MIGRATION = "CREATE TABLE mandate_asked (device TEXT NOT NULL, item_id TEXT NOT NULL, cls TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (device, item_id, cls));"
+// It starts from the held asks with a hint the vault still keeps
+// (mandate_cover_asks, CAPPED_ASK_KEEP_MS); a machine's own mandate uses
+// are read from mandate_uses directly, so they need no copy.
+export const MANDATE_ASKED_MIGRATION = `CREATE TABLE mandate_asked (device TEXT NOT NULL, item_id TEXT NOT NULL, cls TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (device, item_id, cls));
+INSERT INTO mandate_asked(device,item_id,cls,at) SELECT c.device, COALESCE(json_extract(a.ask,'$.credential'), (SELECT i.id FROM items i WHERE i.slug=a.item)) AS item_id, j.value, MAX(c.at) FROM mandate_cover_asks c JOIN approvals a ON a.id=c.approval, json_each(c.classes) j WHERE item_id IS NOT NULL GROUP BY c.device, item_id, j.value;`
 
 // Whether mandates are on in this workspace (its tn_ id), read as
 // workspaceSwitchOn reads every switch.
@@ -266,21 +270,30 @@ function askedView(ctx: VaultContext, p: AccessPrincipal): MandateAsked {
   const principal = machineOnly(p), asked = askedBy(ctx, principal.deviceId, ctx.now())
   return { items: sortedSlugs(accessState(ctx), asked.items), classes: MANDATE_CLASSES.filter((c) => asked.classes.has(c)) }
 }
-// A machine proposes only what it asked for: never every credential, and no
-// credential or class besides read it did not ask for or use lately. The
-// person who signs may still widen the terms on the sign page.
-function refuseUnasked(ctx: VaultContext, state: AccessState, device: string, terms: MandateProposedTerms, now: number): void {
+// A machine proposes only what it asked for: never every credential, no
+// credential or class besides read it did not ask for or use lately, no
+// longer than 30 days and no cap above the proposal defaults. The person who
+// signs may still widen any of them on the sign page.
+function refuseBroad(ctx: VaultContext, state: AccessState, device: string, terms: MandateProposedTerms, now: number): void {
   const asked = askedBy(ctx, device, now)
-  const askedSlugs = sortedSlugs(state, asked.items), askedClasses = MANDATE_CLASSES.filter((c) => asked.classes.has(c))
-  const retry = askedSlugs.length > 0 ? `mehen mandate propose --items ${askedSlugs.join(",")}${askedClasses.length ? ` --classes ${askedClasses.join(",")}` : ""} --note <why>` : null
-  const next = (say: string) => ({ next: { ...(retry ? { command: retry } : {}), say } })
+  const askedSlugs = sortedSlugs(state, asked.items)
+  // The same proposal cut to what a machine may propose, for next.command.
+  const named = terms.items === "all" ? [] : terms.items.filter((slug) => askedSlugs.includes(slug))
+  const items = named.length ? named : askedSlugs
+  const classes = MANDATE_CLASSES.filter((c) => terms.classes.includes(c) && (c === "read" || asked.classes.has(c)))
+  const days = Math.min(terms.ttlDays, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS)
+  const caps = classes.map((c) => `${c}=${Math.min(terms.caps[c], MANDATE_PROPOSAL_CAP_DEFAULTS[c])}`).join(",")
+  const retry = items.length > 0 ? `mehen mandate propose --items ${items.join(",")} --classes ${classes.join(",")} --days ${days} --caps ${caps} --note <why>` : null
   const askedWords = askedSlugs.length ? `It asked for ${askedSlugs.join(", ")} in the last 30 days` : "It asked for nothing a mandate could cover in the last 30 days"
-  const refuse = (refusal: MandateProposalRefusal, message: string, say: string): never => { throw new VaultError("forbidden", `${message} ${askedWords}. A person can choose wider terms on the sign page.`, { ...next(say), mandateRefused: refusal }) }
-  if (terms.items === "all") refuse("items_all", "A machine cannot propose a mandate for every credential: drop items all and name the credentials it asked for.", askedSlugs.length ? "Propose again naming only the credentials this machine asked for; the person signing can add others." : "Ask for each request as usual; propose a mandate once more asks like them will follow.")
+  const refuse = (refusal: MandateProposalRefusal, message: string, say: string): never => { throw new VaultError("forbidden", `${message} ${askedWords}. A person can choose wider terms on the sign page.`, { next: { ...(retry ? { command: retry } : {}), say: retry ? say : "Ask for each request as usual; propose a mandate once more asks like them will follow." }, mandateRefused: refusal }) }
+  if (terms.items === "all") refuse("items_all", "A machine cannot propose a mandate for every credential: drop items all and name the credentials it asked for.", "Propose again naming only the credentials this machine asked for; the person signing can add others.")
   const unasked = (terms.items as string[]).filter((slug) => !askedSlugs.includes(slug))
   if (unasked.length) refuse("item_unasked", `This machine has not asked for ${unasked.join(", ")}: drop ${unasked.length === 1 ? "it" : "them"} from the proposal.`, "Propose again without the credentials this machine did not ask for; the person signing can add them.")
-  const classes = terms.classes.filter((c) => c !== "read" && !asked.classes.has(c))
-  if (classes.length) refuse("class_unasked", `This machine has not asked to ${classes.join(" or ")}: drop ${classes.join(" and ")} from the proposal.`, "Propose again without the kinds this machine did not ask for; the person signing can add them.")
+  const extra = terms.classes.filter((c) => c !== "read" && !asked.classes.has(c))
+  if (extra.length) refuse("class_unasked", `This machine has not asked to ${extra.join(" or ")}: drop ${extra.join(" and ")} from the proposal.`, "Propose again without the kinds this machine did not ask for; the person signing can add them.")
+  if (terms.ttlDays > MANDATE_PROPOSAL_DEFAULT_TTL_DAYS) refuse("term_too_long", `A machine can propose a mandate for at most ${MANDATE_PROPOSAL_DEFAULT_TTL_DAYS} days: lower ${terms.ttlDays} days to ${MANDATE_PROPOSAL_DEFAULT_TTL_DAYS}.`, `Propose again for ${MANDATE_PROPOSAL_DEFAULT_TTL_DAYS} days or fewer; the person signing can make it longer.`)
+  const high = terms.classes.filter((c) => terms.caps[c] > MANDATE_PROPOSAL_CAP_DEFAULTS[c])
+  if (high.length) refuse("caps_too_high", `A machine can propose at most ${MANDATE_PROPOSAL_CAP_DEFAULTS.read} reads, ${MANDATE_PROPOSAL_CAP_DEFAULTS.change} changes, ${MANDATE_PROPOSAL_CAP_DEFAULTS.send} sends and ${MANDATE_PROPOSAL_CAP_DEFAULTS.delete} deletes a day: lower ${high.map((c) => `${c} from ${terms.caps[c]} to ${MANDATE_PROPOSAL_CAP_DEFAULTS[c]}`).join(", ")}.`, "Propose again with caps at or under those; the person signing can raise them.")
 }
 function propose(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation: WorkspaceInvocationContext): MandateProposalCreated {
   mandatesAvailable(ctx)
@@ -292,7 +305,7 @@ function propose(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation
   const device = state.devices.find((d) => d.id === principal.deviceId && d.status === "active")
   if (!device) throw new VaultError("not_found", "No such machine.")
   if (device.owner.kind !== "member") throw new VaultError("forbidden", "A team's machine cannot have a mandate yet: team machines get mandates signed by two people in a later version. For routine work now, propose a task grant with `mehen policy propose`.", { next: { command: "mehen policy propose --from <apr_id> --reason <why>", say: "A team's machine cannot carry on without asking yet; ask for a task grant for routine work instead." } })
-  refuseUnasked(ctx, state, device.id, input.terms, now)
+  refuseBroad(ctx, state, device.id, input.terms, now)
   return ctx.storage.transactionSync(() => {
     const open = openProposalRows(ctx, device.id, now)
     // The same terms and reason as one still open: that one, nothing new.

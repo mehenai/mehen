@@ -102,7 +102,7 @@ type MandatePropose = {
     items: "all" | string[]     // credential slugs, sorted and each once, 1 to 200
     classes: MandateClass[]     // sorted and each once, always with "read"
     caps: MandateCaps           // 1 to the most for each ticked class: 50000, 10000, 500, 200
-    ttlDays: 1 | 7 | 30 | 90
+    ttlDays: 1 | 7 | 30 | 90     // a machine's proposal: at most 30
     schedule: MandateSchedule | null
     note: string                // 1 to 200
   }
@@ -150,7 +150,7 @@ type MandateReceiptsPage = {
 type MandatePause = { rev: number }
 ```
 
-A proposal that names `"all"`, a credential not in `GET /v1/mandates/asked` or a class besides `read` not in it is refused with `forbidden` and `mandateRefused` (`items_all`, `item_unasked` or `class_unasked`), whose message says what to drop and whose `next.command` proposes only what was asked for. A proposal with the same terms and reason as an open one of this machine answers that one with `existing: true`. A fourth open proposal is refused with `conflict`, carrying the newest one's link in `next.url`, and an eleventh in a UTC day with `rate_limited`. A workload may pause its machine's mandate but not propose or read one, and a team's machine may not propose one; both are refused with `forbidden`, with `next.command` naming `mehen policy propose --from`. Pausing a paused or tripped mandate changes nothing and succeeds; pausing an active one at an old `rev`, or one that has ended, is `conflict`. A receipt's `entry` is the reviewed route, or `unreviewed`; its `credential` is null for a credential this machine cannot use now. The machine never sees whether its signer still stands behind a mandate.
+A proposal that names `"all"`, a credential not in `GET /v1/mandates/asked`, a class besides `read` not in it, a `ttlDays` above 30 or a cap above 500 reads, 100 changes, 10 sends or 5 deletes is refused with `forbidden` and `mandateRefused` (`items_all`, `item_unasked`, `class_unasked`, `term_too_long` or `caps_too_high`), whose message says what to drop or lower and whose `next.command` proposes the same terms cut to what is allowed. A proposal with the same terms and reason as an open one of this machine answers that one with `existing: true`. A fourth open proposal is refused with `conflict`, carrying the newest one's link in `next.url`, and an eleventh in a UTC day with `rate_limited`. A workload may pause its machine's mandate but not propose or read one, and a team's machine may not propose one; both are refused with `forbidden`, with `next.command` naming `mehen policy propose --from`. Pausing a paused or tripped mandate changes nothing and succeeds; pausing an active one at an old `rev`, or one that has ended, is `conflict`. A receipt's `entry` is the reviewed route, or `unreviewed`; its `credential` is null for a credential this machine cannot use now. The machine never sees whether its signer still stands behind a mandate.
 
 ## Scoped enrolment
 

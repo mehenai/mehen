@@ -1,7 +1,7 @@
 // Mandates in direct-area tests (areas/mandates-workspace.ts): terms for a
 // machine, a mandate signed as the page signs it (the action planned, then
 // signed), and the rows a test reads back.
-import { MANDATE_CAP_DEFAULTS, type MandateActionAnswer, type MandateChanged, type MandateTerms, type WorkspaceStepUpAction } from "@mehen/protocol"
+import { MANDATE_CAP_DEFAULTS, MANDATE_PROPOSAL_CAP_DEFAULTS, type MandateActionAnswer, type MandateChanged, type MandateTerms, type WorkspaceStepUpAction } from "@mehen/protocol"
 import type { VaultContext } from "../src/vault/core.ts"
 import { workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
 import { memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
@@ -13,7 +13,7 @@ export const terms = (overrides: Partial<MandateTerms> = {}): MandateTerms => ({
 // askedFor seeds.
 export const ASKED_KEY = "asked-key"
 export function proposedTerms(overrides: Partial<Omit<MandateTerms, "items">> & { items?: "all" | string[] } = {}): Omit<MandateTerms, "device" | "items"> & { items: "all" | string[] } {
-  const { device: _device, ...rest } = terms()
+  const { device: _device, ...rest } = terms({ caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS } })
   return { ...rest, items: [ASKED_KEY], ...overrides }
 }
 // As if the machine's held requests on the credential, in these classes,

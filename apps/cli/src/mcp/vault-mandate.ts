@@ -31,10 +31,10 @@ const actionInput = z.union([
 
 const input = z.strictObject({
   action: z.enum(ACTIONS).describe("propose needs note; list takes nothing; show needs id; pause takes id, or none for this machine's live mandate; uses needs id and takes since and before. Supply only those fields."),
-  items: proposeFields.items.describe("propose: credential slugs; by default the ones this machine asked for in 30 days. The vault refuses all and any other."),
-  classes: proposeFields.classes.describe("propose: read, change, send, delete; by default read and the ones asked for. The vault refuses others."),
-  days: proposeFields.days.describe("propose: 1, 7, 30 (the default) or 90 days."),
-  caps: caps.optional().describe("propose: requests a day per class, such as { send: 5 }; a low default for any left out."),
+  items: proposeFields.items.describe("propose: credential slugs; by default those this machine asked for in 30 days. The vault refuses all and any other."),
+  classes: proposeFields.classes.describe("propose: read, change, send, delete; by default read and those asked for. The vault refuses others."),
+  days: proposeFields.days.describe("propose: 1, 7 or 30 days (the default and the most)."),
+  caps: caps.optional().describe("propose: requests a day per class, such as { send: 5 }, at most the default, which fills any left out."),
   schedule: proposeFields.schedule.describe(`propose: only in these hours, a time zone then windows separated by ";": "${SCHEDULE_EXAMPLE}". At any time when absent.`),
   note: z.string().optional().describe("Required for propose: what the mandate is for. The person signing reads it."),
   reason: proposeFields.reason.describe("propose: why this machine asks now; the note when absent."),
@@ -52,7 +52,7 @@ const ACTION_FIELDS: Record<(typeof ACTIONS)[number], string> = {
 export const vaultMandate = tool({
   name: "vault_mandate",
   title: "Mandates",
-  description: `Mandates: ask a person to let this machine's held requests through without asking, with the credentials and kinds of request named, within daily caps, until a date and optionally only in certain hours. propose returns the ask to show, or the same open proposal again with existing true for the same terms; the person signs it with their passkey and may change any term. list, show and uses read its proposals, mandates, today's use (UTC) and what went through on trust, ${USES_LIMIT} at a time; pause stops this machine's mandate covering anything now, without id its live one here. A paused, tripped or ended mandate comes with next.url, its page, to pass to the person who signed it. Agents cannot sign, resume or stop a mandate. A mandate never covers credential, access or money changes, nor anything an ask's mandateCover says it cannot. Never returns a secret.`,
+  description: `Mandates: ask a person to let this machine's held requests through without asking, with the credentials and kinds named, within daily caps, until a date and optionally only in certain hours. propose returns the ask to show, or the same open proposal (existing true) for the same terms; the person signs it with their passkey and may change any term. list, show and uses read its proposals, mandates, today's use (UTC) and what went through on trust, ${USES_LIMIT} at a time; pause stops this machine's mandate covering anything now, without id its live one here. A paused, tripped or ended mandate comes with next.url, its page, to pass to the person who signed it. Agents cannot sign, resume or stop a mandate. A mandate never covers credential, access or money changes, nor anything an ask's mandateCover says it cannot. Never returns a secret.`,
   input,
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   async call(value, deps) {
