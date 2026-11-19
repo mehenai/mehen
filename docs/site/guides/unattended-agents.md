@@ -42,7 +42,7 @@ Say you work alongside an agent on your laptop all day and approve most of what 
 - **Keep it short.** 1 or 7 days, and renew it when it ends. Three days before the end, you are told, and the mandate's page offers **Renew**.
 - **Limit the hours.** A schedule such as `Europe/London mon-fri 09:00-18:00` means nothing goes through on trust in the evening or at the weekend, when you are not watching. Outside those hours, its requests ask as usual.
 - **Pause when you step away.** **Pause** on the mandate's page or the machine's page stops it at once, with no passkey, and so does `mehen mandate pause` on the machine. You resume it from the same page; when you or the machine paused it and nothing about your access has changed, resuming needs no passkey.
-- **Several machines:** on the mandate's page, **Sign the same for** opens the sign page for another of your machines on the same terms. Each machine gets its own signature. **Pause all** on the mandates page pauses every active mandate you may pause at once.
+- **Several machines:** on the mandate's page, **Sign the same for** opens the sign page for another of your machines on the narrowest terms, with this mandate's terms behind **Use these terms** (only the credentials that machine reaches and whose homes you manage carry over). Each machine gets its own signature. **Pause all** on the mandates page pauses every active mandate you may pause at once.
 
 ## What it still asks for
 
