@@ -185,7 +185,9 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
   // Units first, each followed by its EnvironmentFiles, so a file a unit
   // names keeps its unit even when a walk found it too.
   const isUnit = (c: Candidate) => c.type === "plist" || c.type === "systemd"
-  queue.sort((a, b) => Number(isUnit(b)) - Number(isUnit(a)))
+  // Units in path order among themselves: an env file two units name is
+  // the first unit's, and readdir's order differs between filesystems.
+  queue.sort((a, b) => Number(isUnit(b)) - Number(isUnit(a)) || (isUnit(a) && isUnit(b) ? (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) : 0))
   const key = await hmacKey()
   const seen = new Set<string>()
   const repos = new Map<string, RepoInfo | null>()
