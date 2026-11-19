@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest"
 import type { InboxItem, InboxResponse, InboxWorkspace } from "@mehen/protocol/inbox"
 import type { WorkspaceRef } from "@mehen/protocol/workspace"
-import { BADGE_POLL_MS, HOME_NEEDS_ROWS, InboxPoll, NOTHING_NEEDS_YOU, countWords, homeNeedsRedraw, homeNeedsShown, homeNeedsStep, type HomeNeedsTurn, inboxItemKey, inboxItemSign, rowFate, elsewhere, elsewhereWords, emptyWords, inboxGroups, isInboxResponse, joinNames, needsYouTitle, nextPollIn, reviewGroupWords, updatedWords } from "./needs-you-logic.ts"
+import { BADGE_POLL_MS, HOME_NEEDS_ROWS, NEEDS_YOU_POLL_MS, badgePollMs, InboxPoll, NOTHING_NEEDS_YOU, countWords, homeNeedsRedraw, homeNeedsShown, homeNeedsStep, type HomeNeedsTurn, inboxItemKey, inboxItemSign, rowFate, elsewhere, elsewhereWords, emptyWords, inboxGroups, isInboxResponse, joinNames, needsYouTitle, nextPollIn, reviewGroupWords, updatedWords } from "./needs-you-logic.ts"
 
 const A: WorkspaceRef = { id: "tn_A", slug: "a", name: "Alpha" }
 const B: WorkspaceRef = { id: "tn_B", slug: "b", name: "Beta" }
@@ -286,6 +286,14 @@ describe("the workspace home's Needs you card", () => {
     expect(homeNeedsStep(gone, A.id, drawn, at({ spent: true }))).toEqual({ prune: false, reread: false, once: false, commit: true })
     expect(homeNeedsRedraw(gone, A.id, drawn, false)).toEqual({ swap: true, keepRows: false, commit: true })
     expect(homeNeedsRedraw(gone, A.id, unread, false)).toEqual({ swap: true, keepRows: true, commit: true })
+  })
+
+  it("a workspace's home asks as often as /needs-you, and may re-read its card that often", () => {
+    expect(badgePollMs(true)).toBe(NEEDS_YOU_POLL_MS)
+    expect(badgePollMs(false)).toBe(BADGE_POLL_MS)
+    const answered = inbox([ws(A, "ok", 1)], [one])
+    expect(homeNeedsStep(answered, A.id, unread, at({ rereadAt: NOW - NEEDS_YOU_POLL_MS, gapMs: NEEDS_YOU_POLL_MS }))).toMatchObject({ reread: true, commit: false })
+    expect(homeNeedsStep(answered, A.id, unread, at({ rereadAt: NOW - NEEDS_YOU_POLL_MS + 1, gapMs: NEEDS_YOU_POLL_MS }))).toMatchObject({ reread: false, commit: false })
   })
 
   it("re-reads at most once per badge interval, whatever asked, and commits nothing it skipped", () => {

@@ -30,7 +30,7 @@ You need the workspace slug before you enrol. If the human's prompt does not nam
 
 ## Install
 
-setup.md says when to install and how to check for an existing `mehen` first. The installer verifies the binary's SHA-256 and prints a JSON receipt with its absolute path:
+setup.md says when to install and how to check for an existing `mehen` first. The installer checks the release manifest's signature against Mehen's release keys, then the binary's SHA-256 against that manifest, and prints a JSON receipt with its absolute path:
 
 ```sh
 curl -fsSL https://mehen.dev/install | sh
