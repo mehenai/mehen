@@ -12,13 +12,13 @@ export const vaultConnect = tool({
     "Ask a human to connect an OAuth account (for example Gmail). Returns `ask`: a link the human opens to sign in at the provider; the tokens go into the vault, never to you. Hand the link over, then call vault_wait with the connection id. " +
     "Needs the provider's oauth-client item (`client`, or the one that exists). With none it fails `client_missing`, whose `request` holds the vault_request arguments for the client; " +
     "or set `requestClient` to ask for the client first (an `ask` with `step: \"client\"`): vault_wait for it, then call vault_connect again with the same arguments. " +
-    "Naming an existing connection reconnects it: same account, scopes kept.",
+    "Naming an existing connection reconnects it: same account, its scopes kept, `scopes` added.",
   input: z.object({
     provider: z.string().describe("OAuth provider, e.g. google-gmail (vault_templates lists them)"),
     client: z.string().optional().describe("the oauth-client item to use; when absent, the one client made from the provider's client template"),
     name: z.string().describe("slug for the connection item"),
     reason: z.string().describe("why you need it; the human sees this"),
-    scopes: z.array(z.string()).optional().describe("the provider's scopes (default: its defaults); a reconnect adds them to those held"),
+    scopes: z.array(z.string()).optional(),
     expect: z.string().optional().describe("the account the human should sign in as"),
     requestClient: z.boolean().optional().describe("when no client exists, ask the human for one first (an intake chained to this connection)"),
     clientTags: z.array(z.string()).optional().describe("with requestClient: the tags the new client gets, so a tag-scoped machine may use it"),
