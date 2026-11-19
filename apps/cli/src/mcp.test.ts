@@ -1116,6 +1116,19 @@ describe("mehen mcp tools", () => {
     expect(resourceLinks(rebuilt)).toEqual([expect.objectContaining({ uri: `${vault.url}/w/mock-space/a/apr_9` })])
   })
 
+  test("a refusal's project page or workspace home link from the vault is kept in the result and the text, with no warning", async () => {
+    await vault.enrolSoftware(dir.path)
+    for (const [code, url] of [["project_unshared", `${vault.url}/w/mock-space/projects/prj_b`], ["rate_limited", `${vault.url}/w/mock-space/`]] as const) {
+      vault.overrides.set("POST /v1/relay", () => vaultError(code, "Refused.", { next: { url, say: "Ask the person." } }))
+      const result = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x" })
+      expect(result.isError).toBe(true)
+      expect((result.structuredContent as { next: unknown }).next).toEqual({ url, say: "Ask the person." })
+      expect(text(result)).toContain(`open: ${url}`)
+      expect(text(result)).not.toContain("warning:")
+    }
+    vault.overrides.clear()
+  })
+
   test("a foreign link in the vault's pending list never becomes a resource_link either", async () => {
     await vault.enrolSoftware(dir.path)
     vault.pending = [

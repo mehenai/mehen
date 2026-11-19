@@ -60,6 +60,16 @@ const FACTOR_NOT_PENDING_REMOVAL = "NOT EXISTS (SELECT 1 FROM account_security_t
 // transition and no cooling-off. The passkey paths that may narrow during
 // either are unchanged; a window is neither opened nor used then.
 const GRACE_ELIGIBLE = "a.status='active' AND a.suspended_at IS NULL AND a.security_transition IS NULL AND (a.restricted_until IS NULL OR a.restricted_until<=?)"
+// Opens or renews a browser session's window in a passkey ceremony's own
+// success batch: a step-up's, or a sign-in's for the session it creates. A
+// ceremony while restricted or pending opens none. Without securityEpoch (a
+// new sign-in) the window takes the account's current epoch.
+export async function openStepUpGrace(env: Env, { session, account, factor, provenAt, securityEpoch = null }: { session: string; account: string; factor: string; provenAt: number; securityEpoch?: number | null }): Promise<D1PreparedStatement> {
+  return env.DB.prepare(`INSERT INTO challenges(id,kind,challenge,account,workspace,security_epoch,factor,context,expires_at)
+    SELECT ?,'stepup-grace',?,a.id,'*',a.security_epoch,?,?,? FROM accounts a WHERE a.id=? AND a.security_epoch=COALESCE(?,a.security_epoch) AND ${GRACE_ELIGIBLE}
+    ON CONFLICT(id) DO UPDATE SET challenge=excluded.challenge,account=excluded.account,security_epoch=excluded.security_epoch,factor=excluded.factor,context=excluded.context,expires_at=excluded.expires_at WHERE challenges.kind='stepup-grace'`)
+    .bind(await stepUpGraceId(session),String(provenAt),factor,session,provenAt+STEP_UP_GRACE_MS,account,securityEpoch,provenAt)
+}
 export async function liveStepUpGrace(env: Env, account: AccountWebSession, now = Date.now()): Promise<{ factor: string; until: number; provenAt: number } | null> {
   if (!stepUpGraceOn(env)) return null
   const row = await env.DB.prepare(`SELECT c.factor,c.challenge,c.expires_at FROM challenges c JOIN passkeys p ON p.account=c.account AND p.handle=c.factor JOIN accounts a ON a.id=c.account AND a.security_epoch=c.security_epoch
@@ -148,10 +158,7 @@ async function verifyScopedAccountStepUp(rc: RequestContext, account: AccountWeb
       rc.env.DB.prepare("UPDATE passkeys SET counter=MAX(counter,?),backed_up=?,last_used_at=? WHERE handle=? AND account=?").bind(verified.counter,Number(verified.backedUp),provenAt,factor,current.account),
       refreshAccountRecoverySetup(rc.env,current.account,Date.now()),
       // A ceremony while restricted or pending opens no window.
-      ...(stepUpGraceOn(rc.env) && kind === "web" ? [rc.env.DB.prepare(`INSERT INTO challenges(id,kind,challenge,account,workspace,security_epoch,factor,context,expires_at)
-        SELECT ?,'stepup-grace',?,a.id,'*',a.security_epoch,?,?,? FROM accounts a WHERE a.id=? AND a.security_epoch=? AND ${GRACE_ELIGIBLE}
-        ON CONFLICT(id) DO UPDATE SET challenge=excluded.challenge,account=excluded.account,security_epoch=excluded.security_epoch,factor=excluded.factor,context=excluded.context,expires_at=excluded.expires_at WHERE challenges.kind='stepup-grace'`)
-        .bind(await stepUpGraceId(current.session),String(provenAt),factor,current.session,provenAt+STEP_UP_GRACE_MS,current.account,current.securityEpoch,provenAt)] : []),
+      ...(stepUpGraceOn(rc.env) && kind === "web" ? [await openStepUpGrace(rc.env,{ session: current.session,account: current.account,factor,provenAt,securityEpoch: current.securityEpoch })] : []),
     ]),
   ])
   const confirmation: StepUpConfirmation = window ? { kind: "grace",provenAt: window.provenAt } : { kind: "passkey",provenAt }

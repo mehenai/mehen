@@ -11,6 +11,7 @@ import { assertInviteResultCurrent, consumeOidcResult, identityForResult, oidcRe
 import { oidcRefusal } from "./oidc.ts"
 import { emailIdentityRuleRefusal, emailProofGuard, emailProofRefusal, holdEmailProof, inviteNeedsGoogle, readEmailProof, type EmailProof } from "./email-proof.ts"
 import { credentialId, passkeyCeremonies } from "./webauthn.ts"
+import { openStepUpGrace, stepUpGraceOn } from "./workspace-stepup.ts"
 import { inviteProofRequired } from "./workspace-invites.ts"
 import { directoryWorkspaceClient } from "./workspace-client.ts"
 
@@ -150,6 +151,7 @@ export async function accountSigninVerify(env: Env,input: z.infer<typeof Account
       refreshAccountRecoverySetup(env,key.account,finalNow),
       ...accountSessionStatements(env,session,key.account,finalNow,{ kind,method: "passkey",passkey: key.record.credentialId,...from }),
       accountEvent(env,key.account,"account.signin",{ passkey: key.handle,...from },finalNow),
+      ...(kind === "web" && stepUpGraceOn(env) ? [await openStepUpGrace(env,{ session: session.id,account: key.account,factor: key.handle,provenAt: finalNow })] : []),
       ...(identification ? [oidcResultGuard(env,identification,finalNow),consumeOidcResult(env,identification,finalNow)] : []),
     ])
   } catch (error) { if (error instanceof VaultError && error.code === "conflict") throw refusal(); throw error }

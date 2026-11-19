@@ -55,8 +55,9 @@ export type Ask = {
   // account that issued it). Never the code itself.
   claimed?: boolean
   // An approval in a review group or bundle with other open asks: the
-  // Review together page (/g/) and how many of its asks are open.
-  group?: { id: string; url: string; open: number }
+  // Review together page (/g/), how many of its asks are open and, from a
+  // vault that sends one, the group code that page shows.
+  group?: { id: string; url: string; open: number; code?: string }
 }
 
 export function withContext<A extends Ask | null>(ask: A, context: AskContext | null | undefined): A {
@@ -133,6 +134,8 @@ export function askedBy(by: RequestedBy): string {
 const BUNDLE_ID = /^bnd_[A-Za-z0-9_-]{1,60}$/
 // A Review together page: a bundle, or a machine's review group.
 const REVIEW_ID = /^(?:bnd|grp)_[A-Za-z0-9_-]{1,60}$/
+// A Review together page's group code, in the binding codes' alphabet.
+export const GROUP_CODE = /^[ABCDEFGHJKMNPQRSTVWXYZ2-9]{6}$/
 
 // The ids an Ask may carry, by kind: the vault's prefix and alphabet, and
 // nothing else, so an id can go into a wait command or a line of text. An
@@ -515,6 +518,9 @@ export type BundleAskInput = {
   // The binding codes of the bundle's asks in the plan's order; null when
   // the vault did not send one for every ask. Never made up here.
   codes: string[] | null
+  // The bundle's one group code, which its page shows; the check when the
+  // vault sent it, in place of every ask's code.
+  code?: string | null
   // How many of the plan's requests wait in the bundle.
   asks: number
   // The plan's reason, the agent's own words.
@@ -523,8 +529,9 @@ export type BundleAskInput = {
   requestedBy: RequestedBy
 }
 
-// The codes check reads "K7Q2MX, 9PZ4QA (2)": every code, in the agent's
-// order, as the page lists them, then how many.
+// The check is the bundle's group code when the vault sent one; else the
+// codes check reads "K7Q2MX, 9PZ4QA (2)": every code, in the agent's order,
+// as the page lists them, then how many.
 export function bundleAsk(input: BundleAskInput): Ask {
   const id = askId("bundle", input.id)
   const reason = input.reason ? `: ${input.reason}` : ""
@@ -534,7 +541,7 @@ export function bundleAsk(input: BundleAskInput): Ask {
     url: input.url,
     title: ASK_TITLES.bundle,
     what: `Approve ${input.asks} request${input.asks === 1 ? "" : "s"} together${reason}`,
-    check: input.codes && input.codes.length > 0 ? { label: "codes", value: `${input.codes.join(", ")} (${input.codes.length})` } : null,
+    check: input.code ? { label: "code", value: input.code } : input.codes && input.codes.length > 0 ? { label: "codes", value: `${input.codes.join(", ")} (${input.codes.length})` } : null,
     expiresAt: input.expiresAt,
     account: null,
     requestedBy: input.requestedBy,
@@ -612,11 +619,11 @@ const LINK_CODES: ReadonlySet<CliErrorCode> = new Set<CliErrorCode>(["approval_r
 // a count; `refusedLink` when it carried a link that is not.
 export function askGroup(raw: unknown, vault: AskVault | null): { group: Ask["group"] | null; refusedLink: boolean } {
   if (typeof raw !== "object" || raw === null) return { group: null, refusedLink: false }
-  const { id, url, open } = raw as Record<string, unknown>
+  const { id, url, open, code } = raw as Record<string, unknown>
   if (typeof id !== "string" || !REVIEW_ID.test(id) || typeof open !== "number" || !Number.isInteger(open) || open < 0) return { group: null, refusedLink: false }
   const link = askUrl(url, vault)
   if (!link || link.route?.prefix !== "g" || link.route.id !== id) return { group: null, refusedLink: typeof url === "string" }
-  return { group: { id, url: link.url, open }, refusedLink: false }
+  return { group: { id, url: link.url, open, ...(typeof code === "string" && GROUP_CODE.test(code) ? { code } : {}) }, refusedLink: false }
 }
 
 // An Ask for a vault refusal that hands over a link, or none when the error
@@ -816,6 +823,8 @@ export function askLines(ask: Ask, options: AskTextOptions = {}): Segment[][] {
   }
   lines.push(segments(pad, label("what"), ` ${ask.what}`))
   if (ask.check) lines.push(segments(pad, label("check"), " ", checkSentence(ask.check, s.bold)))
+  // An approval in a review group: the person may decide it there, where the page shows the group's code.
+  if (ask.group?.code) lines.push(segments(pad, label("group"), ` ${ask.group.url}; the page shows code `, s.bold(ask.group.code)))
   if (ask.kind !== "unfreeze") {
     const expiry = expiryText(ask, options)
     lines.push(segments(pad, label("expires"), " ", expiry === "expired" ? s.danger(expiry) : expiry, options.expiresNote ? `; ${options.expiresNote}` : ""))

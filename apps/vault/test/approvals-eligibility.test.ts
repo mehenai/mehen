@@ -196,6 +196,53 @@ describe("a review group's rows", () => {
       for (const sentinel of ["sentinel", hidden.id]) expect(bundled).not.toContain(sentinel)
     })
   })
+  it("gives a machine group one stored code while it has an open ask, and a new one each time it reopens", async () => {
+    const f = await projectFixture()
+    await inAccess(f.tenant, (ctx) => {
+      const start = ctx.now(), clock = vi.spyOn(ctx, "now").mockReturnValue(start)
+      const first = batchAsk(ctx, { body: "a" })
+      const code = groupView(ctx, "kim", first.review_group!).code
+      expect(code).toMatch(/^[ABCDEFGHJKMNPQRSTVWXYZ2-9]{6}$/)
+      clock.mockReturnValue(start + 1_800_000)
+      const second = batchAsk(ctx, { body: "b" })
+      expect(second.review_group).toBe(first.review_group)
+      expect(groupView(ctx, "kim", first.review_group!).code).toBe(code)
+      // Past the first ask's hour the second is still open: the code stays.
+      clock.mockReturnValue(start + 3_600_001)
+      expect(groupView(ctx, "kim", first.review_group!).code).toBe(code)
+      // Once every ask of it has run out, the group's next ask reopens it with a new code.
+      clock.mockReturnValue(start + 1_800_000 + 3_600_001)
+      const third = batchAsk(ctx, { body: "c" })
+      expect(third.review_group).toBe(first.review_group)
+      const reopened = groupView(ctx, "kim", first.review_group!).code
+      expect(reopened).not.toBe(code)
+      // Decided a minute later, the group closes: an ask in the same hour reopens it with a new code too.
+      const entries = [{ id: third.id, decision: "approve" as const }]
+      expect(outcomes(decideBatch(ctx, "kim", entries, batchActionFor(ctx, "kim", entries)))).toEqual({ [third.id]: "approved" })
+      clock.mockReturnValue(start + 1_800_000 + 3_660_001)
+      expect(batchAsk(ctx, { body: "d" }).review_group).toBe(first.review_group)
+      const fresh = groupView(ctx, "kim", first.review_group!).code
+      expect([code, reopened]).not.toContain(fresh)
+      expect(ctx.sql.exec("SELECT COUNT(*) AS n FROM approval_group_codes").one().n).toBe(1)
+      expect(ctx.sql.exec<{ code: string }>("SELECT code FROM approval_group_codes WHERE review_group=?", first.review_group).one().code).toBe(fresh)
+      clock.mockRestore()
+    })
+  })
+  it("approves only the asks the page showed: one that joined the group after stays pending, and the signed list cannot be stretched to it", async () => {
+    const f = await projectFixture()
+    await inAccess(f.tenant, (ctx) => {
+      const a = batchAsk(ctx, { body: "a" }), b = batchAsk(ctx, { body: "b" })
+      const shown = groupView(ctx, "kim", a.review_group!).rows.flatMap((r) => r.view === "detail" ? [r.approval.approval] : [])
+      const entries = shown.map((id) => ({ id, decision: "approve" as const }))
+      const action = batchActionFor(ctx, "kim", entries)
+      const late = batchAsk(ctx, { body: "late" })
+      expect(late.review_group).toBe(a.review_group)
+      expect(() => decideBatch(ctx, "kim", [...entries, { id: late.id, decision: "approve" }], action)).toThrow()
+      expect(workspaceApproval(ctx, late.id)!.status).toBe("pending")
+      expect(outcomes(decideBatch(ctx, "kim", entries, action))).toEqual({ [a.id]: "approved", [b.id]: "approved" })
+      expect(workspaceApproval(ctx, late.id)!.status).toBe("pending")
+    })
+  })
   it("lists an ask with no binding to check as own-page unbound, and refuses it in a batch", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, (ctx) => {
