@@ -4,7 +4,7 @@ import { CliError } from "../errors.ts"
 import { errorJson, errorLines } from "../output.ts"
 import { tempDir } from "../testing/run-mehen.ts"
 import { plainText, segments, styler } from "../tty.ts"
-import { isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, installService, serviceEnvironment, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
+import { isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, defaultRunner, installService, serviceEnvironment, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
 import { openerFor } from "./browser.ts"
 import { custodyLine, enrolContext, enrolLines, textLines, timedOut } from "./index.ts"
 import { keyringAdvice } from "../local-vault.ts"
@@ -172,83 +172,165 @@ describe("the keyring advice", () => {
   })
 })
 
-describe("removing and reinstalling the service waits for the job to stop", () => {
+describe("removing and reinstalling the service waits for the job to stop, and never takes an unanswered question for gone", () => {
   let home: { path: string; remove(): Promise<void> } | null = null
   afterEach(async () => {
     await home?.remove()
     home = null
   })
 
-  // launchctl or systemctl answering "still there" for the first `loaded`
-  // asks, and the commands in the order they ran.
-  function fake(loaded: number, ask: string): { runner: Runner; ran: string[] } {
-    const ran: string[] = []
-    let asked = 0
-    const runner: Runner = (cmd) => {
-      ran.push(cmd.slice(0, 3).join(" "))
-      if (cmd.includes(ask)) return { code: asked++ < loaded ? 0 : 1, out: "" }
-      return { code: 0, out: "" }
+  // A clock the fake sleep moves, and a runner that answers from a script
+  // per command and records each command with the time budget it was given.
+  type Answer = { code: number | null; out: string }
+  function machine(answers: Record<string, (call: number) => Answer>) {
+    let clock = 0
+    const ran: { cmd: string; timeoutMs: number }[] = []
+    const calls = new Map<string, number>()
+    const runner: Runner = (cmd, timeoutMs) => {
+      const key = cmd.slice(0, 3).join(" ")
+      ran.push({ cmd: key, timeoutMs })
+      const n = calls.get(key) ?? 0
+      calls.set(key, n + 1)
+      const answer = Object.entries(answers).find(([prefix]) => key.startsWith(prefix))?.[1]
+      return answer ? answer(n) : { code: 0, out: "" }
     }
-    return { runner, ran }
+    return { runner, ran, sleep: (ms: number) => void (clock += ms), now: () => clock, at: () => clock }
   }
-  const sleep = () => undefined
+  const notFound: Answer = { code: 113, out: 'Could not find service "dev.mehen.vault" in domain for port' }
+  const loaded: Answer = { code: 0, out: "dev.mehen.vault = { state = running }" }
+  const state = (load: string, active: string): Answer => ({ code: 0, out: `LoadState=${load}\nActiveState=${active}` })
 
-  test("launchd: a job still loaded for the first prints after bootout is removed, plist and all, once it goes", async () => {
+  test("launchd: still loaded for the first prints after bootout, then not found: removed, plist and all", async () => {
     home = await tempDir()
-    const { runner, ran } = fake(3, "print")
+    const m = machine({ "launchctl print": (n) => (n < 3 ? loaded : notFound) })
     await Bun.write(launchdPath(home.path), "plist")
-    expect(removeService("launchd", "/data", home.path, {}, { runner, sleep })).toEqual([])
+    expect(removeService("launchd", "/data", home.path, {}, m)).toEqual([])
     expect(existsSync(launchdPath(home.path))).toBe(false)
-    expect(ran.map((c) => c.split(" ").slice(0, 2).join(" "))).toEqual(["launchctl bootout", "launchctl print", "launchctl print", "launchctl print", "launchctl print"])
+    expect(m.ran.map((r) => r.cmd.split(" ").slice(0, 2).join(" "))).toEqual(["launchctl bootout", "launchctl print", "launchctl print", "launchctl print", "launchctl print"])
   })
 
-  test("launchd: a job that never goes is reported, and its plist kept so the record stays", async () => {
+  test("launchd: a print that fails for another reason is not taken for gone, and the plist stays", async () => {
     home = await tempDir()
-    const { runner } = fake(Number.POSITIVE_INFINITY, "print")
+    const m = machine({ "launchctl print": () => ({ code: 5, out: "Input/output error" }) })
     await Bun.write(launchdPath(home.path), "plist")
-    const problems = removeService("launchd", "/data", home.path, {}, { runner, sleep })
+    const problems = removeService("launchd", "/data", home.path, {}, m)
     expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain("could not confirm")
+    expect(problems[0]).toContain("Input/output error")
+    expect(existsSync(launchdPath(home.path))).toBe(true)
+  })
+
+  test("launchd: a job that stays loaded is reported, and the plist stays", async () => {
+    home = await tempDir()
+    const m = machine({ "launchctl print": () => loaded })
+    await Bun.write(launchdPath(home.path), "plist")
+    const problems = removeService("launchd", "/data", home.path, {}, m)
     expect(problems[0]).toContain(`launchctl still has ${LAUNCHD_LABEL} loaded`)
     expect(existsSync(launchdPath(home.path))).toBe(true)
   })
 
-  test("launchd: install waits between bootout and bootstrap, and writes the environment into the plist", async () => {
+  test("launchd: a bootout that fails, with the job still there, is reported; one whose job is confirmed gone is not", async () => {
     home = await tempDir()
-    const { runner, ran } = fake(2, "print")
-    installService({ ...plan, home: home.path, environment: { MEHEN_HOME: "/Users/a/mh", MEHEN_NO_AUTO_UPDATE: "1" } }, {}, { runner, sleep })
+    await Bun.write(launchdPath(home.path), "plist")
+    const failed = machine({ "launchctl bootout": () => ({ code: 1, out: "Boot-out failed: 1: Operation not permitted" }), "launchctl print": () => loaded })
+    const problems = removeService("launchd", "/data", home.path, {}, failed)
+    expect(problems.join(" ")).toContain("Operation not permitted")
+    expect(existsSync(launchdPath(home.path))).toBe(true)
+    // Already unloaded (a run that stopped after bootout): bootout says not found, and so does print.
+    const gone = machine({ "launchctl bootout": () => ({ code: 3, out: "Boot-out failed: 3: No such process" }), "launchctl print": () => notFound })
+    expect(removeService("launchd", "/data", home.path, {}, gone)).toEqual([])
+    expect(existsSync(launchdPath(home.path))).toBe(false)
+  })
+
+  test("launchd: install waits between bootout and bootstrap until the job is not found", async () => {
+    home = await tempDir()
+    const m = machine({ "launchctl print": (n) => (n < 2 ? loaded : notFound) })
+    installService({ ...plan, home: home.path, environment: { MEHEN_HOME: "/Users/a/mh", MEHEN_NO_AUTO_UPDATE: "1" } }, {}, m)
     expect(await Bun.file(launchdPath(home.path)).text()).toContain("<key>MEHEN_HOME</key>\n    <string>/Users/a/mh</string>")
-    expect(ran.map((c) => c.split(" ").slice(0, 2).join(" "))).toEqual(["launchctl bootout", "launchctl print", "launchctl print", "launchctl print", "launchctl bootstrap"])
+    expect(m.ran.map((r) => r.cmd.split(" ").slice(0, 2).join(" "))).toEqual(["launchctl bootout", "launchctl print", "launchctl print", "launchctl print", "launchctl bootstrap"])
   })
 
   test("systemd: install writes the environment into the unit it enables", async () => {
     home = await tempDir()
-    const { runner, ran } = fake(0, "is-active")
+    const m = machine({})
     const env = { XDG_CONFIG_HOME: home.path }
-    installService({ ...plan, kind: "systemd", home: home.path, environment: { MEHEN_NO_AUTO_UPDATE: "1" } }, env, { runner, sleep })
+    installService({ ...plan, kind: "systemd", home: home.path, environment: { MEHEN_NO_AUTO_UPDATE: "1" } }, env, m)
     const unit = await Bun.file(systemdPath(home.path, env)).text()
     expect(unit).toContain('Environment="MEHEN_NO_AUTO_UPDATE=1"')
     expect(unit).not.toContain("MEHEN_HOME")
-    expect(ran).toEqual(["systemctl --user daemon-reload", "systemctl --user enable", "systemctl --user restart"])
+    expect(m.ran.map((r) => r.cmd)).toEqual(["systemctl --user daemon-reload", "systemctl --user enable", "systemctl --user restart"])
   })
 
-  test("systemd: a unit still active for a moment after disable --now is removed once it stops", async () => {
+  test("systemd: deactivating, then inactive, is waited through and then removed", async () => {
     home = await tempDir()
-    const { runner, ran } = fake(2, "is-active")
+    const m = machine({ "systemctl --user show": (n) => (n < 2 ? state("loaded", "deactivating") : state("loaded", "inactive")) })
     const env = { XDG_CONFIG_HOME: home.path }
     await Bun.write(systemdPath(home.path, env), "unit")
-    expect(removeService("systemd", "/data", home.path, env, { runner, sleep })).toEqual([])
+    expect(removeService("systemd", "/data", home.path, env, m)).toEqual([])
     expect(existsSync(systemdPath(home.path, env))).toBe(false)
-    expect(ran.filter((c) => c === "systemctl --user is-active")).toHaveLength(3)
-    expect(ran.at(-1)).toBe("systemctl --user daemon-reload")
+    expect(m.ran.filter((r) => r.cmd === "systemctl --user show")).toHaveLength(3)
+    expect(m.ran.at(-1)?.cmd).toBe("systemctl --user daemon-reload")
   })
 
-  test("systemd: a unit that stays active is reported and its file kept", async () => {
+  test("systemd: a bus that does not answer is not taken for stopped, and the unit stays", async () => {
     home = await tempDir()
-    const { runner } = fake(Number.POSITIVE_INFINITY, "is-active")
+    const m = machine({ "systemctl --user show": () => ({ code: 1, out: "Failed to connect to bus: No medium found" }) })
     const env = { XDG_CONFIG_HOME: home.path }
     await Bun.write(systemdPath(home.path, env), "unit")
-    expect(removeService("systemd", "/data", home.path, env, { runner, sleep })).toEqual([`${SYSTEMD_UNIT} is still running; run \`systemctl --user disable --now ${SYSTEMD_UNIT}\``])
+    const problems = removeService("systemd", "/data", home.path, env, m)
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain("could not confirm")
+    expect(problems[0]).toContain("Failed to connect to bus")
     expect(existsSync(systemdPath(home.path, env))).toBe(true)
+  })
+
+  test("systemd: activating or active through the wait is still running; the unit stays", async () => {
+    home = await tempDir()
+    const env = { XDG_CONFIG_HOME: home.path }
+    await Bun.write(systemdPath(home.path, env), "unit")
+    for (const active of ["active", "activating", "reloading"]) {
+      const problems = removeService("systemd", "/data", home.path, env, machine({ "systemctl --user show": () => state("loaded", active) }))
+      expect(problems[0]).toContain(`${SYSTEMD_UNIT} is still running`)
+      expect(existsSync(systemdPath(home.path, env))).toBe(true)
+    }
+  })
+
+  test("systemd: a disable --now that fails is reported and the unit stays, unless the unit is confirmed not there at all", async () => {
+    home = await tempDir()
+    const env = { XDG_CONFIG_HOME: home.path }
+    await Bun.write(systemdPath(home.path, env), "unit")
+    const failed = machine({ "systemctl --user disable": () => ({ code: 1, out: "Failed to disable unit: Access denied" }), "systemctl --user show": () => state("loaded", "inactive") })
+    const problems = removeService("systemd", "/data", home.path, env, failed)
+    expect(problems.join(" ")).toContain("Access denied")
+    expect(existsSync(systemdPath(home.path, env))).toBe(true)
+    const absent = machine({ "systemctl --user disable": () => ({ code: 1, out: "Unit file mehen-vault.service does not exist." }), "systemctl --user show": () => state("not-found", "inactive") })
+    expect(removeService("systemd", "/data", home.path, env, absent)).toEqual([])
+  })
+
+  test("the wait is a wall-clock deadline: each command gets only what is left of it, the stop included", async () => {
+    home = await tempDir()
+    const env = { XDG_CONFIG_HOME: home.path }
+    await Bun.write(systemdPath(home.path, env), "unit")
+    const m = machine({ "systemctl --user show": () => state("loaded", "deactivating") })
+    // Every command takes 1 s of the clock.
+    const slow: Runner = (cmd, timeoutMs) => {
+      m.sleep(1000)
+      return m.runner(cmd, timeoutMs)
+    }
+    const begun = m.at()
+    const problems = removeService("systemd", "/data", home.path, env, { ...m, runner: slow, waitMs: 5000 })
+    expect(problems[0]).toContain("still running")
+    expect(m.at() - begun).toBeLessThanOrEqual(5000 + 1000)
+    expect(m.ran[0]).toEqual({ cmd: "systemctl --user disable", timeoutMs: 5000 })
+    for (let i = 1; i < m.ran.length; i++) expect(m.ran[i]!.timeoutMs).toBeLessThan(m.ran[i - 1]!.timeoutMs)
+    expect(m.ran.every((r) => r.timeoutMs > 0)).toBe(true)
+  })
+
+  test("the real runner ends a command at its budget", () => {
+    const begun = Date.now()
+    expect(defaultRunner(["sleep", "5"], 300)).toMatchObject({ code: null })
+    expect(Date.now() - begun).toBeLessThan(3000)
+    expect(defaultRunner(["sh", "-c", "echo hi; exit 3"], 5000)).toEqual({ code: 3, out: "hi" })
   })
 })
 

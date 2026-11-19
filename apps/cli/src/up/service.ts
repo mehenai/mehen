@@ -109,31 +109,75 @@ export function systemdPath(home: string, env: Record<string, string | undefined
   return join(env.XDG_CONFIG_HOME || join(home, ".config"), "systemd", "user", SYSTEMD_UNIT)
 }
 
-// Runs one command and waits for it; tests pass a fake.
-export type Runner = (cmd: string[]) => { code: number; out: string }
+// Runs one command for at most `timeoutMs` and waits for it; `code` is null
+// when it was ended at its budget or could not start. Tests pass a fake.
+export type Runner = (cmd: string[], timeoutMs: number) => { code: number | null; out: string }
 
-const defaultRun: Runner = (cmd) => {
-  const result = spawnSync(cmd[0] as string, cmd.slice(1), { encoding: "utf8" })
-  return { code: result.status ?? 1, out: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() }
+export const defaultRunner: Runner = (cmd, timeoutMs) => {
+  const result = spawnSync(cmd[0] as string, cmd.slice(1), { encoding: "utf8", timeout: Math.max(1, Math.round(timeoutMs)), killSignal: "SIGKILL" })
+  const out = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim()
+  return { code: result.error ? null : result.status, out: result.error ? `${out}${out ? " " : ""}(${result.error.message})`.trim() : out }
 }
 
-// How long a stopping job may take to go: launchctl bootout and systemctl
-// disable --now return while it is still stopping.
-export const STOP_WAIT_MS = 5000
+// How long stopping the service may take in all, the stop itself included:
+// launchctl bootout and systemctl disable --now can return while the job
+// is still stopping, so its state is asked until it settles or this ends.
+export const STOP_WAIT_MS = 10_000
 const STOP_POLL_MS = 100
+// A command started with less than this left still gets this long.
+const MIN_COMMAND_MS = 250
 
-export type Waiting = { runner?: Runner; sleep?: (ms: number) => void; waitMs?: number }
+export type Waiting = { runner?: Runner; sleep?: (ms: number) => void; now?: () => number; waitMs?: number }
 
-// Whether the job is gone within the wait: `still` answers true while it
-// is there. Asked once more at the end, so a slow last answer still counts.
-function goneWithin(still: () => boolean, options: Waiting): boolean {
+// One wall-clock budget for a stop and the questions after it: every
+// command is given what is left of it, and nothing runs once it is spent.
+function budget(options: Waiting) {
+  const now = options.now ?? Date.now
   const sleep = options.sleep ?? Bun.sleepSync
-  const tries = Math.ceil((options.waitMs ?? STOP_WAIT_MS) / STOP_POLL_MS)
-  for (let i = 0; i < tries; i++) {
-    if (!still()) return true
-    sleep(STOP_POLL_MS)
+  const runner = options.runner ?? defaultRunner
+  const deadline = now() + (options.waitMs ?? STOP_WAIT_MS)
+  const left = () => deadline - now()
+  return {
+    left,
+    run: (cmd: string[]) => runner(cmd, Math.max(MIN_COMMAND_MS, left())),
+    pause: () => sleep(Math.max(0, Math.min(STOP_POLL_MS, left()))),
   }
-  return !still()
+}
+
+// What a state question established: the job is gone (or stopped), it is
+// still there, or the question got no answer that says either.
+type JobState = { state: "gone" | "there" | "unknown"; detail: string }
+
+// launchctl print: found, or "Could not find service" (113) when it is not
+// loaded; anything else is no answer.
+function launchdState(answer: { code: number | null; out: string }): JobState {
+  if (answer.code === 0) return { state: "there", detail: "loaded" }
+  if (answer.code === 113 || /could not find (specified )?service|no such process/i.test(answer.out)) return { state: "gone", detail: "not loaded" }
+  return { state: "unknown", detail: answer.out || `exit ${answer.code ?? "after its time ran out"}` }
+}
+
+// systemctl show -p LoadState -p ActiveState: inactive or failed is
+// stopped, not-found is not there at all; active and every transition
+// (activating, deactivating, reloading, refreshing) is still there; a
+// failed query (the user bus unreachable) or an unknown word is no answer.
+export function systemdState(answer: { code: number | null; out: string }): JobState & { loaded: boolean } {
+  const field = (name: string) => new RegExp(`^${name}=(.*)$`, "m").exec(answer.out)?.[1]?.trim()
+  const load = field("LoadState")
+  const active = field("ActiveState")
+  if (answer.code !== 0 || load === undefined || active === undefined) return { state: "unknown", detail: answer.out || `exit ${answer.code ?? "after its time ran out"}`, loaded: true }
+  if (load === "not-found") return { state: "gone", detail: "not found", loaded: false }
+  if (active === "inactive" || active === "failed") return { state: "gone", detail: active, loaded: true }
+  if (["active", "activating", "deactivating", "reloading", "refreshing"].includes(active)) return { state: "there", detail: active, loaded: true }
+  return { state: "unknown", detail: `ActiveState=${active}`, loaded: true }
+}
+
+// Asks until the job is gone or the budget is spent; the last answer wins.
+function settle<S extends JobState>(ask: () => S, time: ReturnType<typeof budget>): S {
+  for (;;) {
+    const answer = ask()
+    if (answer.state === "gone" || time.left() <= 0) return answer
+    time.pause()
+  }
 }
 
 // Which kind this machine supports, unless MEHEN_SERVICE names one.
@@ -142,7 +186,7 @@ export function serviceKind(env: Record<string, string | undefined>, platform: N
   if (chosen === "launchd" || chosen === "systemd" || chosen === "process") return chosen
   if (!installed) return "process"
   if (platform === "darwin") return "launchd"
-  if (platform === "linux" && defaultRun(["systemctl", "--user", "show-environment"]).code === 0) return "systemd"
+  if (platform === "linux" && defaultRunner(["systemctl", "--user", "show-environment"], 5_000).code === 0) return "systemd"
   return "process"
 }
 
@@ -168,7 +212,7 @@ export function servePid(dataDir: string): number | null {
   if (!existsSync(path)) return null
   const pid = Number(readFileSync(path, "utf8").trim())
   if (!Number.isInteger(pid) || pid <= 1) return null
-  const args = defaultRun(["ps", "-o", "args=", "-p", String(pid)])
+  const args = defaultRunner(["ps", "-o", "args=", "-p", String(pid)], 5_000)
   if (args.code !== 0) return null
   return isServeOf(args.out, dataDir) ? pid : null
 }
@@ -182,15 +226,18 @@ export class ServiceError extends Error {}
 // Installs and starts the service, or starts the one already installed.
 // The caller waits for the vault to answer.
 export function installService(plan: ServicePlan, env: Record<string, string | undefined>, options: Waiting = {}): ServiceResult {
-  const run = options.runner ?? defaultRun
+  const runner = options.runner ?? defaultRunner
+  const run = (cmd: string[]) => runner(cmd, 30_000)
   if (plan.kind === "launchd") {
     const file = launchdPath(plan.home)
     writePrivateFile(file, launchdPlist(plan))
     const domain = `gui/${process.getuid?.() ?? 0}`
     const target = `${domain}/${LAUNCHD_LABEL}`
-    // A job still stopping from the bootout refuses the bootstrap.
-    run(["launchctl", "bootout", target])
-    goneWithin(() => run(["launchctl", "print", target]).code === 0, options)
+    // A job still stopping from the bootout refuses the bootstrap, which
+    // then says why.
+    const time = budget(options)
+    time.run(["launchctl", "bootout", target])
+    settle(() => launchdState(time.run(["launchctl", "print", target])), time)
     const loaded = run(["launchctl", "bootstrap", domain, file])
     if (loaded.code !== 0) throw new ServiceError(`launchctl could not load ${file}: ${loaded.out}`)
     return { kind: "launchd", file, startsAtLogin: true }
@@ -211,31 +258,51 @@ export function installService(plan: ServicePlan, env: Record<string, string | u
 // Stops the service and removes what installService wrote, and says what it
 // could not do: a service still loaded or a vault still running is reported,
 // never taken for gone. The data stays.
+// Only a stop whose result is confirmed removes anything: the job not
+// found, or the unit stopped after a stop that worked. A stop that failed,
+// a job still there when the time is up, or a state question nobody
+// answered keeps the service file (and, in the caller, local-vault.json)
+// and says what to do.
 export function removeService(kind: ServiceKind, dataDir: string, home: string, env: Record<string, string | undefined>, options: Waiting = {}): string[] {
-  const run = options.runner ?? defaultRun
-  const problems: string[] = []
+  const time = budget(options)
+  const seconds = `${Math.round((options.waitMs ?? STOP_WAIT_MS) / 1000)} seconds`
   if (kind === "launchd") {
     const target = `gui/${process.getuid?.() ?? 0}/${LAUNCHD_LABEL}`
-    run(["launchctl", "bootout", target])
-    if (!goneWithin(() => run(["launchctl", "print", target]).code === 0, options)) problems.push(`launchctl still has ${LAUNCHD_LABEL} loaded; run \`launchctl bootout ${target}\``)
-    else rmSync(launchdPath(home), { force: true })
-    return problems
+    const stop = time.run(["launchctl", "bootout", target])
+    const stopFailed = stop.code !== 0 && launchdState(stop).state !== "gone"
+    const now = settle(() => launchdState(time.run(["launchctl", "print", target])), time)
+    if (now.state === "gone") {
+      rmSync(launchdPath(home), { force: true })
+      return []
+    }
+    if (stopFailed) return [`launchctl bootout ${target} failed (${stop.out || `exit ${stop.code ?? "after its time ran out"}`}); run it yourself, then check \`launchctl print ${target}\``]
+    if (now.state === "there") return [`launchctl still has ${LAUNCHD_LABEL} loaded after ${seconds}; run \`launchctl bootout ${target}\``]
+    return [`could not confirm that launchd unloaded ${LAUNCHD_LABEL}: launchctl print said ${now.detail}; check \`launchctl print ${target}\``]
   }
   if (kind === "systemd") {
-    run(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT])
-    if (!goneWithin(() => run(["systemctl", "--user", "is-active", "--quiet", SYSTEMD_UNIT]).code === 0, options)) problems.push(`${SYSTEMD_UNIT} is still running; run \`systemctl --user disable --now ${SYSTEMD_UNIT}\``)
-    else {
+    const stop = time.run(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT])
+    const now = settle(() => systemdState(time.run(["systemctl", "--user", "show", "-p", "LoadState", "-p", "ActiveState", SYSTEMD_UNIT])), time)
+    // A unit systemd does not know is gone whatever disable said; a known
+    // one is gone only once a disable that worked has stopped it.
+    if (now.state === "gone" && (!now.loaded || stop.code === 0)) {
       rmSync(systemdPath(home, env), { force: true })
-      run(["systemctl", "--user", "daemon-reload"])
+      defaultDaemonReload(options)
+      return []
     }
-    return problems
+    if (stop.code !== 0) return [`systemctl --user disable --now ${SYSTEMD_UNIT} failed (${stop.out || `exit ${stop.code ?? "after its time ran out"}`}); run it yourself, then check \`systemctl --user status ${SYSTEMD_UNIT}\``]
+    if (now.state === "there") return [`${SYSTEMD_UNIT} is still running (${now.detail}) after ${seconds}; run \`systemctl --user disable --now ${SYSTEMD_UNIT}\``]
+    return [`could not confirm that ${SYSTEMD_UNIT} stopped: systemctl said ${now.detail}; check \`systemctl --user status ${SYSTEMD_UNIT}\``]
   }
   const pid = servePid(dataDir)
   if (pid !== null) {
     process.kill(pid, "SIGTERM")
-    for (let i = 0; i < 50 && servePid(dataDir) === pid; i++) Bun.sleepSync(100)
-    if (servePid(dataDir) === pid) problems.push(`the vault (pid ${pid}) did not stop within 5 seconds; end it yourself`)
+    while (servePid(dataDir) === pid && time.left() > 0) time.pause()
+    if (servePid(dataDir) === pid) return [`the vault (pid ${pid}) did not stop within ${seconds}; end it yourself`]
   }
-  if (problems.length === 0) rmSync(join(dataDir, PID_FILE), { force: true })
-  return problems
+  rmSync(join(dataDir, PID_FILE), { force: true })
+  return []
+}
+
+function defaultDaemonReload(options: Waiting): void {
+  ;(options.runner ?? defaultRunner)(["systemctl", "--user", "daemon-reload"], 10_000)
 }
