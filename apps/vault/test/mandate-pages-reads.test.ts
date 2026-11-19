@@ -251,7 +251,19 @@ describe("the mandate pages", () => {
       expect(boot(page).proposal, name).toBeNull()
       expect(checkedClasses(source), name).toEqual(["read", "change", "send", "delete"])
       expect(source, name).toContain('data-input="mandate-ttl" value="90" checked')
+      // The terms it proposed, in words on the card, whether or not any of
+      // its credentials can be offered now.
+      const card = live.slice(live.indexOf('data-region="mandate-source"'))
+      expect(card, name).toContain("read, change, send and delete")
+      expect(card, name).toContain("at most 50,000 reads")
+      expect(card, name).toContain("500 sends")
     }
+    // A legacy one names its credentials as it named them, never matched to
+    // a credential here now.
+    vault.answers.set(`/mandate-proposals/${base.id}`, legacy)
+    const legacyCard = parts(await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })).live
+    expect(legacyCard).toContain("no credential it can use now")
+    expect(legacyCard).toContain("It named github-tom before Mehen kept which credential each name meant")
     // The open, bound one still opens on its terms, signed against it.
     vault.answers.set(`/mandate-proposals/${base.id}`, { ...base, state: "open" })
     const open_ = await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })
@@ -270,6 +282,15 @@ describe("the mandate pages", () => {
     expect(live).toContain('data-action="mandate-use-source"')
     expect(source).toContain('data-input="mandate-items" value="all" checked')
     expect(source).toContain('data-input="mandate-ttl" value="90" checked')
+  })
+
+  it("names a renewed mandate's terms in words even when none of its credentials can be offered now", async () => {
+    vault.answers.set(`/mandates/${MANDATE().id}`, { ...broad(), items: ["gone-one", "gone-two"] })
+    const { live } = parts(await open(pages.sign, {}, { viewer: TOM, query: `?renew=${MANDATE().id}` }))
+    const card = live.slice(live.indexOf('data-region="mandate-source"'))
+    expect(card).toContain("no credential it can use now")
+    expect(card).toContain("2 credentials it named are not ones this machine can use now.")
+    expect(card).toContain("at most 50,000 reads")
   })
 
   it("starts a fresh form, and a class not yet ticked, at the caps a machine may propose", async () => {

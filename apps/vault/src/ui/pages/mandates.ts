@@ -16,7 +16,7 @@ import type { PageInput } from "../layout.ts"
 import { type WorkspaceShell, workspaceHref } from "../shell.ts"
 import {
   MANDATE_ALL_CREDENTIALS, MANDATE_ALWAYS_WORDS, MANDATE_CANDIDATES_UNREAD_WORDS, MANDATE_CAPS_LABEL, MANDATE_CAPS_WORDS, MANDATE_CARD_LEAD, MANDATE_CARD_TITLE, MANDATE_CLASS_CHOICES, MANDATE_CLASSES_LABEL, MANDATE_HIDDEN_CREDENTIAL, MANDATE_ITEMS_LABEL,
-  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, mandateProposalUnboundWords, MANDATE_SOURCE_RENEW_WORDS, MANDATE_SOURCE_PROPOSAL_WORDS, MANDATE_USE_SOURCE_BUTTON, mandateSourceFromWords,
+  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, mandateProposalUnboundWords, MANDATE_SOURCE_RENEW_WORDS, MANDATE_SOURCE_PROPOSAL_WORDS, MANDATE_USE_SOURCE_BUTTON, mandateSourceFromWords, mandateSourceUnavailableWords,
   MANDATE_RECEIPTS_EMPTY, MANDATE_RECEIPTS_LEAD, MANDATE_RECEIPTS_OLDER, MANDATE_RECEIPTS_TITLE, MANDATE_RENEW_LINK, MANDATE_SIGN_AGAIN_LINK, MANDATE_REPLACED_WORDS, MANDATE_REPLACES_WORDS, MANDATE_RESUME_BUTTON, MANDATE_RESUME_HINT, MANDATE_SCHEDULE_HINT, MANDATE_SCHEDULE_LABELS,
   MANDATE_SCHEDULE_TICK, MANDATE_SIGN_BUTTON, MANDATE_SIGN_EYEBROW, MANDATE_SIGN_LEAD, MANDATE_STATE_PILLS, MANDATE_STATE_WORDS, MANDATE_STOP_BUTTON, MANDATE_STOP_TITLE, MANDATE_STOP_WORDS, MANDATE_SUMMARY_TITLE, MANDATE_TEAM_MACHINE_WORDS, MANDATE_TERM_LABELS,
   MANDATE_TRUST_BUTTON, MANDATE_TTL_LABEL, MANDATE_UNREVIEWED_ENTRY, MANDATE_WAITING_LEAD, MANDATE_WAITING_OPEN, MANDATE_WAITING_TITLE, type MandateSummaryInput, machinesCarryingOnWords, machinesNeedResumeWords, mandateAllItemsWords, mandateCapHint, mandateClassWords, mandateDayWords, mandateDefaultNote, mandateEndsInWords, mandateHiddenItemsWords, mandateLapsedWords, mandateNotOwnerWords, mandatePauseAllConfirmWords, mandateSignSameWords,
@@ -411,13 +411,29 @@ function formBody(data: MandateSignData, start: MandateSignStart): Html {
         <label class="field"><span class="label">${MANDATE_NOTE_LABEL}</span><input type="text" data-input="mandate-note" maxlength="${String(MANDATE_NOTE_MAX)}" autocomplete="off" value="${start.note}"><span class="hint">${MANDATE_NOTE_HINT}</span></label>`
 }
 
+// What a source named, whether or not the form can offer its credentials
+// now: its kinds, caps, length and hours always, its credentials as far as
+// they are still here, and what is not. A proposal's names from before
+// Mehen kept ids are shown as names, never matched to today's credentials.
+function sourceNamed(data: MandateSignData): number {
+  const named = data.source?.mandate ?? (data.source?.kind === "proposal" ? data.proposal : null)
+  return named === null || named === undefined || named.items === "all" ? 0 : named.items.length + named.hiddenItems
+}
+function sourceRecap(machine: string, data: MandateSignData, start: MandateSignStart): string[] {
+  const offered = start.items === "all" ? "all" as const : (data.candidates?.items ?? []).filter((c) => start.items.includes(c.id)).map((c) => c.slug)
+  const unavailable = offered === "all" ? 0 : Math.max(0, sourceNamed(data) - offered.length)
+  const formerNames = data.source?.kind === "proposal" ? data.proposal?.unbound ?? [] : []
+  const words = mandateSummaryWords({ machine, classes: start.classes, caps: start.caps, items: offered, endsAt: data.now + start.ttlDays * DAY_MS, schedule: start.schedule })
+  return unavailable > 0 || formerNames.length > 0 ? [words[0] ?? "", mandateSourceUnavailableWords(unavailable, formerNames), ...words.slice(1)] : words
+}
+
 // The terms of a mandate renewed or copied, in words, and the one action
 // that puts them in the form.
 function sourceCard(machine: string, data: MandateSignData): Html {
   const source = data.source
   if (!source) return html``
   const words = source.kind === "renew" ? MANDATE_SOURCE_RENEW_WORDS : source.kind === "proposal" ? MANDATE_SOURCE_PROPOSAL_WORDS : mandateSourceFromWords(source.mandate?.device.name ?? machine)
-  const lines = mandateSummaryOf(machine, { ...source.start, note: source.start.note || "-" }, data.candidates, data.now) ?? []
+  const lines = sourceRecap(machine, data, source.start)
   return html`<section class="card stack" data-region="mandate-source"><p>${cardText(words)}</p>${lines.map((line) => html`<p class="small">${cardText(line)}</p>`)}<div class="actions"><button type="button" class="btn secondary sm" data-action="mandate-use-source">${MANDATE_USE_SOURCE_BUTTON}</button></div></section>`
 }
 

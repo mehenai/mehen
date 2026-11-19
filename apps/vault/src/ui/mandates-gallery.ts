@@ -5,7 +5,7 @@
 // owner, waiting for its owner and for an admin. The home's strip is in shell-gallery.ts and the
 // capped ask in workspace-asks-gallery.ts.
 
-import { MANDATE_CAP_DEFAULTS, type MandateCandidates, type MandateOpenProposal, type MandateProposalView, type MandateReceiptsPage, type MandateView } from "@mehen/protocol/mandate-terms"
+import { MANDATE_CAP_DEFAULTS, MANDATE_PROPOSAL_CAP_DEFAULTS, type MandateCandidates, type MandateOpenProposal, type MandateProposalView, type MandateReceiptsPage, type MandateView } from "@mehen/protocol/mandate-terms"
 import { machinePage } from "./pages/machines.ts"
 import { type MandateSignData, mandateSignDefaults, mandatePage, mandateSignPage, mandatesPage } from "./pages/mandates.ts"
 import { PEOPLE_DEVICE, PEOPLE_PROJECTS, peopleShell } from "./people-gallery.ts"
@@ -69,7 +69,7 @@ const PROPOSAL: MandateProposalView = {
   items: [CANDIDATES.items[0]!, CANDIDATES.items[1]!],
   hiddenItems: 0,
   classes: ["change", "read", "send"],
-  caps: { ...MANDATE_CAP_DEFAULTS, delete: 0 },
+  caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS, delete: 0 },
   ttlDays: 30,
   schedule: GALLERY_MANDATE.schedule,
   note: GALLERY_MANDATE.note,

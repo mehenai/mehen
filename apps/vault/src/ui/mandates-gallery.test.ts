@@ -117,7 +117,11 @@ describe("the mandate gallery", () => {
   it("summarises the terms in the design's words before the passkey", () => {
     const proposal = shown("ws-mandate-sign-proposal")
     const summary = proposal.slice(proposal.indexOf('data-region="mandate-summary"'))
-    expect(summary).toContain(escapeHtml("tom-laptop may read, change and send with 2 credentials, github-tom and slack-platform, without asking you, until 26 Nov 2026 UTC, at most 5,000 reads, 2,000 changes and 50 sends a day, only on Monday, Tuesday, Wednesday, Thursday and Friday from 08:00 to 19:00, Europe/London time."))
+    expect(summary).toContain(escapeHtml("tom-laptop may read, change and send with 2 credentials, github-tom and slack-platform, without asking you, until 26 Nov 2026 UTC, at most 500 reads, 100 changes and 10 sends a day, only on Monday, Tuesday, Wednesday, Thursday and Friday from 08:00 to 19:00, Europe/London time."))
+    // An open proposal is one the vault would take: within what a machine
+    // may propose.
+    const caps = Object.fromEntries([...proposal.matchAll(/data-input="mandate-cap" data-class="(\w+)" value="(\d+)"/g)].map((m) => [m[1], Number(m[2])]))
+    for (const [c, n] of Object.entries(caps)) expect(n, c).toBeLessThanOrEqual(MANDATE_PROPOSAL_CAP_DEFAULTS[c as keyof typeof MANDATE_PROPOSAL_CAP_DEFAULTS])
     expect(summary).toContain(escapeHtml(MANDATE_REVIEWED_WORDS))
     expect(summary).toContain(escapeHtml(MANDATE_UNREVIEWED_WORDS))
     expect(summary).not.toContain(escapeHtml(MANDATE_ALL_LATER_WORDS))

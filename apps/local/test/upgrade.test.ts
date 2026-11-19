@@ -47,7 +47,9 @@ test("a workspace database from before the mandate asked table gains it, filled 
   const legacy = (id: string, items: unknown, closedAt: number | null) => db.run("INSERT INTO mandate_proposals(id,device,terms,reason,created_at,expires_at,closed_at) VALUES (?,?,?,?,?,?,?)", [id, "dev_box", JSON.stringify({ items, classes: ["change", "read"] }), "Old", now, now + 3_600_000, closedAt])
   legacy("mdp_every", "all", null)
   legacy("mdp_gone", ["gone-key"], null)
-  legacy("mdp_signed", ["gone-key"], now)
+  // A fixed time no migration could write, so it is told apart from one.
+  const closedBefore = 1_000
+  legacy("mdp_signed", ["gone-key"], closedBefore)
   applyMigrations(sql, storage, AREAS)
   // Each kept ask, by approval; a rejected one is copied too and left out
   // when the vault reads what the machine asked for.
@@ -59,11 +61,16 @@ test("a workspace database from before the mandate asked table gains it, filled 
   // Every unsigned open proposal closes as unbound, binding none; one
   // already closed is left as it was.
   const proposals = db.query("SELECT id,item_ids,closed_reason,closed_at FROM mandate_proposals ORDER BY id").all() as { id: string; item_ids: string | null; closed_reason: string | null; closed_at: number | null }[]
-  expect(proposals.map((p) => [p.id, p.item_ids, p.closed_reason, p.closed_at === null ? null : p.closed_at === now ? "before" : "on upgrade"])).toEqual([
-    ["mdp_every", null, "unbound", "on upgrade"],
-    ["mdp_gone", null, "unbound", "on upgrade"],
-    ["mdp_signed", null, null, "before"],
+  expect(proposals.map((p) => [p.id, p.item_ids, p.closed_reason])).toEqual([
+    ["mdp_every", null, "unbound"],
+    ["mdp_gone", null, "unbound"],
+    ["mdp_signed", null, null],
   ])
+  // The migration closes at its own clock, in whole seconds; the one
+  // closed before keeps its time.
+  const upgradedAt = Math.floor(now / 1000) * 1000
+  for (const p of proposals.filter((p) => p.id !== "mdp_signed")) expect(p.closed_at).toBeGreaterThanOrEqual(upgradedAt)
+  expect(proposals.find((p) => p.id === "mdp_signed")?.closed_at).toBe(closedBefore)
   // Opening again changes nothing.
   applyMigrations(sql, storage, AREAS)
   expect(db.query("SELECT COUNT(*) AS n FROM mandate_asked").get()).toEqual({ n: 3 })
