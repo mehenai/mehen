@@ -5,7 +5,7 @@
 // answers in milliseconds and never fails for want of a connection.
 
 import { secretPrefix, PLACEHOLDER_CORE } from "@mehen/protocol"
-import { type Dirent, existsSync, readdirSync, realpathSync, statSync } from "node:fs"
+import { type Dirent, existsSync, lstatSync, readdirSync, readlinkSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path"
 import { loginFiles, sourceType } from "../adopt/sources.ts"
@@ -67,12 +67,34 @@ export function toolPath(raw: string, home: string): string {
 
 export type SecretFileOptions = { physical?: boolean; cache?: Map<string, boolean> }
 
-function realOrNull(path: string): string | null {
-  try {
-    return realpathSync.native(path)
-  } catch {
-    return null
+// Where a path really is on disk, or null when some part of it does not
+// exist: each part in order, a link replaced by what it points at before
+// the next part (a later .. included) is read. Done here rather than with
+// realpath, whose handling of .. after a link differs between runtimes.
+function realOrNull(path: string, hops = 0): string | null {
+  if (hops > 40) return null
+  let current: string = sep
+  for (const part of path.split(sep)) {
+    if (part === "" || part === ".") continue
+    if (part === "..") {
+      current = dirname(current)
+      continue
+    }
+    const next = join(current, part)
+    let link: string | null = null
+    try {
+      if (lstatSync(next).isSymbolicLink()) link = readlinkSync(next)
+    } catch {
+      return null
+    }
+    if (link === null) current = next
+    else {
+      const target = realOrNull(isAbsolute(link) ? link : `${current}${sep}${link}`, hops + 1)
+      if (target === null) return null
+      current = target
+    }
   }
+  return current
 }
 
 function shown(path: string, home: string): string {
