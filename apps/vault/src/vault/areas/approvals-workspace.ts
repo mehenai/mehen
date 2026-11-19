@@ -216,6 +216,28 @@ CREATE INDEX approvals_shape ON approvals(device, shape);
 CREATE INDEX approvals_bundle ON approvals(bundle);
 CREATE TABLE approval_bundles (id TEXT PRIMARY KEY, device TEXT NOT NULL, workload TEXT,
   reason TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);`
+// Group codes: one code per Review together page, which mehen prints
+// with the group's link, so the person checks one code, not one per ask. A
+// bundle's is made with it; a machine group's with the ask that opens it,
+// kept while any ask of it may still be open (expires_at, its newest ask's
+// end), and new each time the group reopens.
+export const WORKSPACE_APPROVAL_GROUP_CODE_MIGRATION = `ALTER TABLE approval_bundles ADD COLUMN code TEXT;
+CREATE TABLE approval_group_codes (review_group TEXT PRIMARY KEY, code TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE INDEX approval_group_codes_expiry ON approval_group_codes(expires_at);`
+// Inside the caller's transaction, for an ask just stored in a machine
+// group: with no other open ask of the group, the group reopens on a new code.
+function keepGroupCode(ctx: VaultContext, group: string, ask: string, expiresAt: number, now: number): void {
+  ctx.sql.exec("DELETE FROM approval_group_codes WHERE expires_at<=?", now)
+  const others = one(ctx.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM approvals WHERE review_group=? AND bundle IS NULL AND id<>? AND ask IS NOT NULL AND status='pending' AND policy_status IS NULL AND expires_at>?", group, ask, now))?.n ?? 0
+  if (others === 0) ctx.sql.exec("DELETE FROM approval_group_codes WHERE review_group=?", group)
+  ctx.sql.exec("INSERT INTO approval_group_codes(review_group,code,expires_at) VALUES (?,?,?) ON CONFLICT(review_group) DO UPDATE SET expires_at=MAX(approval_group_codes.expires_at,excluded.expires_at)", group, bindingCode(), expiresAt)
+}
+// The code a Review together page shows: its bundle's, or its machine
+// group's while one of its asks may be open; null for one made before codes.
+export function reviewGroupCode(ctx: VaultContext, group: string): string | null {
+  if (group.startsWith("bnd_")) return one(ctx.sql.exec<{ code: string | null }>("SELECT code FROM approval_bundles WHERE id=?", group))?.code ?? null
+  return one(ctx.sql.exec<{ code: string }>("SELECT code FROM approval_group_codes WHERE review_group=? AND expires_at>?", group, ctx.now()))?.code ?? null
+}
 
 // Whether batch approvals are on for a workspace (its tn_ id). In a
 // workspace's object, batchesHere also leaves out a managed workspace.
@@ -237,6 +259,26 @@ export function replacingUnavailable(): VaultError {
 // own earlier open ask to the same place that this one supersedes. bundle:
 // the bnd_ an agent's plan asked it in (relay plan mode), never superseded.
 export type ApprovalAskBatch = { floor: PolicyFloorView["reason"][] | null; shape: string; replaces: string | null; bundle?: string }
+
+// A machine's open asks of every kind (approvals, intakes, connects and rule
+// proposals together): it bounds the noise one machine can put in front of
+// people (threat model), and what one Review together page holds.
+export const MACHINE_MAX_OPEN_ASKS = 20
+// The refusal at that cap. It sends the person to decide what is open: the
+// asker's own oldest open approval, on its Review together page when it
+// shares a bundle or a group with others, else on its own page; with none
+// of its own, the workspace's home, whose Needs you lists them (mehen
+// accepts the home as a refusal's link, not /pending). With batch approvals
+// off, Review together refuses, so the link is the ask's own page. Only ids
+// the asker already knows go in.
+export function machineAsksFull(ctx: VaultContext, asker: { device: string; workload?: string }, slug: string, message: string): VaultError {
+  const now = ctx.now(), base = `${ctx.env.VAULT_ORIGIN}/w/${encodeURIComponent(slug)}`
+  const oldest = one(ctx.sql.exec<{ id: string; review_group: string | null; bundle: string | null }>("SELECT id,review_group,bundle FROM approvals WHERE device=? AND workload IS ? AND ask IS NOT NULL AND status='pending' AND policy_status IS NULL AND expires_at>? ORDER BY created_at,id LIMIT 1", asker.device, asker.workload ?? null, now))
+  const batches = batchesHere(ctx)
+  const grouped = batches && oldest?.review_group != null && oldest.bundle === null && (one(ctx.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM approvals WHERE review_group=? AND bundle IS NULL AND ask IS NOT NULL AND status='pending' AND policy_status IS NULL AND expires_at>?", oldest.review_group, now))?.n ?? 0) >= 2
+  const path = !oldest ? "/" : batches && oldest.bundle !== null ? `/g/${oldest.bundle}` : grouped ? `/g/${oldest.review_group}` : `/a/${oldest.id}`
+  return new VaultError("rate_limited", message, { next: { url: `${base}${path}`, say: "Ask the person to decide this machine's open asks at the link, then ask for the rest." } })
+}
 
 // grp_: one machine's (and workload's) asks on one credential, or for one
 // project environment's runs. Only ids the asker already knows go in.
@@ -272,12 +314,13 @@ export function requestWorkspaceApproval(ctx: VaultContext, state: AccessState, 
   const id = randomId("apr")
   const batches = batchesHere(ctx)
   if (batch.replaces !== null) supersedeAsk(ctx, state, ask, batch.replaces, batch.shape, id, now)
-  const count = openAskCount(ctx, device.id, now)
-  if (count >= 20) throw new VaultError("rate_limited", "This machine already has 20 open asks. Settle one before asking again.")
+  if (openAskCount(ctx, device.id, now) >= MACHINE_MAX_OPEN_ASKS) throw machineAsksFull(ctx, ask, workspace.slug, "This machine already has 20 open asks. Settle one before asking again.")
   assertWorkloadAskRoom(ctx, ask.workload, now)
   const name = devicePolicyState(ctx, device.id)?.name
   if (name === undefined) throw new VaultError("not_found", "No such object.")
-  ctx.sql.exec("INSERT INTO approvals(id,device,device_name,session,item,digest,subject,presentation,binding_code,status,created_at,expires_at,ask,snapshot,binding_digest,workspace,snapshot_digest,presentation_digest,workload,review_group,shape,floor,bundle) VALUES(?,?,?,NULL,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)", id, device.id, name, subject.item, binding, JSON.stringify(subject), JSON.stringify(presentation), bindingCode(), now, now + 3_600_000, JSON.stringify(ask), canonicalJson(snapshot), binding, JSON.stringify(workspace), snapshotDigest, presentationDigest, ask.workload ?? null, batches ? approvalReviewGroup(workspace.id, ask) : null, batches ? batch.shape : null, batches && batch.floor !== null ? JSON.stringify([...new Set(batch.floor)].sort()) : null, batches ? batch.bundle ?? null : null)
+  const group = batches ? approvalReviewGroup(workspace.id, ask) : null
+  ctx.sql.exec("INSERT INTO approvals(id,device,device_name,session,item,digest,subject,presentation,binding_code,status,created_at,expires_at,ask,snapshot,binding_digest,workspace,snapshot_digest,presentation_digest,workload,review_group,shape,floor,bundle) VALUES(?,?,?,NULL,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)", id, device.id, name, subject.item, binding, JSON.stringify(subject), JSON.stringify(presentation), bindingCode(), now, now + 3_600_000, JSON.stringify(ask), canonicalJson(snapshot), binding, JSON.stringify(workspace), snapshotDigest, presentationDigest, ask.workload ?? null, group, batches ? batch.shape : null, batches && batch.floor !== null ? JSON.stringify([...new Set(batch.floor)].sort()) : null, batches ? batch.bundle ?? null : null)
+  if (group !== null && batch.bundle === undefined) keepGroupCode(ctx, group, id, now + 3_600_000, now)
   const credential = state.credentials.find((c) => c.id === ask.credential)
   if (credential?.home.kind === "member") auditPrivateEvent(ctx, { action: "approval.request", at: now, actor: { kind: "device", device: device.id, owner: device.owner.kind === "member" ? { kind: "member", member: device.owner.id } : { kind: "team", team: device.owner.id } }, session: null, item: credential.id, slug: subject.item, outcome: "pending", run: null }, credential.home.member)
   else ctx.audit({ actor: `device:${device.id}`, action: "approval.request", target: id, detail: { item: subject.item, outcome: "pending" } })

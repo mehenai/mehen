@@ -129,7 +129,8 @@ describe("workspace pending routing", () => {
       ctx.sql.exec("UPDATE approvals SET created_at=created_at+1000,expires_at=expires_at+1000 WHERE id=?", second)
       const group = ctx.sql.exec<{ review_group: string }>("SELECT review_group FROM approvals WHERE id=?", single).toArray()[0]!.review_group
       const current = await list("0.3.17")
-      expect(current.groups).toEqual([{ id: group, url: `https://vault.test/w/work/g/${group}`, approvals: [single, second], bundle: false }])
+      const code = ctx.sql.exec<{ code: string }>("SELECT code FROM approval_group_codes WHERE review_group=?", group).toArray()[0]!.code
+      expect(current.groups).toEqual([{ id: group, url: `https://vault.test/w/work/g/${group}`, approvals: [single, second], bundle: false, code }])
       expect((await list("0.4.0")).groups).toEqual(current.groups)
       for (const old of ["0.3.16", "0.3.0", null, undefined]) {
         const answer = await list(old)
@@ -147,7 +148,7 @@ describe("workspace pending routing", () => {
       const subject = { item: "key-workspace", method: "POST", url: "https://api.example.com", contentType: null, contentEncoding: null, headersSha256: digestOf([]), bodySha256: digestOf(null), constraints: { uses: 1, ttlSeconds: 600 } }
       for (let i=0;i<20;i++) prepareApprovedUse(ctx, state, caller, { ...item, slug: "key-workspace", version: 1 }, null, { ...subject, bodySha256: digestOf(i) }, null, ctx.now())
       const before = canonicalJson(ctx.sql.exec("SELECT * FROM approvals").toArray()), open = vi.spyOn(ctx, "openField"), send = vi.spyOn(globalThis, "fetch")
-      try { prepareApprovedUse(ctx, state, caller, { ...item, slug: "key-workspace", version: 1 }, null, { ...subject, bodySha256: digestOf(21) }, null, ctx.now()); throw new Error("accepted") } catch (error) { expect((error as VaultError).toJSON()).toEqual({ error: "rate_limited", message: "This machine already has 20 open asks. Settle one before asking again." }) }
+      try { prepareApprovedUse(ctx, state, caller, { ...item, slug: "key-workspace", version: 1 }, null, { ...subject, bodySha256: digestOf(21) }, null, ctx.now()); throw new Error("accepted") } catch (error) { expect((error as VaultError).toJSON()).toEqual({ error: "rate_limited", message: "This machine already has 20 open asks. Settle one before asking again.", next: { url: `https://vault.test/w/work/g/${ctx.sql.exec<{ review_group: string }>("SELECT review_group FROM approvals LIMIT 1").toArray()[0]!.review_group}`, say: "Ask the person to decide this machine's open asks at the link, then ask for the rest." } }) }
       expect(canonicalJson(ctx.sql.exec("SELECT * FROM approvals").toArray())).toBe(before)
       expect(open).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled(); open.mockRestore(); send.mockRestore()
     })

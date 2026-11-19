@@ -48,7 +48,8 @@ export type ServerPending = { pending: unknown[]; notices?: unknown[]; groups?: 
 
 // A review group or bundle holding two or more of this machine's open
 // approvals (protocol PendingGroup), its link checked against this vault.
-export type PendingGroupView = { id: string; url: string; approvals: string[]; bundle: boolean }
+// code: the group code its page shows, from a vault that sends one.
+export type PendingGroupView = { id: string; url: string; approvals: string[]; bundle: boolean; code?: string }
 
 // GET /v1/pending's top-level `groups`: a group is kept only when its id is a
 // group's or a bundle's, its approvals are approval ids and its link is this
@@ -59,21 +60,22 @@ function serverGroups(raw: unknown, vault: AskVault): { groups: PendingGroupView
   if (!Array.isArray(raw)) return { groups, refusedLinks }
   for (const value of raw) {
     if (typeof value !== "object" || value === null) continue
-    const { id, url, approvals, bundle } = value as Record<string, unknown>
+    const { id, url, approvals, bundle, code } = value as Record<string, unknown>
     if (!Array.isArray(approvals) || !approvals.every((approval) => isWaitId("approval", approval))) continue
-    const checked = askGroup({ id, url, open: approvals.length }, vault)
+    const checked = askGroup({ id, url, open: approvals.length, code }, vault)
     if (checked.refusedLink) refusedLinks += 1
-    if (checked.group) groups.push({ id: checked.group.id, url: checked.group.url, approvals: [...approvals], bundle: bundle === true })
+    if (checked.group) groups.push({ id: checked.group.id, url: checked.group.url, approvals: [...approvals], bundle: bundle === true, ...(checked.group.code ? { code: checked.group.code } : {}) })
   }
   return { groups, refusedLinks }
 }
 
 // "3 asks from sam-mac-mini: review together at <url>", named for the
-// machine that asked the group's first listed ask.
+// machine that asked the group's first listed ask, then "; the page shows
+// code K7QM3P" when the vault sent the group's code.
 export function pendingGroupText(group: PendingGroupView, asks: readonly Ask[]): string {
   const first = asks.find((ask) => ask.kind === "approval" && group.approvals.includes(ask.id))
   const machine = first?.requestedBy.device ?? "this machine"
-  return visibleText(`${group.approvals.length} asks from ${machine}: review together at ${group.url}`)
+  return visibleText(`${group.approvals.length} asks from ${machine}: review together at ${group.url}${group.code ? `; the page shows code ${group.code}` : ""}`)
 }
 
 // `restrictedUntil` is an ISO time, the pending sentinel (as the vault sends
@@ -228,7 +230,7 @@ async function slotPending(env: Env, slot: LocalContext, now: Date, open: Pendin
   const groupList = serverGroups(server.groups, scope)
   const grouped = items.map((item) => {
     const group = item.ask.kind === "approval" ? groupList.groups.find((g) => g.approvals.includes(item.ask.id)) : undefined
-    return group ? { ...item, ask: { ...item.ask, group: { id: group.id, url: group.url, open: group.approvals.length } } } : item
+    return group ? { ...item, ask: { ...item.ask, group: { id: group.id, url: group.url, open: group.approvals.length, ...(group.code ? { code: group.code } : {}) } } } : item
   })
   const noticeList = deviceNotices(server.notices, vaultUrl)
   const machineList = workspaceMachineNotices(server.notices, context)

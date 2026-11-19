@@ -33,6 +33,9 @@ export type ProjectPageData = {
   // The workspace's teams, for team share subjects and their names; null
   // for guests, who are never sent a team list, and when the read failed.
   teams?: TeamView[] | null
+  // ?share=<mem_>, from a share request's link: the share form starts open
+  // with that member chosen, when they are among its choices.
+  shareWith?: string | null
 }
 
 // A variable as the vault shows it to a person; `value` is a plain value,
@@ -204,6 +207,7 @@ function sharesCard(data: ProjectPageData, controls: ProjectControls, names: Nam
   // A guest is never shown a team list; the route does not read one for them.
   const teams = data.viewer.role === "guest" ? [] : (data.teams ?? [])
   const reach = workspaceReach(data)
+  const asked = data.shareWith != null && members.some((m) => m.member === data.shareWith) ? data.shareWith : null
   return html`<section class="card" aria-label="Shared with" data-region="shares">
     <div class="card-head"><h2>Shared with</h2></div>
     ${shares.length
@@ -214,11 +218,11 @@ function sharesCard(data: ProjectPageData, controls: ProjectControls, names: Nam
         )}</ul>`
       : html`<p class="muted">Not shared with anyone yet.</p>`}
     ${controls.share
-      ? html`<details class="fold edit" data-region="share-fold">
+      ? html`<details class="fold edit" data-region="share-fold"${asked !== null ? " open" : ""}>
           <summary>${icon("chevronRight")}<span>Share this project</span></summary>
           <form class="stack" data-form="share" novalidate>
             <label class="field"><span class="label">With</span><select data-input="subject"><optgroup label="People">${members.map(
-              (m) => html`<option value="${m.member}" data-kind="member" data-role="${m.role}">${cardText(m.name)} (${m.member})${m.role === "guest" ? ", guest" : ""}</option>`,
+              (m) => html`<option value="${m.member}" data-kind="member" data-role="${m.role}"${m.member === asked ? " selected" : ""}>${cardText(m.name)} (${m.member})${m.role === "guest" ? ", guest" : ""}</option>`,
             )}</optgroup>${teams.length
               ? html`<optgroup label="Teams" data-region="team-subjects">${teams.map((t) => html`<option value="${t.id}" data-kind="team">${cardText(t.name)} (team ${cardText(t.slug)})</option>`)}</optgroup>`
               : ""}</select></label>

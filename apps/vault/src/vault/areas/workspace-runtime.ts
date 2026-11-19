@@ -7,7 +7,7 @@ import { platformMaySatisfy } from "@mehen/protocol"
 import type { AccountSecurityState, PendingAccountSecurity, WorkspaceNoticePayload, WorkspaceStepUpAction } from "@mehen/protocol"
 import { VaultError } from "../../http.ts"
 import { INVITE_TTL_MS } from "@mehen/protocol"
-import { can, classify, stepUpSatisfies } from "../access.ts"
+import { can, classify, effectiveAccess, stepUpSatisfies } from "../access.ts"
 import type { AccessAction, AccessDecision, AccessMember, AccessPrincipal, AccessState, AccessTarget } from "../access.ts"
 import type { AccountInvocationAuth, DeviceAuth, PlatformInvocationAuth, SystemAuth, VaultContext } from "../core.ts"
 import { one, randomId } from "../core.ts"
@@ -201,6 +201,16 @@ export const nameMiss = {
 export function recordExposure(ctx: VaultContext, fact: ExposureFact): void {
   ctx.sql.exec("INSERT OR IGNORE INTO exposures(event,item,version,member,device,source,at) VALUES (?,?,?,?,?,?,?)", fact.event, fact.item, fact.version, fact.member, fact.device, fact.source, fact.at)
 }
+// A share request's page: the project's Shared with form, the member chosen.
+export function shareRequestPath(project: string, member: string): string {
+  return `/projects/${encodeURIComponent(project)}?share=${encodeURIComponent(member)}`
+}
+// The accounts a share request goes to: every active member who manages
+// the project, owners and admins among them.
+function projectManagerAccounts(ctx: VaultContext, project: string): string[] {
+  const state = accessState(ctx), now = ctx.now()
+  return state.members.filter((m) => m.status === "active" && effectiveAccess(state, { kind: "member", id: m.id }, project, now).level === "manage").map((m) => m.account)
+}
 // How many accounts it queued the notice for.
 export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, sourceId?: string): number {
   // A managed workspace's only member has no account to notify, and its
@@ -209,6 +219,7 @@ export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, 
   const checked = WorkspaceNoticePayloadSchema.parse(payload)
   const members = memberRows(ctx)
   const recipients = checked.kind === "member_joined" ? members.filter((m) => m.status === "active" && m.id === checked.by).map((m) => m.account) : checked.kind === "mandate_ending" || checked.kind === "mandate_lapsed" ? [] : members.filter((m) => m.status === "active" && (m.role === "owner" || checked.kind !== "owner_changed" && m.role === "admin")).map((m) => m.account)
+  if (checked.kind === "project_share_requested") recipients.splice(0, recipients.length, ...projectManagerAccounts(ctx, checked.project.id))
   if (checked.kind === "owner_changed" || checked.kind === "backup_recipient") { const subject = members.find((m) => m.id === checked.member); if (subject) recipients.push(subject.account) }
   // A mandate that tripped goes to its signer too, whatever their role; one
   // ending or lapsed goes to its signer alone.
@@ -216,7 +227,9 @@ export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, 
   let queued = 0
   for (const account of new Set(recipients)) {
     if ((checked.kind === "account_security" || checked.kind === "account_suspended") && account === checked.account) continue
-    const id = `ntc_${digest({ account, payload: checked, source: sourceId ?? null })}`
+    // A share request is raised once per source key (its project, member and
+    // UTC day), whenever in the day it comes: its `at` is the first refusal's.
+    const id = `ntc_${digest(checked.kind === "project_share_requested" && sourceId !== undefined ? { account, kind: checked.kind, source: sourceId } : { account, payload: checked, source: sourceId ?? null })}`
     ctx.sql.exec("INSERT OR IGNORE INTO notice_outbox(id,account,payload,created_at,next_retry_at) VALUES (?,?,?,?,?)", id, account, canonicalJson(checked), ctx.now(), ctx.now())
     ctx.schedule("access", "notice-outbox", ctx.now() + 60_000)
     queued++
@@ -234,7 +247,7 @@ export const OutboxDrainOutput = z.strictObject({ events: z.array(OutboxEventSch
 export function drainOutbox(ctx: VaultContext, limit: number): z.infer<typeof OutboxDrainOutput> {
   const events = ctx.sql.exec<{ id: string; account: string; payload: string; created_at: number }>("SELECT id,account,payload,created_at FROM notice_outbox WHERE acknowledged_at IS NULL AND next_retry_at<=? ORDER BY created_at,id LIMIT ?", ctx.now(), limit).toArray().map((e) => {
     const payload = WorkspaceNoticePayloadSchema.parse(JSON.parse(e.payload))
-    const path = payload.kind === "machine_added" ? `/devices/${encodeURIComponent(payload.device)}` : payload.kind === "member_joined" ? "/people" : payload.kind === "mandate_signed" || payload.kind === "mandate_tripped" || payload.kind === "mandate_ending" || payload.kind === "mandate_lapsed" ? `/mandates/${encodeURIComponent(payload.mandate)}` : "/"
+    const path = payload.kind === "machine_added" ? `/devices/${encodeURIComponent(payload.device)}` : payload.kind === "member_joined" ? "/people" : payload.kind === "mandate_signed" || payload.kind === "mandate_tripped" || payload.kind === "mandate_ending" || payload.kind === "mandate_lapsed" ? `/mandates/${encodeURIComponent(payload.mandate)}` : payload.kind === "project_share_requested" ? shareRequestPath(payload.project.id, payload.member.member) : "/"
     return { id: e.id, account: e.account, payload, at: e.created_at, url: `${ctx.env.VAULT_ORIGIN}/w/${encodeURIComponent(payload.workspace.slug)}${path}` }
   })
   return OutboxDrainOutput.parse({ events })
@@ -378,8 +391,10 @@ export function noticeScan(ctx: VaultContext, principal: WorkspaceRuntimePrincip
   const notices = stored.flatMap((row) => {
     const payload = WorkspaceNoticePayloadSchema.parse(JSON.parse(row.payload))
     if (principal.kind === "device" && !(payload.kind === "machine_added" && payload.device === principal.deviceId)) return []
+    // A share request resolves once the project is shared with its member.
+    if (payload.kind === "project_share_requested" && effectiveAccess(state, { kind: "member", id: payload.member.member }, payload.project.id, ctx.now()).level !== null) return []
     if (member.standing.effectiveRole === "guest" && !(payload.kind === "machine_added" && payload.owner.kind === "member" && payload.owner.member === member.id || payload.kind === "owner_changed" && payload.member === member.id)) return []
-    return [OutboxEventSchema.parse({ id: row.id, account: row.account, payload, at: row.created_at, url: `${ctx.env.VAULT_ORIGIN}/w/${payload.workspace.slug}${payload.kind === "machine_added" ? `/devices/${payload.device}` : payload.kind === "backup_recipient" ? "/settings" : payload.kind === "member_joined" ? "/people" : "/"}` })]
+    return [OutboxEventSchema.parse({ id: row.id, account: row.account, payload, at: row.created_at, url: `${ctx.env.VAULT_ORIGIN}/w/${payload.workspace.slug}${payload.kind === "machine_added" ? `/devices/${payload.device}` : payload.kind === "backup_recipient" ? "/settings" : payload.kind === "member_joined" ? "/people" : payload.kind === "project_share_requested" ? shareRequestPath(payload.project.id, payload.member.member) : "/"}` })]
   })
   return { notices, truncated }
 }

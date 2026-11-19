@@ -1,8 +1,10 @@
-// Review together's script: the row ticks, the one code tick, and one
-// passkey over the ticked rows (decideReviewBatch). Each shown request is
-// hashed against the vault's digest first; a row that does not match is
-// unticked for good and decided on its own page. Approve stays off until
-// the codes are ticked and every row it would approve matched. The group
+// Review together's script: the row ticks, the code tick (the group's code,
+// or the rows' separate codes), and one passkey over the ticked rows
+// (decideReviewBatch). Each shown request is hashed against the vault's
+// digest first; a row that does not match is unticked for good and decided
+// on its own page. Approve stays off until a code tick is ticked and every
+// row it would approve matched. Asks that join while the page is open clear
+// the code ticks, so they are ticked again after the new rows are seen. The group
 // is polled every 20 s while the tab is visible, with If-None-Match; a
 // changed group redraws from the page as the server draws it: rows that
 // left pending grey out and untick, new rows arrive marked New and never
@@ -16,7 +18,7 @@ import type { ShellState } from "../shell-logic.ts"
 import { type ReviewRowBoot, reviewBindingMismatches, reviewChoices } from "../workspace-logic.ts"
 import { decideReviewBatch } from "../workspace-sign.ts"
 import { gate } from "./workspace-asks.ts"
-import { REVIEW_NEW_WORDS, REVIEW_POLL_MS, reviewApproveLabel, reviewCodesWords, reviewOutcomeWords, reviewLacksButtonFor, reviewRedraw, reviewReloadsForArrivals } from "./workspace-review-logic.ts"
+import { REVIEW_NEW_WORDS, REVIEW_POLL_MS, reviewApproveLabel, reviewChangedWords, reviewCodesWords, reviewOutcomeWords, reviewLacksButtonFor, reviewRedraw, reviewReloadsForArrivals } from "./workspace-review-logic.ts"
 import { needShell } from "./workspace.ts"
 
 type ReviewBoot = { group: string; rows: ReviewRowBoot[] }
@@ -57,8 +59,10 @@ export function initWorkspaceReview(raw: Boot, maybe: ShellState | null): void {
   const approve = find<HTMLButtonElement>('[data-action="approve-ticked"]')
   const deny = find<HTMLButtonElement>('[data-action="deny-ticked"]')
   const buttons = { approve: approve !== null, deny: deny !== null }
-  const codes = find<HTMLInputElement>('[data-input="codes-checked"]')
+  const codeTicks = [find<HTMLInputElement>('[data-input="group-code-checked"]'), find<HTMLInputElement>('[data-input="codes-checked"]')].filter((tick) => tick !== null)
+  const codesChecked = () => codeTicks.some((tick) => tick.checked)
   const codesLabel = find('[data-region="codes-label"]')
+  const changedNote = find('[data-region="review-changed"]')
   const approveLabel = find('[data-region="approve-label"]')
   const outcome = find('[data-region="review-outcome"]')
   const list = () => [...rows.values()]
@@ -67,7 +71,7 @@ export function initWorkspaceReview(raw: Boot, maybe: ShellState | null): void {
   const g = gate([deny, approve], (b) => {
     if (b === deny) return reviewChoices(list(), ticked(), "deny").length > 0
     const choices = approving()
-    return codes?.checked === true && choices.length > 0 && choices.every((c) => matched.has(c.approval))
+    return codesChecked() && choices.length > 0 && choices.every((c) => matched.has(c.approval))
   }, () => {
     const picked = ticked()
     const approves = approving().length
@@ -76,7 +80,10 @@ export function initWorkspaceReview(raw: Boot, maybe: ShellState | null): void {
     if (approveLabel) approveLabel.textContent = reviewApproveLabel(approves, denyOnly)
   })
   find("#decide")?.addEventListener("change", g.refresh)
-  codes?.addEventListener("change", g.refresh)
+  for (const tick of codeTicks) tick.addEventListener("change", () => {
+    if (tick.checked && changedNote) changedNote.hidden = true
+    g.refresh()
+  })
 
   // A row whose shown request does not hash to the stored digest is
   // decided on its own page, whatever the vault placed it under.
@@ -175,6 +182,13 @@ export function initWorkspaceReview(raw: Boot, maybe: ShellState | null): void {
       const head = find('[data-region="review-head"]'), drawnHead = find('[data-region="review-head"]', doc)
       if (head && drawnHead) head.replaceWith(document.importNode(drawnHead, true))
     }
+    if (arrived.length > 0) {
+      for (const tick of codeTicks) tick.checked = false
+      if (changedNote) {
+        changedNote.textContent = reviewChangedWords(arrived.length)
+        changedNote.hidden = false
+      }
+    }
     g.refresh()
     if (redrawn.length + arrived.length > 0) await check([...redrawn, ...arrived])
   }
@@ -206,12 +220,12 @@ export function initWorkspaceReview(raw: Boot, maybe: ShellState | null): void {
 
   const decide = (button: HTMLButtonElement, decision: "approve" | "deny") => g.run(button, "Waiting for your passkey...", async () => {
     const choices = reviewChoices(list(), ticked(), decision)
-    const result = await decideReviewBatch<ApprovalBatchResult>(shell, list(), choices, codes?.checked === true)
+    const result = await decideReviewBatch<ApprovalBatchResult>(shell, list(), choices, codesChecked())
     if (outcome) {
       outcome.textContent = reviewOutcomeWords(result)
       outcome.hidden = false
     }
-    if (codes) codes.checked = false
+    for (const tick of codeTicks) tick.checked = false
     await redraw()
   })
   if (approve) approve.addEventListener("click", () => decide(approve, "approve"))

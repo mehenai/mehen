@@ -211,7 +211,9 @@ export type ApprovalGroupRow =
   | { view: "detail"; approval: ApprovalDetail; binding: WorkspaceApprovalBinding; batch: ApprovalBatchState; ownPage: ApprovalOwnPageReason | null; floor: import("./policy-mode.ts").PolicyFloorView["reason"][]; createdAt: string; replacedBy: string | null; protected?: boolean; newerSameShape?: string | null }
   | z.infer<typeof ApprovalGroupStopRowSchema>
 // rows: pending oldest first, then those settled in the last hour. reason:
-// a bundle's reason, the agent's words, unverified.
+// a bundle's reason, the agent's words, unverified. code: the group code,
+// one for the whole page, that mehen prints with the group's link; null for
+// a group made before group codes, or for a viewer who reads no ask's detail.
 export type ApprovalGroupView = {
   group: string
   kind: "machine" | "bundle"
@@ -219,6 +221,7 @@ export type ApprovalGroupView = {
   machine: { device: string; name: string; owner: OwnerRef; workload: { id: string; label: string } | null }
   item: { slug: string } | null
   reason: string | null
+  code: string | null
   rows: ApprovalGroupRow[]
 }
 export type ApprovalBatchOutcome = "approved" | "denied" | "expired" | "decided" | "superseded" | "stale" | "own_page" | "forbidden" | "changed"
@@ -399,6 +402,11 @@ export const WorkspaceNoticePayloadSchema = z.discriminatedUnion("kind", [
  z.strictObject({ kind: z.literal("mandate_tripped"), workspace: WorkspaceRefSchema, mandate: MandateIdSchema, device: Id, machine: z.string(), signer: z.strictObject({ member: Id, name: z.string() }), classes: z.array(MandateClassSchema), expiresAt: Iso, at: Iso }),
  z.strictObject({ kind: z.literal("mandate_ending"), workspace: WorkspaceRefSchema, mandate: MandateIdSchema, device: Id, machine: z.string(), signer: z.strictObject({ member: Id, name: z.string() }), classes: z.array(MandateClassSchema), expiresAt: Iso, at: Iso }),
  z.strictObject({ kind: z.literal("mandate_lapsed"), workspace: WorkspaceRefSchema, mandate: MandateIdSchema, device: Id, machine: z.string(), signer: z.strictObject({ member: Id, name: z.string() }), classes: z.array(MandateClassSchema), expiresAt: Iso, at: Iso }),
+ // A member's machine was refused a run because the project is not shared
+ // with them (project_unshared): to the owners, admins and the project's
+ // managers, once a UTC day per project and member however often it retries.
+ // The notice's link is the project's Shared with form, the member chosen.
+ z.strictObject({ kind: z.literal("project_share_requested"), workspace: WorkspaceRefSchema, project: z.strictObject({ id: Id, slug: z.string() }), member: z.strictObject({ member: Id, name: z.string() }), device: Id, machine: z.string(), at: Iso }),
 ])
 export type WorkspaceNoticePayload = z.infer<typeof WorkspaceNoticePayloadSchema>
 // The one notice envelope every pending and inbox route returns.

@@ -65,8 +65,8 @@ afterEach(() => {
   browser = null
 })
 
-function open(): MiniBrowser {
-  const markup = renderDocument(workspaceProjectPage(galleryShell(VIEWERS.owner), { viewer: VIEWERS.owner, project, items, members: GALLERY_MEMBERS, overrides: [], teams: GALLERY_TEAMS })).value
+function open(shareWith: string | null = null): MiniBrowser {
+  const markup = renderDocument(workspaceProjectPage(galleryShell(VIEWERS.owner), { viewer: VIEWERS.owner, project, items, members: GALLERY_MEMBERS, overrides: [], teams: GALLERY_TEAMS, shareWith })).value
   browser = installPage(markup, (path, body) => {
     if (path === "/api/w/northwind/projects/action") return { status: 200, body: prepared((body as { input: Record<string, unknown> }).input) }
     if (path === "/api/w/northwind") return { status: 200, body: WORKSPACE }
@@ -156,6 +156,30 @@ describe("the share form's team subjects in the browser", () => {
     form.pick(form.option("mem_tom00002"))
     await form.share()
     expect(sent(b, "/api/w/northwind/projects/action")).toEqual([{ change: "share", input: { project: PROJECT, subject: { kind: "member", member: "mem_tom00002" }, before: null, after: { level: "use", protected: false, expiresAt: null } } }])
+  })
+
+  // A share request's link names the member: the form starts
+  // open with them chosen, their current terms filled in.
+  it("?share= opens the form with that member chosen, and shares with them", async () => {
+    const b = open("mem_tom00002")
+    expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open")).toBe(true)
+    const form = shareForm(b)
+    expect(form.option("mem_tom00002").selected).toBe(true)
+    expect(b.document.querySelectorAll("option[selected]").map((o) => o.getAttribute("value"))).toEqual(["mem_tom00002"])
+    await form.share()
+    expect(sent(b, "/api/w/northwind/projects/action")).toEqual([{ change: "share", input: { project: PROJECT, subject: { kind: "member", member: "mem_tom00002" }, before: null, after: { level: "use", protected: false, expiresAt: null } } }])
+  })
+
+  it("?share= naming someone with a share starts from their terms; naming nobody it offers changes nothing", () => {
+    const kim = shareForm(open("mem_kim00001"))
+    expect([kim.option("mem_kim00001").selected, kim.level.value, kim.protect.checked, kim.ends.value]).toEqual([true, "edit", true, KIM_DAY])
+    browser!.restore()
+    for (const shareWith of [null, "mem_nobody01"]) {
+      const b = open(shareWith)
+      expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open"), String(shareWith)).toBe(false)
+      expect(b.document.querySelectorAll("option[selected]"), String(shareWith)).toEqual([])
+      b.restore()
+    }
   })
 
   it("a prepared action about anyone but the chosen team refuses before the step-up starts", async () => {

@@ -6,8 +6,9 @@
 // on its own page rows link there and cannot be ticked; You can only deny
 // these start unticked. A protected credential's use (ruling B2) and a row
 // a newer ask of the same shape follows (ruling B1) never start ticked.
-// One code tick in the bar, as on the adoption batch page (/b/<id>), the
-// precedent for ticking rows under one passkey. The boot data carries what
+// The bar's code tick: the group code mehen printed with the group's link,
+// or, for an agent that showed each ask's code, a tick over the rows' own
+// codes (all a group made before group codes offers). The boot data carries what
 // each row's digest recomputes from, so the script approves only rows
 // whose request this page shows.
 
@@ -17,7 +18,7 @@ import { approvalGroupSection } from "../../vault/areas/approvals-batch-workspac
 import { askPlace, decisionBar, warningCard } from "../ask-evidence.ts"
 import { askWarnings, stopTexts } from "../ask-safety.ts"
 import type { ReviewRowBoot } from "../client/workspace-logic.ts"
-import { REVIEW_DENY_ONLY_WORDS, REVIEW_FOOTNOTE, REVIEW_NEWER_WORDS, REVIEW_NEXT_WORDS, REVIEW_PROTECTED_WORDS, REVIEW_MISMATCH_WORDS, REVIEW_SECTION_ORDER, REVIEW_SECTION_TITLES, REVIEW_STOP_WORDS, reviewApproveLabel, reviewCodesWords, reviewCountWords, reviewEmptyWords, reviewFloorMarks, reviewOwnPageWords, reviewPending, reviewRowId, reviewTickedAtStart } from "../client/pages/workspace-review-logic.ts"
+import { REVIEW_DENY_ONLY_WORDS, REVIEW_FOOTNOTE, REVIEW_NEWER_WORDS, REVIEW_NEXT_WORDS, REVIEW_PROTECTED_WORDS, REVIEW_MISMATCH_WORDS, REVIEW_SECTION_ORDER, REVIEW_SECTION_TITLES, REVIEW_STOP_WORDS, reviewApproveLabel, reviewCodesWords, reviewGroupCodeWords, reviewCountWords, reviewEmptyWords, reviewFloorMarks, reviewOwnPageWords, reviewPending, reviewRowId, reviewTickedAtStart } from "../client/pages/workspace-review-logic.ts"
 import { cardText, countdownTimer, notice, pill } from "../components.ts"
 import { type Html, html } from "../html.ts"
 import { kindTile } from "../icons.ts"
@@ -196,9 +197,10 @@ export function workspaceReviewPage(shell: WorkspaceShell, data: ReviewPageData)
     ${soonest !== undefined ? html`<p class="meta"><span class="timer-line">${countdownTimer(soonest, APPROVAL_TTL_MS / 1000, now)} <span class="muted">until the first runs out</span></span></p>` : ""}
     ${pending.length === 0 ? html`<p data-region="review-empty">${reviewEmptyWords(settled)}</p><p><a class="btn secondary sm" href="${workspaceHref(slug, "/pending")}">Needs you in this workspace</a></p>` : ""}
   </section>`
-  const outcome = html`<div data-region="review-outcome" role="status" aria-live="polite" hidden></div>`
+  const outcome = html`<div data-region="review-outcome" role="status" aria-live="polite" hidden></div><p class="notice warn" data-region="review-changed" role="status" aria-live="polite" hidden></p>`
   const bar = open.length > 0
-  const codes = html`<label class="tick" data-region="codes-tick"><input type="checkbox" form="decide" data-input="codes-checked"><span data-region="codes-label">${reviewCodesWords(ticked.length)}</span></label>`
+  const separate = html`<label class="tick" data-region="codes-tick"><input type="checkbox" form="decide" data-input="codes-checked"><span data-region="codes-label">${reviewCodesWords(ticked.length)}</span></label>`
+  const codes = view.code !== null ? html`<label class="tick" data-region="group-code-tick"><input type="checkbox" form="decide" data-input="group-code-checked"><span>${reviewGroupCodeWords(view.code)}</span></label> ${separate}` : separate
   const denyOnly = ticked.filter((r) => approvalGroupSection(r) === "deny-only").length
   return {
     title: `${REVIEW_TITLE}: ${m.name}`,

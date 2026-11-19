@@ -13,7 +13,7 @@ import { askGroupExtra } from "./pending-workspace.ts"
 import { assertApprovedUse, assertRunUse, consumeApprovedUse, currentRunSnapshot, pinnedWorkloadRun, type CheckedCredential, type ProtectedSnapshot } from "./projects-workspace.ts"
 import { loadProject, normaliseRemote, requireEnvironment, type ProjectRecord } from "./projects.ts"
 import { items, secretFieldInfo } from "./items.ts"
-import { accessState, authorise, recordExposure, registerOffboardingHook, registerAccessChangeHook, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
+import { accessState, authorise, queueNotice, recordExposure, registerOffboardingHook, registerAccessChangeHook, workspaceRef, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 import { RUN_MAX_LIFE_MS, RUN_TTL_MS } from "./runs.ts"
 import { auditPrivateEvent } from "../audit.ts"
 
@@ -45,6 +45,24 @@ type Plan = { pinnedWithoutRemote: boolean; vars: RunVar[]; leases: { name: stri
 function devicePrincipal(principal: import("./workspace-runtime.ts").WorkspaceRuntimePrincipal): Extract<AccessPrincipal, { kind: "device" }> {
   if (principal.kind !== "device") throw new VaultError("forbidden", "Only an enrolled machine can start a run.")
   return principal
+}
+// A run refused because the project is not shared with the machine's owner
+// (project_unshared): the project's managers are told, once a UTC day per
+// project and member (queueNotice), and the refusal's next links to the
+// project's page. Its link has no query, which mehen refuses on a refusal's
+// link; only the notice, which a browser opens, chooses the member
+// (shareRequestPath). A team's machine, or any other refusal, is passed on
+// as it was.
+function shareRequested(ctx: VaultContext, principal: Extract<AccessPrincipal, { kind: "device" }>, invocation: WorkspaceInvocationContext, project: string, error: unknown): unknown {
+  if (!(error instanceof VaultError) || error.code !== "project_unshared") return error
+  const state = accessState(ctx)
+  const device = state.devices.find((d) => d.id === principal.deviceId), found = state.projects.find((p) => p.id === project)
+  const member = device?.owner.kind === "member" ? state.members.find((m) => m.id === device.owner.id) : undefined
+  if (!device || !found || !member) return error
+  const machine = ctx.sql.exec<{ name: string }>("SELECT name FROM devices WHERE id=?", device.id).toArray()[0]?.name ?? device.id
+  const day = new Date(ctx.now()).toISOString().slice(0, 10)
+  queueNotice(ctx, { kind: "project_share_requested", workspace: workspaceRef(ctx), project: { id: found.id, slug: found.slug }, member: { member: member.id, name: member.name }, device: device.id, machine, at: new Date(ctx.now()).toISOString() }, `${found.id}:${member.id}:${day}`)
+  return new VaultError(error.code, error.message, { ...error.extra, next: { say: error.message, ...error.extra.next, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/projects/${encodeURIComponent(found.id)}` } })
 }
 function requireDecision(decision: ReturnType<typeof can>): void { if (!decision.allowed) throw new VaultError(decision.error, decision.message, decision.next ? { next: decision.next } : {}) }
 function planRun(ctx: VaultContext, state: AccessState, principal: Extract<AccessPrincipal, { kind: "device" }>, input: z.infer<typeof RunCreate>): Plan {
@@ -160,7 +178,7 @@ export const workspaceRunOps: NonNullable<Area["workspaceOps"]> = {
   "runs.create": { auth: ["device"], async handler(ctx, runtimePrincipal, raw, invocation): Promise<WorkspaceRunCreated> {
     const principal = devicePrincipal(runtimePrincipal), input = parseOpInput(RunCreate, raw)
     const state = accessState(ctx), env = state.projects.find((p) => p.id === input.project)?.environments.find((e) => e.name === input.env)
-    authorise(ctx, invocation, { type: env?.protected ? "run.protected" : "run.unprotected" }, { project: input.project, environment: input.env }, ctx.now())
+    try { authorise(ctx, invocation, { type: env?.protected ? "run.protected" : "run.unprotected" }, { project: input.project, environment: input.env }, ctx.now()) } catch (error) { throw shareRequested(ctx, principal, invocation, input.project, error) }
     const plan = planRun(ctx, state, principal, input)
     if (input.service) assertServiceRun(ctx, state, principal, invocation, env?.protected === true)
     const approval = env?.protected ? runApproval(ctx, state, principal, invocation, input, plan) : null
