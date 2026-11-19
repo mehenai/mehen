@@ -9,7 +9,7 @@ import type { TeamView, WorkspaceDeviceView, WorkspaceEnrolView, WorkspaceMember
 import type { WorkspaceInviteView } from "../vault/areas/workspace-runtime.ts"
 import { cliAdvice } from "../cli-version.ts"
 import { emailInvitesCompletable } from "../directory/invite-email.ts"
-import { loopbackPeer } from "../directory/session.ts"
+import { onThisMachine } from "../directory/session.ts"
 import type { PeopleViewer } from "../ui/client/people-logic.ts"
 import { type CredentialHomeOf, delegatedCredentials, elevated } from "../ui/client/people-logic.ts"
 import { type PageInput, errorBody, pageResponse } from "../ui/layout.ts"
@@ -151,7 +151,7 @@ export const PEOPLE_PAGES: WorkspacePage[] = [
       // The page's read is dispatched inside the Worker, without the
       // browser's connection; whether that came from this machine is the
       // page request's own.
-      const enrol = loopbackPeer(rc.request) ? { ...view.value, acceptorLocal: true as const } : view.value
+      const enrol = onThisMachine(rc.request, rc.env.VAULT_ORIGIN) ? { ...view.value, acceptorLocal: true as const } : view.value
       return pageResponse(enrolmentPage(page.shell, enrol, { viewer: peopleViewer(page.shell), projects: list, now: Date.now(), delegation }))
     },
   },
