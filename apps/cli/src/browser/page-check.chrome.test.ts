@@ -6,7 +6,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { createHash, X509Certificate } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Server, Subprocess } from "bun"
@@ -15,6 +15,7 @@ import { importSealPublicKey, seal } from "@mehen/protocol/seal"
 import { CliError } from "../errors.ts"
 import { createRunCa } from "../relay/ca.ts"
 import type { VaultApi } from "../vault-api.ts"
+import { CHROME_START_MS, startChrome } from "../testing/chrome.ts"
 import { CdpConnection } from "./cdp.ts"
 import { type FillOptions, fill } from "./fill.ts"
 import { checkField, locateField, pageFrames } from "./page-check.ts"
@@ -149,10 +150,9 @@ describe.skipIf(CHROME === undefined)("mehen fill in a real Chrome", () => {
     other = await site("other.test", ca, otherPages)
     const spki = createHash("sha256").update(new X509Certificate((await ca.issueLeaf("login.test")).certPem).publicKey.export({ type: "spki", format: "der" })).digest("base64")
     profile = await mkdtemp(join(tmpdir(), "mehen-fill-chrome-"))
-    chrome = Bun.spawn([CHROME as string, "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--site-per-process", "--host-resolver-rules=MAP *.test 127.0.0.1", `--ignore-certificate-errors-spki-list=${spki}`, "about:blank"], { stdout: "ignore", stderr: "ignore" })
-    for (let i = 0; i < 200 && !existsSync(join(profile, "DevToolsActivePort")); i++) await Bun.sleep(50)
-    const [port, path] = (await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")
-    control = await CdpConnection.open(`ws://127.0.0.1:${port}${path}`)
+    const started = await startChrome(CHROME as string, profile, ["--site-per-process", "--host-resolver-rules=MAP *.test 127.0.0.1", `--ignore-certificate-errors-spki-list=${spki}`])
+    chrome = started.process
+    control = await CdpConnection.open(started.endpoint)
     const { targetInfos } = await control.send<{ targetInfos: { targetId: string; type: string }[] }>("Target.getTargets")
     pageTarget = (targetInfos.find((info) => info.type === "page") as { targetId: string }).targetId
     session = (await control.send<{ sessionId: string }>("Target.attachToTarget", { targetId: pageTarget, flatten: true })).sessionId
@@ -160,7 +160,7 @@ describe.skipIf(CHROME === undefined)("mehen fill in a real Chrome", () => {
     // A headless page has no focus, so it fires no focus events; the agent's
     // browser does, and the page's focus handlers run inside the typing call.
     await control.send("Emulation.setFocusEmulationEnabled", { enabled: true }, { sessionId: session })
-  }, 30_000)
+  }, CHROME_START_MS + 15_000)
 
   afterAll(async () => {
     control?.close()
