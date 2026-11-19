@@ -8,7 +8,9 @@ import { usageError } from "../errors.ts"
 type Token = { start: number; end: number; value: string }
 type Item = { start: number; end: number; key?: string; value: number }
 
-const PATTERN = /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\[\s\S]|[^"\\])*"|[{}[\]:,]|[^\s{}[\]:,]+/g
+// A scalar (a number, true, false, null) ends where a comment starts, so
+// `1/* x */` is the number 1 and a comment.
+const PATTERN = /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\[\s\S]|[^"\\])*"|[{}[\]:,]|(?:[^\s{}[\]:,/]|\/(?![/*]))+/g
 const COMMENTS = /"(?:\\[\s\S]|[^"\\])*"|\/\/[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\//g
 
 function scan(text: string): Token[] {
@@ -155,4 +157,22 @@ export function removeItem(text: string, path: (string | number)[], which: strin
   let tail = text.slice(end)
   if (!previous && !next) tail = tail.replace(/^(\s*),/, "$1")
   return `${text.slice(0, start)}${comments}${tail}`
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+// Changes only what differs between `current` (the value at `path`, as
+// parsed) and `wanted`, member by member and element by element, so a
+// comment inside the value stays, as does a member the person added.
+export function patchItem(text: string, path: (string | number)[], current: unknown, wanted: unknown): string {
+  if (JSON.stringify(current) === JSON.stringify(wanted)) return text
+  if (isObject(current) && isObject(wanted)) {
+    return Object.entries(wanted).reduce((next, [key, value]) => (key in current ? patchItem(next, [...path, key], current[key], value) : insertItem(next, path, key, value)), text)
+  }
+  if (Array.isArray(current) && Array.isArray(wanted) && current.length === wanted.length) {
+    return wanted.reduce((next: string, value: unknown, i: number) => patchItem(next, [...path, i], current[i], value), text)
+  }
+  return replaceItem(text, path.slice(0, -1), path.at(-1) as string | number, wanted)
 }

@@ -13,14 +13,14 @@ import { join } from "node:path"
 import { defaultDataDir } from "../../../local/src/config.ts"
 import type { Command } from "../command.ts"
 import { usageError } from "../errors.ts"
-import { LOCKS_DIR, ensureSafeRoot, resolveHome } from "../home.ts"
+import { LOCKS_DIR, assertSafeRoot, ensureSafeRoot, resolveHome } from "../home.ts"
 import { withSlotLocks } from "../slot-lock.ts"
 import { printJson, printLine } from "../output.ts"
 import { selfExecutable } from "../install-state.ts"
 import { codexAnswer } from "./codex.ts"
 import { cursorAnswer, cursorFailure } from "./cursor.ts"
 import { type GuardResult, installGuards } from "./install.ts"
-import { type Finding, commandFindings, secretFile, secretInText } from "./rules.ts"
+import { type Finding, commandFindings, secretFile, secretInText, toolPath } from "./rules.ts"
 
 export const GUARD_LEVELS = ["block", "warn", "off"] as const
 export type GuardLevel = (typeof GUARD_LEVELS)[number]
@@ -77,7 +77,7 @@ export function judge(call: ToolCall, level: GuardLevel, env: Env): Verdict {
   const dirs = vaultDirs(env)
   const findings: Finding[] = []
   if (call.tool === "read" && call.path) {
-    const why = secretFile(call.path, call.cwd, home, dirs)
+    const why = secretFile(toolPath(call.path, home), call.cwd, home, dirs)
     if (why) findings.push({ rule: "secret-file", reason: `reading ${call.path} would show you its contents: ${why}`, path: call.path })
   }
   if (call.tool === "shell" && call.command) findings.push(...commandFindings(call.command, call.cwd, home, dirs))
@@ -235,10 +235,18 @@ export const guardCommand: Command = {
       if (binary === null) throw usageError("The guard hooks name the installed mehen, and this one runs from source. Install mehen with `curl -fsSL https://mehen.dev/install | sh`, then run `mehen guard install`.", "mehen guard --help")
       const options = { home: env.HOME || homedir(), binary, remove: wanted === "remove", dryRun: args.bool("dry-run") }
       const { root } = resolveHome(env)
-      ensureSafeRoot(root)
-      // One guard install or remove at a time, so two never read the same
-      // file and both write it.
-      const results = await withSlotLocks([join(root, LOCKS_DIR, "guard.lock")], () => installGuards({ ...options, vaultDirs: vaultDirs(env), ownedFile: join(root, "guard-installed.json"), codexHome: env.CODEX_HOME || undefined }))
+      const run = () => installGuards({ ...options, vaultDirs: vaultDirs(env), ownedFile: join(root, "guard-installed.json"), codexHome: env.CODEX_HOME || undefined })
+      // A dry run only reads: the home is checked, never created, and no
+      // lock is taken. A real one takes the guard lock, so two never read
+      // the same file and both write it.
+      let results: GuardResult[]
+      if (options.dryRun) {
+        assertSafeRoot(root)
+        results = await run()
+      } else {
+        ensureSafeRoot(root)
+        results = await withSlotLocks([join(root, LOCKS_DIR, "guard.lock")], run)
+      }
       if (json) printJson({ agents: results, level: guardLevel(env), ...(options.dryRun ? { dryRun: true } : {}) })
       else for (const result of results) {
         printLine(`${result.agent.padEnd(16)} guard ${result.status}${result.reason ? `: ${result.reason}` : ""}`)

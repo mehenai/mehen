@@ -459,3 +459,63 @@ describe("review fixes: the files", () => {
     expect(JSON.parse(removed.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, ""))).toEqual({ hooks: { Stop: [{ hooks: [{ type: "command", command: "./stop.sh" }] }] } })
   })
 })
+
+describe("second review: the files", () => {
+  let home: string
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "mehen-guard-r2-"))
+  })
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true })
+  })
+  const cursorFile = () => join(home, ".cursor", "hooks.json")
+
+  test("a comment right after a number, a boolean or a string is a comment, in objects and lists", async () => {
+    await mkdir(join(home, ".cursor"))
+    const tight = '{"version":1/* x */}'
+    await writeFile(cursorFile(), tight)
+    expect(await installCursorGuard({ home, binary: BIN, remove: false, dryRun: false })).toMatchObject({ status: "added" })
+    const installed = await readFile(cursorFile(), "utf8")
+    expect(installed).toContain("/* x */")
+    expect(parseJson(installed)).toMatchObject({ version: 1, hooks: { beforeReadFile: [{ command: `${BIN} hook cursor` }] } })
+    expect(await installCursorGuard({ home, binary: BIN, remove: true, dryRun: false })).toMatchObject({ status: "removed" })
+    expect(parseJson(await readFile(cursorFile(), "utf8"))).toEqual({ version: 1 })
+    const mixed = '{"version":1,"x":true// t\n,"y":[1/*a*/,false//b\n,"s"/*c*/,null],"hooks":{"stop":[{"command":"./s.sh"}/*d*/]}}\n'
+    await writeFile(cursorFile(), mixed)
+    expect(await installCursorGuard({ home, binary: BIN, remove: false, dryRun: false })).toMatchObject({ status: "added" })
+    expect(parseJson(await readFile(cursorFile(), "utf8"))).toMatchObject({ version: 1, x: true, y: [1, false, "s", null], hooks: { stop: [{ command: "./s.sh" }] } })
+    expect(await installCursorGuard({ home, binary: BIN, remove: true, dryRun: false })).toMatchObject({ status: "removed" })
+    expect(await readFile(cursorFile(), "utf8")).toBe(mixed)
+  })
+
+  test("a moved mehen changes only the fields mehen writes: a comment inside its entry stays", async () => {
+    await mkdir(join(home, ".cursor"))
+    expect(await installCursorGuard({ home, binary: BIN, remove: false, dryRun: false })).toMatchObject({ status: "added" })
+    const text = await readFile(cursorFile(), "utf8")
+    const commented = text.replace(`"command": "${BIN} hook cursor",`, `/* mine: keep this */ "command": "${BIN} hook cursor",`)
+    expect(commented).not.toBe(text)
+    await writeFile(cursorFile(), commented)
+    expect(await installCursorGuard({ home, binary: "/opt/mehen", remove: false, dryRun: false })).toMatchObject({ status: "updated" })
+    const moved = await readFile(cursorFile(), "utf8")
+    expect(moved).toContain("/* mine: keep this */")
+    expect(moved).toContain('"/opt/mehen hook cursor"')
+    expect(moved).not.toContain(`${BIN} hook cursor`)
+    expect(await installCursorGuard({ home, binary: "/opt/mehen", remove: false, dryRun: false })).toMatchObject({ status: "unchanged" })
+  })
+
+  test("--dry-run writes nothing: no Mehen home, no locks folder", async () => {
+    await mkdir(join(home, ".cursor"))
+    await mkdir(join(home, ".codex"))
+    const result = await runJv(["guard", "install", "--dry-run", "--json"], { HOME: home, MEHEN_SELF_EXECUTABLE: BIN })
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ dryRun: true, agents: expect.arrayContaining([expect.objectContaining({ agent: "cursor", status: "added" })]) })
+    // The bun runtime keeps its own cache in HOME; nothing else may appear.
+    const mine = async () => (await readdir(home)).filter((name) => name !== ".bun").sort()
+    expect(await mine()).toEqual([".codex", ".cursor"])
+    expect(await readdir(join(home, ".cursor"))).toEqual([])
+    expect(await readdir(join(home, ".codex"))).toEqual([])
+    const removal = await runJv(["guard", "remove", "--dry-run", "--json"], { HOME: home, MEHEN_SELF_EXECUTABLE: BIN })
+    expect(removal.code).toBe(0)
+    expect(await mine()).toEqual([".codex", ".cursor"])
+  })
+})

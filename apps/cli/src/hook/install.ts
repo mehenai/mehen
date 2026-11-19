@@ -9,7 +9,7 @@ import { realpathSync, rmSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { PI_EXTENSION_FILE, PI_MARKER, piExtension } from "./pi.ts"
-import { checkUnique, hasComments, insertItem, removeItem, replaceItem } from "./jsonc.ts"
+import { checkUnique, hasComments, insertItem, patchItem, removeItem } from "./jsonc.ts"
 import { FileChanged, atomicText, info, safePath, textFile, unchanged } from "../setup/files.ts"
 import { shellWord } from "../shell-word.ts"
 import { object, parseJson } from "../setup/formats.ts"
@@ -253,7 +253,7 @@ function editEvent(text: string, edit: EventEdit): string {
   const [first, ...rest] = at
   if (first === undefined) return insertItem(text, ["hooks", edit.event], undefined, edit.entry)
   const trimmed = rest.reverse().reduce((t, i) => removeItem(t, ["hooks", edit.event], i), text)
-  return JSON.stringify(list[first]) === JSON.stringify(edit.entry) ? trimmed : replaceItem(trimmed, ["hooks", edit.event], first, edit.entry)
+  return patchItem(trimmed, ["hooks", edit.event, first], list[first], edit.entry)
 }
 
 function editHooks(text: string, events: EventEdit[], cursor: boolean, remove: boolean): string {
