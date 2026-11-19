@@ -264,7 +264,10 @@ export type CredentialCreationContext = { home: CredentialHome; permittedHomes: 
 export type WorkspaceIntakeView = import("./api.ts").IntakeView & CredentialCreationContext
 // `tags` are the stored tags the connection will carry, one of the
 // connect.start terms the page compares before the passkey.
-export type WorkspaceConnectView = import("./api.ts").ConnectView & CredentialCreationContext & { tags: string[] }
+// clientRejected: the provider rejected the OAuth client this connect signs
+// in through, so it cannot start until the client's secret is replaced; the
+// client's slug only for a reader who may see it. The request stays open.
+export type WorkspaceConnectView = import("./api.ts").ConnectView & CredentialCreationContext & { tags: string[]; clientRejected?: { client: string | null } }
 // approval.decide_many: each entry as approval.decide would sign it, without
 // a remember, sorted by approval id, each once.
 export const APPROVAL_BATCH_MAX = 25

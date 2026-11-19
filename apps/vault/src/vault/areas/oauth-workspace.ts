@@ -138,6 +138,10 @@ function flowAuthority(ctx: VaultContext, p: AccessPrincipal, row: CredentialReq
   const client = clientFor(ctx, p, flow.clientSlug, home, clientTemplateOf(flow.provider), i)
   if (flow.client)
     assertCredentialCurrent(ctx, flow.client)
+  // A client the provider rejected cannot sign anyone in: neither a start
+  // nor the code exchange goes ahead, so its secret is never sent.
+  if (clientRejectedNow(ctx, client))
+    throw new VaultError("conflict", "The provider rejected this connection's OAuth client (its secret is wrong, expired or deleted), so it cannot sign in.", { next: { say: "A human must replace the OAuth client's secret in the vault; then ask for a new connect link." } })
   const decision = assertItemRight(ctx, i, flow.target ? { type: "credential.reconnect" } : { type: "credential.connect" }, flow.target ? { credential: flow.target.id, client: client.id } : { destinationHome: home, client: client.id })
   if (flow.target)
     assertCredentialCurrent(ctx, flow.target)
@@ -439,6 +443,12 @@ function lost(reason: string): never { throw new ConnectionLost(reason) }
 // as any of its connections found: all of them wait for it.
 function clientRejectedNow(ctx: VaultContext, client: { id: string; configRev: number }): boolean {
   return one(ctx.sql.exec("SELECT 1 FROM workspace_oauth_client_rejections WHERE client=? AND client_revision=?", client.id, client.configRev)) !== null
+}
+
+// Whether the provider rejected this client (an item id) at its current
+// revision.
+export function clientRejectedById(ctx: VaultContext, client: string): boolean {
+  return one(ctx.sql.exec("SELECT 1 FROM workspace_oauth_client_rejections r JOIN items i ON i.id=r.client WHERE r.client=? AND r.client_revision=i.config_rev", client)) !== null
 }
 
 // Every connection waiting for a client the provider rejected at its
@@ -1053,7 +1063,7 @@ export const workspaceOAuthOps = {
     const previous=f.target?one(ctx.sql.exec<{payload:string}>("SELECT payload FROM workspace_oauth_connections WHERE item=?",f.target.id)):null
     const currentScopes=previous?(JSON.parse(previous.payload) as {scopes:string[]}).scopes:null
     const status: ConnectStatus["status"] = row.status === "cancelled" ? "failed" : row.status === "open" && row.expires_at <= ctx.now() ? "expired" : row.status as ConnectStatus["status"]
-      return { connect: row.id, status, provider: provider.id, providerName: provider.displayName, slug: row.slug, scopes: f.scopes, tags: f.tags, expect: f.expect, reason: f.reason, requestedBy: row.requester_device ? { device: row.requester_device, deviceName: devicePolicyState(ctx, row.requester_device)?.name ?? row.requester_device, session: f.session, ...askingWorkload(ctx, row.requester_workload) } : { member: row.requester_member ?? "", self: p.kind === "member" && p.memberId === row.requester_member }, reconnect: f.target !== null, currentScopes, account: item?.account ?? null, message: row.status === "cancelled" ? "This connection was cancelled." : null, expiresAt: new Date(row.expires_at).toISOString(), ...credentialCreationContext(ctx, p, requestHome(row), f.target, clientView, i), ...(f.intake ? { awaiting: { intake: f.intake, url: `${ctx.env.VAULT_ORIGIN}/w/${i.workspace.slug}/i/${f.intake}`, status: requestRow(ctx, f.intake).status as import("@mehen/protocol/api").IntakeStatus["status"] } } : {}) }
+      return { connect: row.id, status, provider: provider.id, providerName: provider.displayName, slug: row.slug, scopes: f.scopes, tags: f.tags, expect: f.expect, reason: f.reason, requestedBy: row.requester_device ? { device: row.requester_device, deviceName: devicePolicyState(ctx, row.requester_device)?.name ?? row.requester_device, session: f.session, ...askingWorkload(ctx, row.requester_workload) } : { member: row.requester_member ?? "", self: p.kind === "member" && p.memberId === row.requester_member }, reconnect: f.target !== null, currentScopes, account: item?.account ?? null, message: row.status === "cancelled" ? "This connection was cancelled." : null, expiresAt: new Date(row.expires_at).toISOString(), ...credentialCreationContext(ctx, p, requestHome(row), f.target, clientView, i), ...(f.intake ? { awaiting: { intake: f.intake, url: `${ctx.env.VAULT_ORIGIN}/w/${i.workspace.slug}/i/${f.intake}`, status: requestRow(ctx, f.intake).status as import("@mehen/protocol/api").IntakeStatus["status"] } } : {}), ...(row.status === "open" && row.client_id !== null && clientRejectedById(ctx, row.client_id) ? { clientRejected: { client: clientView?.id === row.client_id ? clientView.slug : null } } : {}) }
     } },
   "oauth.connectStatus": { auth: ["device"] as const, async handler(ctx: VaultContext, p: AccessPrincipal, input: unknown, i: WorkspaceInvocationContext): Promise<ConnectStatus> {
       const { connect, wait, waitMs } = parseOpInput(z.object({ connect: z.string(), ...RequestWait }), input)

@@ -8,14 +8,18 @@ import { VaultError } from "../src/http.ts"
 import { credentialInput, credentialsFixture, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
 afterEach(() => { setUpstreamFetch(null); vi.restoreAllMocks() })
 
-async function client(ctx: VaultContext, home: Parameters<typeof credentialInput>[1] = { kind: "workspace" }) {
+async function client(ctx: VaultContext, home: Parameters<typeof credentialInput>[1] = { kind: "workspace" }, slug = "google-client") {
   const template = getTemplate("google-oauth-client")
   if (!template)
     throw new Error("template")
-  const prepared = await prepareCredential(ctx, { ...credentialInput("google-client", home), kind: "oauth-client", provider: template.id, binding: template.binding, policy: template.policy, injection: null, ceiling: "relay", publicFields: { client_id: "test-client" }, secretFields: { client_secret: "test-client-secret" } }, null)
+  const prepared = await prepareCredential(ctx, { ...credentialInput(slug, home), kind: "oauth-client", provider: template.id, binding: template.binding, policy: template.policy, injection: null, ceiling: "relay", publicFields: { client_id: "test-client" }, secretFields: { client_secret: "test-client-secret" } }, null)
   return ctx.storage.transactionSync(() => storeCredential(ctx, prepared, memberPrincipal(ctx), "item.create"))
 }
 
+// As a refresh does when the provider answers invalid_client.
+function rejectClient(ctx: VaultContext, slug: string) {
+  ctx.sql.exec("INSERT INTO workspace_oauth_client_rejections(client,client_revision,at) SELECT id,config_rev,? FROM items WHERE slug=?", ctx.now(), slug)
+}
 async function started(ctx: VaultContext, home: "workspace" | "private" | "project" = "workspace", clientHome: Parameters<typeof credentialInput>[1] = { kind: "workspace" }) {
   await client(ctx, clientHome)
   const p = memberPrincipal(ctx), i = memberInvocation(ctx)
@@ -1087,6 +1091,121 @@ it("a rejected client hides an open reconnect to a connection it paused from peo
     const { credentialPending } = await import("../src/vault/areas/credentials-pending.ts")
     const own = credentialPending(ctx, machine, asked).flatMap((r) => r.view === "detail" ? [r.detail] : [])
     expect(own.map((r) => [r.kind, r.item])).toEqual([["connect", "gmail-test"]])
+  })
+})
+
+// The provider rejecting a client the connection signed in through says
+// nothing about another client: a reconnect that chose a working one stays
+// listed, and can start.
+it("lists a reconnect through another, working client while the connection's own client is rejected, and lets it start", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    await connected(ctx)
+    await client(ctx, { kind: "workspace" }, "google-client-next")
+    rejectClient(ctx, "google-client")
+    const p = memberPrincipal(ctx), i = memberInvocation(ctx)
+    const next = createWorkspaceConnect(ctx, p, { provider: "google-gmail", client: "google-client-next", slug: "gmail-test", home: "workspace" }, i)
+    const rows = await needsYouRows(ctx)
+    expect(rows.filter((r) => r.kind === "connect").map((r) => r.id)).toEqual([next.connect])
+    expect(rows.map((r) => r.id)).toContain("google-client")
+    const action = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: next.connect }, i))
+    const started = await startWorkspaceConnect(ctx, p, { connect: next.connect, state: "state-next-123456789" }, memberInvocation(ctx, "owner", action))
+    expect(started).toMatchObject({ authorizeUrl: expect.stringContaining("accounts.google.com") })
+  })
+})
+
+// The connect page's view says when the client the connect chose was
+// rejected, naming the client to a reader who may see it; the request stays
+// open for the machine's wait, and clears once the secret is replaced.
+it("a connect's view says its chosen client was rejected, and stays open, until the client's secret is replaced", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    await client(ctx)
+    const p = memberPrincipal(ctx), i = memberInvocation(ctx)
+    const c = createWorkspaceConnect(ctx, p, { provider: "google-gmail", client: "google-client", slug: "gmail-test", home: "workspace" }, i)
+    const view = () => workspaceOAuthOps["oauth.connectView"].handler(ctx, p, { connect: c.connect }, i)
+    expect(view()).not.toHaveProperty("clientRejected")
+    rejectClient(ctx, "google-client")
+    expect(view()).toMatchObject({ status: "open", clientRejected: { client: "google-client" } })
+    const stored = checkedCredential(ctx, "google-client")!
+    const replaced = await prepareCredential(ctx, { ...stored, secretFields: { client_secret: "new-client-secret" } }, stored)
+    ctx.storage.transactionSync(() => storeCredential(ctx, replaced, p, "item.rotate"))
+    expect(view()).not.toHaveProperty("clientRejected")
+  })
+})
+
+// Nor can such a connect start or finish: the vault refuses both while the
+// client is rejected, so its secret never goes to the provider's token
+// endpoint, and the request stays open until the secret is replaced.
+it("refuses to start or finish a connect whose chosen client is rejected, sending nothing, until its secret is replaced", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    await client(ctx)
+    const p = memberPrincipal(ctx), i = memberInvocation(ctx)
+    const c = createWorkspaceConnect(ctx, p, { provider: "google-gmail", client: "google-client", slug: "gmail-test", home: "workspace" }, i)
+    const action = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: c.connect }, i))
+    // Started before the rejection, finished after: refused, nothing sent.
+    await startWorkspaceConnect(ctx, p, { connect: c.connect, state: "state-before-123456789" }, memberInvocation(ctx, "owner", action))
+    rejectClient(ctx, "google-client")
+    let sends = 0
+    setUpstreamFetch(async () => { sends++; return Response.json({ access_token: "x", refresh_token: "y", expires_in: 3600 }) })
+    await expect(finishWorkspaceConnect(ctx, p, { connect: c.connect, state: "state-before-123456789", code: "code-x", error: null }, i)).rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("rejected") })
+    expect(() => workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: c.connect }, i)).toThrowError(expect.objectContaining({ code: "conflict" }))
+    await expect(startWorkspaceConnect(ctx, p, { connect: c.connect, state: "state-during-123456789" }, memberInvocation(ctx, "owner", action))).rejects.toMatchObject({ code: "conflict" })
+    expect(sends).toBe(0)
+    expect(ctx.sql.exec<{ status: string }>("SELECT status FROM workspace_credential_requests WHERE id=?", c.connect).toArray()[0]?.status).toBe("open")
+    // A new secret lifts it. The old link was made for the client as it was,
+    // so it is refused as changed; a new one starts.
+    const stored = checkedCredential(ctx, "google-client")!
+    const replaced = await prepareCredential(ctx, { ...stored, secretFields: { client_secret: "new-client-secret" } }, stored)
+    ctx.storage.transactionSync(() => storeCredential(ctx, replaced, p, "item.rotate"))
+    expect(() => workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: c.connect }, i)).toThrowError("The credential changed; review and try again.")
+    const fresh = createWorkspaceConnect(ctx, p, { provider: "google-gmail", client: "google-client", slug: "gmail-test", home: "workspace", fresh: true }, i)
+    const again = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: fresh.connect }, i))
+    expect(await startWorkspaceConnect(ctx, p, { connect: fresh.connect, state: "state-after-1234567890" }, memberInvocation(ctx, "owner", again))).toMatchObject({ authorizeUrl: expect.any(String) })
+  })
+})
+
+// An owner may stop another member's private ask without reading it; that
+// stop row stays when the ask's client is rejected.
+it("keeps an owner's stop row for a private connect whose chosen client is rejected", async () => {
+  const { deviceInvocation, devicePrincipal } = await import("./credentials-test-support.ts")
+  const { credentialPending } = await import("../src/vault/areas/credentials-pending.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    await client(ctx)
+    // The admin's machine may use its owner's private credentials.
+    const scope = JSON.parse(ctx.sql.exec<{ scope: string }>("SELECT scope FROM devices WHERE id='dev_admin'").toArray()[0]!.scope) as Record<string, unknown>
+    ctx.sql.exec("UPDATE devices SET scope=? WHERE id='dev_admin'", JSON.stringify({ ...scope, privateCredentials: true }))
+    const machine = devicePrincipal("dev_admin"), asked = await deviceInvocation(ctx, "dev_admin")
+    const c = createWorkspaceConnect(ctx, machine, { provider: "google-gmail", client: "google-client", slug: "gmail-admin", home: "private", reason: "Read my mail" }, asked)
+    rejectClient(ctx, "google-client")
+    const rows = credentialPending(ctx, memberPrincipal(ctx), memberInvocation(ctx))
+    expect(rows.filter((r) => r.view === "stop").map((r) => r.view === "stop" ? r.stop.id : null)).toEqual([c.connect])
+  })
+})
+
+// A guest's own private client and connection: once the provider rejects
+// the client, the guest's own reconnect through it is not shown, and the
+// client's row is, as it is to anyone who may replace its secret.
+it("shows a guest the row to replace their own rejected client's secret in place of their reconnect through it", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const home = { kind: "member" as const, member: "mem_guest" }
+    await client(ctx, home, "guest-client")
+    const g = memberPrincipal(ctx, "guest"), gi = memberInvocation(ctx, "guest")
+    const c = createWorkspaceConnect(ctx, g, { provider: "google-gmail", client: "guest-client", slug: "gmail-guest", home: "private" }, gi)
+    const action = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, g, { connect: c.connect }, gi))
+    await startWorkspaceConnect(ctx, g, { connect: c.connect, state: "state-guest-123456789" }, memberInvocation(ctx, "guest", action))
+    upstream()
+    await finishWorkspaceConnect(ctx, g, { connect: c.connect, state: "state-guest-123456789", code: "code-guest", error: null }, gi)
+    createWorkspaceConnect(ctx, g, { provider: "google-gmail", client: "guest-client", slug: "gmail-guest", home: "private" }, gi)
+    rejectClient(ctx, "guest-client")
+    // A workspace client rejected too is never put in front of the guest.
+    await connected(ctx)
+    rejectClient(ctx, "google-client")
+    expect((await needsYouRows(ctx, "guest")).map((r) => [r.kind, r.id])).toEqual([["review", "guest-client"]])
+    expect((await needsYouRows(ctx)).map((r) => r.id)).toEqual(expect.arrayContaining(["google-client"]))
   })
 })
 

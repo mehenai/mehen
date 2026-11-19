@@ -368,6 +368,10 @@ const DECEPTIVE_INTAKE: WorkspaceIntakeView = { ...INTAKE, intake: "int_9vq3mz7k
 
 // An account to expect that hides a zero-width space, so the name the
 // person checks at the provider is not the one shown.
+// The client the connect chose was rejected by the provider: it cannot start
+// until the client's secret is replaced; the reader may or may not see the client.
+const REJECTED_CLIENT_CONNECT: WorkspaceConnectView = { ...CONNECT, clientRejected: { client: "google-client" } }
+const REJECTED_HIDDEN_CLIENT_CONNECT: WorkspaceConnectView = { ...CONNECT, clientRejected: { client: null } }
 const DECEPTIVE_CONNECT: WorkspaceConnectView = { ...CONNECT, connect: "con_3kd9vx2mq7", expect: "alex@northwind\u200B.ai", requestedBy: { device: "dev_macmini1", deviceName: "mac-mini", session: null } }
 
 // Rule proposals (/w/<slug>/p/<pol_id>). termsDigest and digest are the
@@ -802,6 +806,8 @@ export function workspaceAsksGallery(): ShellGalleryEntry[] {
     { id: "ws-intake-held", group: GROUP, title: "Intake while the account cools off", note: "After a recovery or another security change: saving is refused until it ends, said before anything is filled in.", page: workspaceIntakePage({ ...owner, accountHeld: true }, INTAKE, [ownerProject], NOW) },
     { id: "ws-intake-lease-only", group: GROUP, title: "Add a credential with no host", note: "Asked for without a host or an injection: it reads No host, only delivered into a process with mehen run, with no destination to accept.", page: workspaceIntakePage(owner, LEASE_ONLY_INTAKE, [ownerProject], NOW) },
     { id: "ws-connect", group: GROUP, title: "Connect an account, choose where it belongs", note: "Starting the sign-in is signed with a passkey, home included.", page: workspaceConnectPage(owner, CONNECT, [ownerProject], NOW) },
+    { id: "ws-connect-client-rejected", group: GROUP, title: "Connect, its OAuth client rejected", note: "The provider rejected the client this connect signs in through: the page says so, links to the client and keeps Continue off until its secret is replaced.", page: workspaceConnectPage(owner, REJECTED_CLIENT_CONNECT, [ownerProject], NOW) },
+    { id: "ws-connect-client-rejected-hidden", group: GROUP, title: "Connect, its OAuth client rejected and not visible to you", note: "As above, without naming or linking to a client this reader may not see.", page: workspaceConnectPage(owner, REJECTED_HIDDEN_CLIENT_CONNECT, [ownerProject], NOW) },
     { id: "ws-connect-deceptive", group: GROUP, title: "Connect, deceptive account to expect", note: "The account to sign in as hides a zero-width space: the warning card first, Stop this request filled, Continue quiet.", page: workspaceConnectPage(owner, DECEPTIVE_CONNECT, [ownerProject], NOW) },
     { id: "ws-adoption", group: GROUP, title: "Adopt credentials a machine found", note: "Rows grouped by repository and folder; the custom destination, the stale source and the row whose home is refused start unticked; one passkey over the whole batch.", page: workspaceAdoptionPage(owner, GALLERY_ADOPTION, [ownerProject], NOW) },
     { id: "ws-adoption-deceptive", group: GROUP, title: "Adopt credentials, deceptive host", note: "A custom host hiding a zero-width space: the warning card first, Cancel batch filled, Approve quiet.", page: workspaceAdoptionPage(owner, DECEPTIVE_ADOPTION, [ownerProject], NOW) },

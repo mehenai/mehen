@@ -51,6 +51,20 @@ function between(text: string, from: string, to: string): string {
   return text.slice(start, end === -1 ? undefined : end)
 }
 
+describe("a connect whose OAuth client the provider rejected", () => {
+  it("says so, links to the client only when the reader may see it, and keeps Continue off", () => {
+    const seen = rendered("ws-connect-client-rejected")
+    expect(seen).toContain('data-region="connect-client-rejected"')
+    expect(seen).toContain('href="/w/northwind/items/google-client"')
+    expect(seen).toContain("&quot;blocked&quot;:true")
+    expect(seen).toMatch(/data-action="start-connect"[^>]* disabled/)
+    const hidden = rendered("ws-connect-client-rejected-hidden")
+    expect(hidden).toContain('data-region="connect-client-rejected"')
+    expect(hidden).not.toContain("/items/google-client")
+    expect(rendered("ws-connect")).not.toContain('data-region="connect-client-rejected"')
+  })
+})
+
 describe("the workspace asks gallery", () => {
   it("is registered in the gallery script, with every page kind once per id", () => {
     expect(GALLERY_SCRIPT).toContain('import { workspaceAsksGallery } from "../src/ui/workspace-asks-gallery.ts"')
