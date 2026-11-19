@@ -70,6 +70,7 @@ import { loadProject } from "./projects.ts"
 import { onCredentialRemoved, projectWorkspaceOps } from "./projects-workspace.ts"
 import { platformAuditPage } from "./tenant.ts"
 import { askingWorkload } from "./workloads.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 import { workspaceMemberOps } from "./workspace-members.ts"
 import { accessChanged, accessState, authorise, bumpAccessRevision, managedSetting, newMember, requireStepUp, setProjectShare, setSetting, setting, type ManagedSetting, type WorkspaceInvocationContext, type WorkspaceRuntimePrincipal } from "./workspace-runtime.ts"
 
@@ -412,6 +413,7 @@ async function removeItem(ctx: VaultContext, principal: WorkspaceRuntimePrincipa
   return subjectWrite(ctx, () => {
     const live = checkedCredential(ctx, slug)
     if (!live || live.id !== item.id) throw new VaultError("not_found", "No such item.")
+    beforeManagementChange(ctx)
     onCredentialRemoved(ctx, live, "deleted", member.memberId)
     invalidateCredentialDependencies(ctx, live.id)
     ctx.sql.exec("DELETE FROM item_secret_history WHERE item=?", live.id)

@@ -25,7 +25,8 @@ import { parseOpInput } from "./items.ts"
 import { anchorOf, managesHome, type HeldRequest } from "./policy-rules-workspace.ts"
 import { projects } from "./projects.ts"
 import { readableDevices } from "./workspace-devices.ts"
-import { accessState, authorise, capabilityState, eligibilityState, managedSetting, queueNotice, registerAccessChangeHook, registerManagementGuard, registerSecurityChangeHook, requireStepUp, security, setting, workspaceRef, type AccessAllowed, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
+import { registerManagementGuard } from "./management-guard.ts"
+import { accessState, authorise, capabilityState, eligibilityState, managedSetting, queueNotice, registerAccessChangeHook, registerSecurityChangeHook, requireStepUp, security, setting, workspaceRef, type AccessAllowed, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 
 const DAY_MS = 86_400_000
 // Today's counts, and the sweep keeps eight days of them.
@@ -568,13 +569,21 @@ const manageShareEnd = (share: Share): number | null => share.level === "manage"
 // lapse nor restore management before the sweep reads it. A record goes
 // with its share (ON DELETE CASCADE); one whose share's terms changed since
 // is pruned here.
+// Access is read only when a manage share's end has passed unsettled, so
+// the guard costs one query on every other write it runs before.
 export function settleShareExpiries(ctx: VaultContext): void {
   const now = ctx.now()
   ctx.sql.exec("DELETE FROM share_ends_settled WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=share_ends_settled.share AND s.value=share_ends_settled.terms)")
+  const due = new Set<string>()
+  for (const row of ctx.sql.exec<{ id: string; value: string }>("SELECT s.id,s.value FROM project_shares s WHERE json_extract(s.value,'$.level')='manage' AND json_extract(s.value,'$.expiresAt') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM share_ends_settled e WHERE e.share=s.id AND e.terms=s.value)")) {
+    const end = manageShareEnd(JSON.parse(row.value) as Share)
+    if (end !== null && Number.isFinite(end) && end <= now) due.add(row.id)
+  }
+  if (due.size === 0) return
   const state = accessState(ctx)
   for (const share of state.shares) {
-    const end = manageShareEnd(share)
-    if (end === null || !Number.isFinite(end) || end > now || (state.endedShares ?? []).includes(share.id)) continue
+    if (!due.has(share.id)) continue
+    const end = manageShareEnd(share) as number
     const before = { ...state, shares: state.shares.map((s) => (s === share ? { ...s, expiresAt: null } : s)) }
     lapseMandatesOnLostManagement(ctx, before, state, "share", end)
     ctx.sql.exec("INSERT OR IGNORE INTO share_ends_settled(share,terms) SELECT id,value FROM project_shares WHERE id=?", share.id)

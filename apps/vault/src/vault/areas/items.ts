@@ -30,6 +30,7 @@ import { deviceCovers } from "./devices.ts"
 import { credentialOps, workspaceItemOps } from "./items-workspace.ts"
 import { workspacePostureOps } from "./postures-workspace.ts"
 import { forgetConnection } from "./oauth.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 
 // Op inputs arrive as `unknown` across the DO boundary; every op parses its own.
 export function parseOpInput<T extends z.ZodType>(schema: T, input: unknown): z.infer<T> {
@@ -508,6 +509,7 @@ export const items: ItemsService = {
         }
         storeSecrets(ctx, id, sealed)
       } else {
+        beforeManagementChange(ctx)
         ctx.sql.exec(
           `INSERT INTO items (${ITEM_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, 1, ?, ?, ?, NULL, NULL, NULL, NULL, 0)`,
           id,
@@ -534,6 +536,7 @@ export const items: ItemsService = {
   },
 
   deleteItem(ctx, item, actor) {
+    beforeManagementChange(ctx)
     ctx.sql.exec("DELETE FROM item_secret_history WHERE item = ?", item.id)
     ctx.sql.exec("DELETE FROM item_secrets WHERE item = ?", item.id)
     ctx.sql.exec("DELETE FROM items WHERE id = ?", item.id)

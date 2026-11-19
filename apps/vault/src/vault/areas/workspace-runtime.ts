@@ -13,6 +13,8 @@ import type { AccountInvocationAuth, DeviceAuth, PlatformInvocationAuth, SystemA
 import { one, randomId } from "../core.ts"
 import { lapseMandates } from "./mandates-lapse.ts"
 import type { ExposureFact } from "../services.ts"
+import { beforeManagementChange, isolateManagementGuardsForTests } from "./management-guard.ts"
+export { beforeManagementChange, registerManagementGuard } from "./management-guard.ts"
 
 export type WorkspaceRuntimeAuth = AccountInvocationAuth | DeviceAuth | PlatformInvocationAuth | Pick<SystemAuth, "kind" | "actor">
 export type DeviceInvocationAuth = DeviceAuth
@@ -244,6 +246,7 @@ export function drainOutbox(ctx: VaultContext, limit: number): z.infer<typeof Ou
 export function newMember(ctx: VaultContext, account: string, name: string, role: import("@mehen/protocol").WorkspaceRole, status: AccessMember["status"], id = randomId("mem")): string {
   const existing = one(ctx.sql.exec<{ account: string }>("SELECT account FROM members WHERE id=?", id))
   if (existing) { if (existing.account !== account) throw new VaultError("conflict", "This membership reservation belongs to another account."); return id }
+  beforeManagementChange(ctx)
   ctx.sql.exec("INSERT INTO members(id,account,name,role,status,joined_at) VALUES (?,?,?,?,?,?)", id, account, name, role, status, ctx.now())
   if (!security(ctx, account)) saveSecurity(ctx, { account, installedEpoch: 0, pending: null, restriction: null, revokedSessionIds: [], removedFactorIds: [], deleting: false })
   return id
@@ -253,6 +256,7 @@ export function newMember(ctx: VaultContext, account: string, name: string, role
 // confirmation or on a redemption that joins straight away. The caller has
 // checked the terms and owns the synchronous transaction.
 export function activateInvitedMember(ctx: VaultContext, member: string, invite: string, terms: import("@mehen/protocol").InviteTerms): void {
+  beforeManagementChange(ctx)
   for (const team of terms.teams) ctx.sql.exec("INSERT INTO team_members(team,member) VALUES (?,?)", team, member)
   for (const share of terms.shares) { const value = { ...share, id: randomId("shr"), subject: { kind: "member", member } }; ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", value.id, share.project, "member", member, canonicalJson(value)) }
   ctx.sql.exec("UPDATE members SET status='active',revision=revision+1 WHERE id=?", member)
@@ -267,6 +271,7 @@ export function setProjectShare(ctx: VaultContext, after: import("@mehen/protoco
   const id = subject.subject.kind === "member" ? subject.subject.member : subject.subject.team
   const old = one(ctx.sql.exec<{ value: string }>("SELECT value FROM project_shares WHERE project=? AND subject_kind=? AND subject_id=?", subject.project, subject.subject.kind, id))
   if (canonicalJson(old ? JSON.parse(old.value) : null) !== canonicalJson(before)) throw new VaultError("conflict", "The expected state changed.")
+  beforeManagementChange(ctx)
   if (after) ctx.sql.exec("INSERT INTO project_shares(id,project,subject_kind,subject_id,value) VALUES (?,?,?,?,?) ON CONFLICT(project,subject_kind,subject_id) DO UPDATE SET value=excluded.value", after.id, after.project, after.subject.kind, id, canonicalJson(after))
   else ctx.sql.exec("DELETE FROM project_shares WHERE id=?", subject.id)
   bumpAccessRevision(ctx)
@@ -298,12 +303,6 @@ const offboardingHooks = new Map<string, import("../services.ts").OffboardingHoo
 export type AccessChangeTarget = { team?: string; device?: string; role?: import("@mehen/protocol").WorkspaceRole; narrowing?: boolean }
 export type AccessChangeHook = (ctx: VaultContext, member: string | null, reason: string, target: AccessChangeTarget) => void
 const accessChangeHooks = new Map<string, AccessChangeHook>()
-// What must run before any change to who manages what, ahead of the access
-// change hooks: mandates lapse what expired shares took (settleShareExpiries)
-// while access is still as it was.
-const managementGuards = new Map<string, (ctx: VaultContext) => void>()
-export function registerManagementGuard(name: string, guard: (ctx: VaultContext) => void): void { managementGuards.set(name, guard) }
-export function beforeManagementChange(ctx: VaultContext): void { for (const guard of managementGuards.values()) guard(ctx) }
 let exposureProvider: ((ctx: VaultContext) => { item: string; version: number; ceiling: import("@mehen/protocol").Mode }[]) | null = null
 export function registerOffboardingHook(name: string, hook: import("../services.ts").OffboardingHook): void { offboardingHooks.set(name, hook) }
 export function registerAccessChangeHook(name: string, hook: AccessChangeHook): void { accessChangeHooks.set(name, hook) }
@@ -311,14 +310,13 @@ export function registerAccessChangeHook(name: string, hook: AccessChangeHook): 
 export function isolateAccessLifecycleForTests(): () => void {
   const offboarding = new Map(offboardingHooks)
   const changes = new Map(accessChangeHooks)
-  const guards = new Map(managementGuards)
+  const restoreGuards = isolateManagementGuardsForTests()
   const exposures = exposureProvider
-  offboardingHooks.clear(); accessChangeHooks.clear(); managementGuards.clear(); exposureProvider = null
+  offboardingHooks.clear(); accessChangeHooks.clear(); exposureProvider = null
   return () => {
-    offboardingHooks.clear(); accessChangeHooks.clear(); managementGuards.clear()
+    offboardingHooks.clear(); accessChangeHooks.clear(); restoreGuards()
     for (const [name, hook] of offboarding) offboardingHooks.set(name, hook)
     for (const [name, hook] of changes) accessChangeHooks.set(name, hook)
-    for (const [name, guard] of guards) managementGuards.set(name, guard)
     exposureProvider = exposures
   }
 }
@@ -583,6 +581,7 @@ export function installIdentity(ctx: VaultContext, input: IdentityInstall): { me
         ctx.audit({ actor: "system", action: "member.promotion_cancelled", target: member.id, detail: { role: member.pending_role, reason: expired ? "expired" : "promoter_ineligible" } })
         return { promotionRefused: true }
       }
+      beforeManagementChange(ctx)
       ctx.sql.exec("UPDATE members SET role=pending_role,pending_role=NULL,pending_since=NULL,pending_action=NULL,pending_by=NULL,revision=revision+1 WHERE id=?", member.id)
       member.role = input.pendingRole
     }

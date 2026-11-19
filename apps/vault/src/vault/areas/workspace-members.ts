@@ -138,6 +138,7 @@ export const workspaceMemberOps: NonNullable<Area["workspaceOps"]> = {
       if (subject.role === "owner") ownerNotice(ctx, subject, by, "removed")
       ctx.sql.exec("INSERT INTO removal_exposures(removal,member,snapshot,at) VALUES (?,?,?,?)", snapshot.removal, subject.id, canonicalJson(snapshot), ctx.now())
       // Hooks see the pre-removal graph and must mutate their own resources.
+      beforeManagementChange(ctx)
       runOffboardingHooks(ctx, snapshot)
       accessChanged(ctx, subject.id, change)
       ctx.sql.exec("UPDATE members SET status='removed',pending_role=NULL,pending_since=NULL,pending_action=NULL,pending_by=NULL,revision=revision+1 WHERE id=?", subject.id)

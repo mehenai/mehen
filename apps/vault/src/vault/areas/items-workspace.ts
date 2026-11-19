@@ -19,6 +19,7 @@ import { PostureTerms, forgetPosture, machinePosture, personPosture, postureActi
 import { assertPushableChange, itemPushable, pushesOn } from "./push-allowance.ts"
 import { latestPushes } from "./push-records.ts"
 import { lapseMandatesOnRehome, settleShareExpiries } from "./mandates-workspace.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 import { accessState, eligibilityState, authorise, managedSetting, nameMiss, recordExposure, registerAccessStateProvider, registerExposureProvider, registerOffboardingHook, requireStepUp, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 
 export type CheckedCredential = ItemRecord & {
@@ -336,6 +337,7 @@ export const offboardCredentials:OffboardingHook=(ctx,snapshot)=>{
   const item=slug?checkedCredential(ctx,slug):null
   if(!item)continue
   if(item.home.kind!=="member"||item.home.member!==snapshot.member)throw new VaultError("conflict","The credential home changed during removal.")
+  beforeManagementChange(ctx)
   onCredentialRemoved(Object.assign(Object.create(ctx),{audit(){ /* member.remove is the sole removal event. */ }}),item,"offboarded",snapshot.by)
   invalidateCredentialDependencies(ctx,id)
   ctx.sql.exec("DELETE FROM item_secret_history WHERE item=?",id)
