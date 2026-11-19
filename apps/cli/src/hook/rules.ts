@@ -7,8 +7,9 @@
 import { secretPrefix, PLACEHOLDER_CORE } from "@mehen/protocol"
 import { type Dirent, existsSync, readdirSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, dirname, join, normalize, resolve, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path"
 import { loginFiles, sourceType } from "../adopt/sources.ts"
+import { type ShellNode, type Word, parseShell } from "./shell.ts"
 
 export type Finding = { rule: "secret-file" | "secret-in-command" | "secret-in-write"; reason: string; path?: string }
 
@@ -57,29 +58,47 @@ function insideVaultData(path: string, cache?: Map<string, boolean>): boolean {
   return false
 }
 
-// $HOME, ${HOME} and a leading ~ as the home folder, as the shell would
-// read them; nothing is ever run to find out.
-export function expandHome(word: string, home: string): string {
-  return word.replace(/^~(?=$|\/)/, home).replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, home)
+// A path a tool call names (not a shell word), as the tool reads it: a
+// leading ~ is the home folder. Shell words reach secretFile with HOME
+// already expanded, once, by the tokeniser in shell.ts.
+export function toolPath(raw: string, home: string): string {
+  return raw.replace(/^~(?=$|\/)/, home)
 }
 
-export type SecretFileOptions = { follow?: boolean; cache?: Map<string, boolean> }
+export type SecretFileOptions = { physical?: boolean; cache?: Map<string, boolean> }
 
-// Why reading this file would put a secret in front of the agent, or null.
-// A link that exists is judged by what it points at too.
-export function secretFile(raw: string, cwd: string, home = homedir(), vaultDirs: string[] = [], options: SecretFileOptions = {}): string | null {
-  const path = normalize(resolve(cwd, expandHome(raw, home)))
-  const why = classify(path, home, vaultDirs, options.cache)
-  if (why !== null || options.follow === false) return why
-  let real: string
+function realOrNull(path: string): string | null {
   try {
-    real = realpathSync(path)
+    return realpathSync.native(path)
   } catch {
     return null
   }
-  if (real === path) return null
-  const through = classify(real, home, vaultDirs, options.cache)
-  return through === null ? null : `it is a link to ${real.replace(home, "~")}, and ${through}`
+}
+
+function shown(path: string, home: string): string {
+  for (const h of [home, realOrNull(home)]) if (h && under(path, h)) return `~${path.slice(h.length)}`
+  return path
+}
+
+// Why reading this path would put a secret in front of the agent, or null.
+// The path is taken literally: no ~ or $HOME. One that exists is judged
+// where it really is on disk, its links and .. resolved in order; then, or
+// when it does not exist, by the path as written.
+export function secretFile(raw: string, cwd: string, home = homedir(), vaultDirs: string[] = [], options: SecretFileOptions = {}): string | null {
+  const joined = isAbsolute(raw) ? raw : `${cwd}${sep}${raw}`
+  const written = normalize(joined)
+  const real = options.physical === false ? null : realOrNull(joined)
+  if (real !== null && real !== written) {
+    const why = classify(real, home, vaultDirs, options.cache)
+    if (why !== null) return `it is a link to ${shown(real, home)}, and ${why}`
+  }
+  return classify(written, home, vaultDirs, options.cache)
+}
+
+// The home folder as given and as it really is on disk, when they differ.
+function homes(home: string): string[] {
+  const real = realOrNull(home)
+  return real && real !== home ? [home, real] : [home]
 }
 
 function classify(path: string, home: string, vaultDirs: string[], cache?: Map<string, boolean>): string | null {
@@ -87,8 +106,10 @@ function classify(path: string, home: string, vaultDirs: string[], cache?: Map<s
   if (/^\/proc\/[^/]+\/environ$/.test(path)) return "it is a process's environment, which can hold keys"
   if (insideVaultData(path, cache)) return "it is a Mehen vault's own data"
   if (name.endsWith(".pub")) return null
-  for (const dir of privateDirs(home, vaultDirs)) if (under(path, dir)) return dir === join(home, ".config", "mehen") ? "it is one of Mehen's own files on this machine" : vaultDirs.includes(dir) ? "it is the vault's own data" : `it is under ${dir.replace(home, "~")}, where keys live`
-  if (loginFiles(home).some((file) => file.type !== "json" && file.path === path)) return "it holds a CLI's login"
+  for (const h of homes(home)) {
+    for (const dir of privateDirs(h, vaultDirs)) if (under(path, dir)) return dir === join(h, ".config", "mehen") ? "it is one of Mehen's own files on this machine" : vaultDirs.includes(dir) ? "it is the vault's own data" : `it is under ${dir.replace(h, "~")}, where keys live`
+    if (loginFiles(h).some((file) => file.type !== "json" && file.path === path)) return "it holds a CLI's login"
+  }
   const type = sourceType(path)
   if (type === "dotenv" || type === "envrc") return "it is an environment file, which holds keys"
   if (type === "secrets-file") return "it is in a .local-secrets folder"
@@ -117,55 +138,14 @@ export function secretInText(text: string): string | null {
 // Commands that read or copy what their arguments name.
 const READERS = new Set(["cat", "bat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "cut", "sort", "uniq", "tr", "xxd", "od", "hexdump", "base64", "strings", "source", ".", "cp", "scp", "rsync", "tar", "zip", "jq", "yq", "python", "python3", "node", "bun", "deno", "ruby", "perl", "php", "curl", "wget", "nc", "diff", "cmp", "vim", "vi", "nano", "emacs", "code", "open", "xdg-open", "dotenv", "env", "export", "git"])
 
-// Splits a command line into segments (pipes, ;, &&, ||) and words, well
-// enough to see which program reads which path. Quotes are honoured;
-// anything cleverer (substitutions, eval) is read as plain words.
-// $HOME and ${HOME} at i: the length of the reference, or 0.
-function homeReference(command: string, i: number): number {
-  const ahead = command.slice(i)
-  if (ahead.startsWith("${HOME}")) return 7
-  return /^\$HOME(?![A-Za-z0-9_])/.test(ahead) ? 5 : 0
-}
+// Of those, the ones whose operands are only the files they read: a word
+// the guard cannot know there is a file it cannot check. The options listed
+// take a value, which is not a file.
+const FILE_READERS: Record<string, string> = { cat: "", bat: "lmHrp", less: "bhjkoOpPtTxyz", more: "n", head: "nc", tail: "ncs", xxd: "lcsgo", od: "AjNtw", hexdump: "nsef", base64: "w", strings: "nte", sort: "ktoST", uniq: "fsw", cut: "dfcb", diff: "", cmp: "in", source: "", ".": "", grep: "", egrep: "", fgrep: "", cp: "St" }
 
-function segments(command: string, home: string): string[][] {
-  const out: string[][] = []
-  let words: string[] = []
-  let word = ""
-  let quote: string | null = null
-  const push = () => {
-    if (word) words.push(word)
-    word = ""
-  }
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i] as string
-    const reference = ch === "$" && quote !== "'" ? homeReference(command, i) : 0
-    if (reference) {
-      word += home
-      i += reference - 1
-      continue
-    }
-    if (quote) {
-      if (ch === quote) quote = null
-      else word += ch
-      continue
-    }
-    if (ch === "'" || ch === '"') quote = ch
-    else if (ch === " " || ch === "\t" || ch === "\n") push()
-    else if (ch === "|" || ch === ";" || ch === "&" || ch === "<" || ch === ">" || ch === "(" || ch === ")" || ch === "`" || ch === "$") {
-      push()
-      if (ch === "<") words.push("<")
-      if (ch === "|" || ch === ";" || ch === "&" || ch === "(" || ch === ")" || ch === "`") {
-        if (words.length) out.push(words)
-        words = []
-      }
-    } else word += ch
-  }
-  push()
-  if (words.length) out.push(words)
-  return out
-}
+const CANT_FILES = (what: string, word: string) => `can't tell which files ${what} reads (${word} is only known when the shell runs it); name the files directly`
+const CANT_FOLDER = (what: string, path: string) => `can't tell which folder ${what} would read ${path} from after an earlier folder change the guard does not follow; name the file by its full path`
 
-// A variable whose name says it holds a key.
 const KEY_NAME = /[A-Za-z0-9_]*(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)[A-Za-z0-9_]*/i
 const ENV_DUMP = new Set(["env", "printenv", "export", "set", "declare", "typeset"])
 
@@ -186,74 +166,161 @@ function environmentRead(words: string[], command: string): string | null {
   return null
 }
 
-// Leading options of a wrapper, and the ones among them that take a value.
-function dropOptions(args: string[], withValue: readonly string[]): string[] {
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+const RESERVED = new Set(["!", "if", "then", "else", "elif", "do", "while", "until", "{"])
+
+function shownWord(word: Word): string {
+  return word.text ? word.text : "a variable or a substitution"
+}
+
+// ---- the folder a command runs in ---------------------------------------
+
+// Every folder the line might be in at this point, or null when an earlier
+// change the guard does not model leaves it unknown.
+type Cwds = string[] | null
+type Link = { target: string; kind: "symbolic" | "hard"; written: string }
+type State = { cwds: Cwds; stack: Cwds[]; links: Map<string, Link> }
+
+const MAX_CWDS = 8
+
+function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function union(a: Cwds, b: Cwds): Cwds {
+  if (a === null || b === null) return null
+  const all = [...new Set([...a, ...b])]
+  return all.length > MAX_CWDS ? null : all
+}
+
+// Where `cd <word>` leaves the line, from every folder it might be in: a
+// folder that exists is where the cd goes; one that does not may yet be
+// made by the time it runs, so the line may be in either.
+function changeTo(cwds: Cwds, arg: Word | undefined, home: string): Cwds {
+  if (arg === undefined) return [home]
+  if (arg.dynamic || arg.glob || arg.text === "-" || /^[+-]\d+$/.test(arg.text)) return null
+  if (cwds === null) return isAbsolute(arg.text) && isDir(arg.text) ? [normalize(arg.text)] : null
+  return union([], cwds.flatMap((cwd) => {
+    const dir = resolve(cwd, arg.text)
+    return isDir(dir) ? [dir] : [cwd, dir]
+  }))
+}
+
+function operandsOf(args: Word[]): Word[] {
   let i = 0
-  while (i < args.length && (args[i] as string).startsWith("-")) {
-    const option = args[i] as string
+  while (i < args.length && !(args[i] as Word).dynamic && (args[i] as Word).text.startsWith("-") && (args[i] as Word).text.length > 1) {
+    if ((args[i] as Word).text === "--") {
+      i++
+      break
+    }
     i++
-    if (option === "--") break
-    if (withValue.includes(option)) i++
   }
   return args.slice(i)
 }
 
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
-
-// The program a command line really runs, past variable assignments and the
-// wrappers that run their arguments as a command: command, builtin, env,
-// exec, nohup, time, sudo and xargs. A wrapper that would run nothing (env
-// alone prints the environment, command -v only looks a name up) is kept.
-export function unwrap(words: string[]): string[] {
-  let current = words
-  for (let depth = 0; depth < 8; depth++) {
-    let i = 0
-    while (i < current.length - 1 && ASSIGNMENT.test(current[i] as string)) i++
-    current = current.slice(i)
-    const program = basename(current[0] ?? "")
-    let rest = current.slice(1)
-    switch (program) {
-      case "command":
-        if (rest.includes("-v") || rest.includes("-V")) return current
-        rest = dropOptions(rest, [])
-        break
-      case "builtin":
-      case "nohup":
-        break
-      case "exec":
-        rest = dropOptions(rest, ["-a"])
-        break
-      case "time":
-        rest = dropOptions(rest, ["-f", "-o"])
-        break
-      case "env":
-        rest = dropOptions(rest, ["-u", "-C", "-S", "--unset", "--chdir", "--split-string"])
-        while (rest.length && ASSIGNMENT.test(rest[0] as string)) rest = rest.slice(1)
-        break
-      case "sudo":
-        rest = dropOptions(rest, ["-u", "-g", "-h", "-p", "-C", "-r", "-t", "-U", "-D", "--user", "--group", "--host", "--prompt"])
-        break
-      case "xargs":
-        rest = dropOptions(rest, ["-n", "-I", "-L", "-P", "-d", "-s", "-E", "-a", "--max-args", "--max-lines", "--max-procs", "--delimiter", "--arg-file"])
-        break
-      default:
-        return current
+// cd, pushd and popd, with the directory stack. In a pipeline or in the
+// background a cd runs in a subshell; the line may then be in either.
+function folderChange(program: string, args: Word[], state: State, home: string, apart: boolean): void {
+  const before = state.cwds
+  const operands = operandsOf(args)
+  if (program === "cd") state.cwds = changeTo(before, operands[0], home)
+  else if (program === "pushd") {
+    const arg = operands[0]
+    if (arg === undefined) {
+      const top = state.stack.pop()
+      if (top !== undefined) {
+        state.stack.push(before)
+        state.cwds = top
+      }
+    } else {
+      state.stack.push(before)
+      state.cwds = changeTo(before, arg, home)
     }
-    if (rest.length === 0) return current
-    current = rest
+  } else if (program === "popd") {
+    const top = operands.length ? undefined : state.stack.pop()
+    state.cwds = top === undefined ? null : top
   }
-  return current
+  if (apart) state.cwds = union(before, state.cwds)
 }
 
-// A shell glob as a regular expression over one name.
+// ---- links made earlier on the line -------------------------------------
+
+function linkFor(path: string, links: Map<string, Link>): { link: Link; target: string } | null {
+  for (const [at, link] of links) {
+    if (path === at) return { link, target: link.target }
+    if (link.kind === "symbolic" && path.startsWith(at + sep)) return { link, target: link.target + path.slice(at.length) }
+  }
+  return null
+}
+
+type LnArgs = { symbolic: boolean; relative: boolean; into: Word | null; single: boolean; operands: Word[] }
+
+function lnArgs(args: Word[]): LnArgs {
+  const parsed: LnArgs = { symbolic: false, relative: false, into: null, single: false, operands: [] }
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] as Word
+    const text = word.text
+    if (word.dynamic || !text.startsWith("-") || text === "-") {
+      parsed.operands.push(word)
+      continue
+    }
+    if (text === "--") {
+      parsed.operands.push(...args.slice(i + 1))
+      break
+    }
+    if (text.startsWith("--")) {
+      const [name, value] = text.split(/=(.*)/s) as [string, string | undefined]
+      if (name === "--symbolic") parsed.symbolic = true
+      else if (name === "--relative") parsed.relative = true
+      else if (name === "--no-target-directory") parsed.single = true
+      else if (name === "--target-directory") parsed.into = value !== undefined ? { ...word, text: value } : (args[++i] ?? null)
+      else if (name === "--suffix" && value === undefined) i++
+      continue
+    }
+    for (let j = 1; j < text.length; j++) {
+      const flag = text[j] as string
+      if (flag === "s") parsed.symbolic = true
+      else if (flag === "r") parsed.relative = true
+      else if (flag === "T") parsed.single = true
+      else if (flag === "t" || flag === "S") {
+        const value = text.slice(j + 1)
+        const taken = value ? { ...word, text: value } : (args[++i] ?? null)
+        if (flag === "t") parsed.into = taken
+        break
+      }
+    }
+  }
+  return parsed
+}
+
+// What ln would make: one (target, link) pair per link, the forms of GNU ln.
+function lnPairs(ln: LnArgs, cwd: string): { target: Word; link: string }[] {
+  const ops = ln.operands
+  if (ln.into) return ops.map((target) => ({ target, link: join(resolve(cwd, ln.into?.text ?? "."), basename(target.text)) }))
+  if (ops.length === 1) return [{ target: ops[0] as Word, link: join(cwd, basename((ops[0] as Word).text)) }]
+  if (ops.length === 2 && (ln.single || !isDir(resolve(cwd, (ops[1] as Word).text)))) return [{ target: ops[0] as Word, link: resolve(cwd, (ops[1] as Word).text) }]
+  const dir = resolve(cwd, (ops.at(-1) as Word).text)
+  return ops.slice(0, -1).map((target) => ({ target, link: join(dir, basename(target.text)) }))
+}
+
+// ---- grep -r -------------------------------------------------------------
+
+// A grep glob as a regular expression over one base name, with \ quoting
+// the next character as GNU grep's --exclude does.
 function globRegex(glob: string): RegExp {
   let out = ""
   for (let i = 0; i < glob.length; i++) {
     const ch = glob[i] as string
-    if (ch === "*") out += ".*"
+    if (ch === "\\" && i + 1 < glob.length) {
+      out += (glob[++i] as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    } else if (ch === "*") out += ".*"
     else if (ch === "?") out += "."
     else if (ch === "[") {
-      const close = glob.indexOf("]", i + 1)
+      const close = glob.indexOf("]", i + 2)
       if (close === -1) out += "\\["
       else {
         out += `[${glob.slice(i + 1, close).replace(/^!/, "^").replace(/\\/g, "\\\\")}]`
@@ -269,66 +336,94 @@ function globRegex(glob: string): RegExp {
 export const GREP_WALK_DEPTH = 16
 export const GREP_WALK_ENTRIES = 10_000
 
-// Folders the walk does not enter: tools' and package managers' own output,
-// which never holds the person's key files and is the bulk of most trees.
-// Only folders: a file with one of these names is still judged.
-export const GREP_WALK_SKIPS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", "target", "vendor", ".cache", ".turbo", "coverage"])
+// Folders the walk does not enter, as they rarely hold the person's own
+// keys and make up most of a tree: grep still searches them, so a key file
+// in one can reach the agent. Only folders; one named on the command line
+// is walked.
+export const GREP_WALK_SKIPS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__"])
 
-type GrepArgs = { recursive: boolean; targets: string[]; excludes: RegExp[]; includes: RegExp[]; excludeDirs: RegExp[] }
+type GrepFilter = { include: boolean; re: RegExp }
+type GrepArgs = { recursive: boolean; deref: boolean; filters: GrepFilter[]; excludeDirs: RegExp[]; files: Word[]; refuse: string | null }
 
 const GREP_LONG_VALUE = new Set(["--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--directories", "--devices", "--exclude", "--include", "--exclude-dir", "--exclude-from", "--label", "--binary-files", "--group-separator"])
 const GREP_SHORT_VALUE = "efmABCdD"
 
-function grepArgs(args: string[]): GrepArgs {
-  const parsed: GrepArgs = { recursive: false, targets: [], excludes: [], includes: [], excludeDirs: [] }
-  const operands: string[] = []
+function grepArgs(args: Word[]): GrepArgs {
+  const parsed: GrepArgs = { recursive: false, deref: false, filters: [], excludeDirs: [], files: [], refuse: null }
+  const operands: Word[] = []
   let pattern = false
+  const option = (name: string, value: Word | undefined) => {
+    if (name === "--recursive" || name === "r") parsed.recursive = true
+    if (name === "--dereference-recursive" || name === "R") parsed.recursive = parsed.deref = true
+    if ((name === "--directories" || name === "d") && value?.text === "recurse") parsed.recursive = true
+    if (name === "--regexp" || name === "--file" || name === "e" || name === "f") pattern = true
+    // A filter whose glob the shell decides is left out: checking more files
+    // than grep reads is the safe side.
+    if (value === undefined || value.dynamic) return
+    if (name === "--exclude" || name === "--include") parsed.filters.push({ include: name === "--include", re: globRegex(value.text) })
+    if (name === "--exclude-dir") parsed.excludeDirs.push(globRegex(value.text.replace(/\/+$/, "")))
+  }
   for (let i = 0; i < args.length; i++) {
-    const arg = args[i] as string
-    if (arg === "--") {
+    const word = args[i] as Word
+    const text = word.text
+    if (word.dynamic || !text.startsWith("-") || text === "-") {
+      operands.push(word)
+      continue
+    }
+    if (text === "--") {
       operands.push(...args.slice(i + 1))
       break
     }
-    if (arg.startsWith("--")) {
-      const eq = arg.indexOf("=")
-      const name = eq === -1 ? arg : arg.slice(0, eq)
-      let value = eq === -1 ? undefined : arg.slice(eq + 1)
-      if (value === undefined && GREP_LONG_VALUE.has(name)) value = args[++i]
-      if (name === "--recursive" || name === "--dereference-recursive") parsed.recursive = true
-      if (name === "--regexp" || name === "--file") pattern = true
-      if (value !== undefined && name === "--exclude") parsed.excludes.push(globRegex(value))
-      if (value !== undefined && name === "--include") parsed.includes.push(globRegex(value))
-      if (value !== undefined && name === "--exclude-dir") parsed.excludeDirs.push(globRegex(value))
+    if (text.startsWith("--")) {
+      const eq = text.indexOf("=")
+      const name = eq === -1 ? text : text.slice(0, eq)
+      const value = eq === -1 ? (GREP_LONG_VALUE.has(name) ? args[++i] : undefined) : { ...word, text: text.slice(eq + 1) }
+      option(name, value)
       continue
     }
-    if (arg.startsWith("-") && arg.length > 1) {
-      for (let j = 1; j < arg.length; j++) {
-        const flag = arg[j] as string
-        if (flag === "r" || flag === "R") parsed.recursive = true
-        if (GREP_SHORT_VALUE.includes(flag)) {
-          if (flag === "e" || flag === "f") pattern = true
-          if (j === arg.length - 1) i++
-          break
-        }
+    for (let j = 1; j < text.length; j++) {
+      const flag = text[j] as string
+      if (GREP_SHORT_VALUE.includes(flag)) {
+        const rest = text.slice(j + 1)
+        option(flag, rest ? { ...word, text: rest } : args[++i])
+        break
       }
-      continue
+      option(flag, undefined)
     }
-    operands.push(arg)
   }
-  const targets = pattern ? operands : operands.slice(1)
-  parsed.targets = targets.length ? targets : ["."]
+  parsed.files = pattern ? operands : operands.slice(1)
   return parsed
+}
+
+// --include and --exclude as GNU grep applies them: "If contradictory
+// --include and --exclude options are given, the last matching one wins.
+// If no --include or --exclude options match, a file is included unless
+// the first such option is --include."
+function grepReads(name: string, filters: GrepFilter[]): boolean {
+  let decision: boolean | null = null
+  for (const filter of filters) if (filter.re.test(name)) decision = filter.include
+  return decision ?? !filters[0]?.include
 }
 
 type Walk = { found: string } | { refused: string } | null
 
-// A breadth-first walk of what grep -r would read under `dir`, skipping what
-// the command excludes and the folders in GREP_WALK_SKIPS, until it finds a
-// key file or runs past its bounds.
-function walkForSecrets(dir: string, target: string, grep: GrepArgs, cwd: string, home: string, vaultDirs: string[]): Walk {
+// A breadth-first walk of what grep -r would read under `dir` (its real
+// path), skipping what the command excludes and the folders in
+// GREP_WALK_SKIPS, until it finds a key file or runs past its bounds. -r
+// skips the links it meets, as grep does; -R follows them, each folder
+// once.
+function walkForSecrets(dir: string, target: string, grep: GrepArgs, home: string, vaultDirs: string[]): Walk {
   const cache = new Map<string, boolean>()
+  const seen = new Set<string>()
+  const identity = (path: string) => {
+    const info = statSync(path)
+    return `${info.dev}:${info.ino}`
+  }
+  seen.add(identity(dir))
   const queue: { path: string; shown: string; depth: number }[] = [{ path: dir, shown: target, depth: 0 }]
   let entries = 0
+  const tooMany = { refused: `\`grep -r\` over ${target} would read too many files (more than ${GREP_WALK_ENTRIES}) for the guard to check them for key files; search a narrower folder, or leave the large ones out with --exclude-dir` }
+  const tooDeep = { refused: `\`grep -r\` over ${target} goes too deep (more than ${GREP_WALK_DEPTH} folders down) for the guard to check it for key files; search a narrower folder` }
   while (queue.length) {
     const { path, shown, depth } = queue.shift() as { path: string; shown: string; depth: number }
     if (vaultFolder(path, cache)) return { found: shown }
@@ -339,108 +434,383 @@ function walkForSecrets(dir: string, target: string, grep: GrepArgs, cwd: string
       continue
     }
     for (const entry of names) {
-      if (++entries > GREP_WALK_ENTRIES) return { refused: `\`grep -r\` over ${target} would read too many files (more than ${GREP_WALK_ENTRIES}) for the guard to check them for key files; search a narrower folder, or leave the large ones out with --exclude-dir` }
-      const full = join(path, entry.name)
+      if (++entries > GREP_WALK_ENTRIES) return tooMany
+      let full = join(path, entry.name)
       const label = join(shown, entry.name)
-      if (entry.isDirectory()) {
+      let folder = entry.isDirectory()
+      if (entry.isSymbolicLink()) {
+        if (!grep.deref) continue
+        const real = realOrNull(full)
+        if (real === null) continue
+        full = real
+        folder = isDir(real)
+      }
+      if (folder) {
         if (GREP_WALK_SKIPS.has(entry.name) || grep.excludeDirs.some((re) => re.test(entry.name))) continue
-        if (depth + 1 > GREP_WALK_DEPTH) return { refused: `\`grep -r\` over ${target} goes too deep (more than ${GREP_WALK_DEPTH} folders down) for the guard to check it for key files; search a narrower folder` }
+        if (depth + 1 > GREP_WALK_DEPTH) return tooDeep
+        if (grep.deref) {
+          const id = identity(full)
+          if (seen.has(id)) continue
+          seen.add(id)
+        }
         queue.push({ path: full, shown: label, depth: depth + 1 })
         continue
       }
-      if (grep.excludes.some((re) => re.test(entry.name))) continue
-      if (grep.includes.length && !grep.includes.some((re) => re.test(entry.name))) continue
-      if (secretFile(full, cwd, home, vaultDirs, { follow: entry.isSymbolicLink(), cache }) !== null) return { found: label }
+      if (!grepReads(entry.name, grep.filters)) continue
+      if (secretFile(full, "/", home, vaultDirs, { physical: false, cache }) !== null) return { found: label }
     }
   }
   return null
 }
 
-// grep -r over a folder that holds a secret file, at any depth, reads it,
-// unless the command's own --exclude, --exclude-dir or --include leaves
-// every such file out.
-function recursiveRead(words: string[], cwd: string, home: string, vaultDirs: string[]): string | null {
-  if (!["grep", "egrep", "fgrep"].includes(basename(words[0] ?? ""))) return null
-  const grep = grepArgs(words.slice(1))
-  if (!grep.recursive) return null
-  for (const target of grep.targets) {
-    const dir = resolve(cwd, expandHome(target, home))
-    try {
-      if (!statSync(dir).isDirectory()) continue
-    } catch {
+// ---- reading the line ------------------------------------------------------
+
+type Context = { home: string; vaultDirs: string[]; command: string; findings: Finding[] }
+
+function refuse(ctx: Context, reason: string): void {
+  if (!ctx.findings.some((f) => f.reason === reason)) ctx.findings.push({ rule: "secret-file", reason })
+}
+
+// Whether `program` reading `word` would read a key file, from every folder
+// the line might be in; a finding is added for the first.
+// `program` is how the reason names the reader, `cat` in backticks.
+function judgeRead(ctx: Context, state: State, cwds: Cwds, program: string, word: Word, strict: boolean): boolean {
+  if (word.dynamic) {
+    if (!strict) return false
+    refuse(ctx, CANT_FILES(program, shownWord(word)))
+    return true
+  }
+  if (word.glob) {
+    if (!globMatchesSecret(word.text)) return false
+    ctx.findings.push({ rule: "secret-file", reason: `${program} would read ${shown(word.text, ctx.home)}: the pattern matches environment or key files`, path: shown(word.text, ctx.home) })
+    return true
+  }
+  const text = word.text
+  const written = shown(text, ctx.home)
+  if (!isAbsolute(text) && cwds === null) {
+    refuse(ctx, CANT_FOLDER(program, written))
+    return true
+  }
+  for (const cwd of isAbsolute(text) ? ["/"] : (cwds as string[])) {
+    const path = isAbsolute(text) ? text : `${cwd}${sep}${text}`
+    const linked = linkFor(normalize(path), state.links)
+    if (linked) {
+      const why = secretFile(linked.target, "/", ctx.home, ctx.vaultDirs)
+      if (why) {
+        ctx.findings.push({ rule: "secret-file", reason: `${program} would read ${written}, a ${linked.link.kind} link made earlier in this command to ${linked.link.written}: ${why}`, path: written })
+        return true
+      }
+    }
+    const why = secretFile(path, "/", ctx.home, ctx.vaultDirs)
+    if (why) {
+      ctx.findings.push({ rule: "secret-file", reason: `${program} would read ${written}: ${why}`, path: written })
+      return true
+    }
+  }
+  return false
+}
+
+// The operands of a file reader, without its options and their values.
+function fileOperands(program: string, args: Word[]): Word[] {
+  const withValue = FILE_READERS[program] ?? ""
+  const out: Word[] = []
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] as Word
+    if (word.dynamic || !word.text.startsWith("-") || word.text === "-") {
+      out.push(word)
       continue
     }
-    const walk = walkForSecrets(dir, target, grep, cwd, home, vaultDirs)
-    if (walk && "found" in walk) return `\`grep -r\` would read ${walk.found}`
-    if (walk) return walk.refused
+    if (word.text === "--") {
+      out.push(...args.slice(i + 1))
+      break
+    }
+    if (word.text.startsWith("--")) continue
+    const last = word.text.at(-1) as string
+    if (word.text.length === 2 && withValue.includes(last)) i++
   }
-  return null
+  // cp's last operand is where it writes, unless -t names that folder.
+  return program === "cp" && !args.some((w) => /^(-t|--target-directory)/.test(w.text)) ? out.slice(0, -1) : out
 }
 
-// ln makes a link to its sources: a link to a key file is a way to read it
-// under a name the guard would not know.
-function linkTargets(args: string[]): string[] {
-  const operands: string[] = []
-  let into = false
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i] as string
-    if (arg === "-t" || arg === "--target-directory") {
-      into = true
+type Unwrapped = { words: Word[]; cwds: Cwds; reads: Word[]; fed: boolean; refuse: string | null }
+
+function takeValue(args: Word[], i: number, word: Word, attached: string): [Word | undefined, number] {
+  return attached ? [{ ...word, text: attached }, i] : [args[i + 1], i + 1]
+}
+
+// GNU env: options, then NAME=value, then the command it runs. -C changes
+// the command's folder, and -S splits one string into words.
+function unwrapEnv(rest: Word[], out: Unwrapped, ctx: Context): Word[] | null {
+  let i = 0
+  for (; i < rest.length; i++) {
+    const word = rest[i] as Word
+    const text = word.text
+    if (word.dynamic || !text.startsWith("-")) break
+    if (text === "--") {
       i++
-    } else if (arg.startsWith("--target-directory=")) into = true
-    else if (!arg.startsWith("-")) operands.push(arg)
+      break
+    }
+    if (text === "-" || ["-i", "--ignore-environment", "-0", "--null", "-v", "--debug", "--list-signal-handling"].includes(text)) continue
+    if (/^--(block|default|ignore)-signal(=|$)/.test(text)) continue
+    let name: string
+    let value: Word | undefined
+    if (text.startsWith("--")) {
+      const eq = text.indexOf("=")
+      name = eq === -1 ? text : text.slice(0, eq)
+      if (!["--unset", "--chdir", "--split-string"].includes(name)) {
+        out.refuse = `can't tell what \`env\` runs with ${text}; run the command without it`
+        return null
+      }
+      ;[value, i] = eq === -1 ? [rest[i + 1], i + 1] : [{ ...word, text: text.slice(eq + 1) }, i]
+    } else {
+      const flags = text.slice(1)
+      const at = flags.search(/[uCS]/)
+      if (at === -1) {
+        if (/^[i0v]+$/.test(flags)) continue
+        out.refuse = `can't tell what \`env\` runs with ${text}; run the command without it`
+        return null
+      }
+      if (!/^[i0v]*$/.test(flags.slice(0, at))) {
+        out.refuse = `can't tell what \`env\` runs with ${text}; run the command without it`
+        return null
+      }
+      name = { u: "--unset", C: "--chdir", S: "--split-string" }[flags[at] as "u" | "C" | "S"]
+      ;[value, i] = takeValue(rest, i, word, flags.slice(at + 1))
+    }
+    if (value === undefined) break
+    if (name === "--chdir") out.cwds = value.dynamic ? null : out.cwds === null ? (isAbsolute(value.text) ? [value.text] : null) : out.cwds.map((cwd) => resolve(cwd, value.text))
+    if (name === "--split-string") {
+      const nodes = value.dynamic ? [] : parseShell(value.text, ctx.home)
+      const only = nodes[0]
+      if (nodes.length !== 1 || only?.kind !== "command" || only.inputs.length || only.next !== null || only.words.some((w) => w.dynamic)) {
+        out.refuse = `can't tell what \`env -S\` runs; run the command without it`
+        return null
+      }
+      return [...only.words, ...rest.slice(i + 1)]
+    }
   }
-  return into || operands.length < 2 ? operands : operands.slice(0, -1)
+  return rest.slice(i)
+}
+
+const SUDO_VALUE = new Set(["-u", "-g", "-h", "-p", "-C", "-r", "-t", "-U", "-T", "--user", "--group", "--host", "--prompt", "--close-from", "--role", "--type", "--other-user", "--command-timeout"])
+const XARGS_VALUE = "nLPdsEIa"
+
+// The program a command line really runs, past variable assignments and the
+// wrappers that run their arguments as a command: command, builtin, env,
+// exec, nohup, time, sudo and xargs. A wrapper that would run nothing (env
+// alone prints the environment, command -v only looks a name up) is kept.
+function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
+  const out: Unwrapped = { words, cwds, reads: [], fed: false, refuse: null }
+  let current = words
+  for (let depth = 0; depth < 8; depth++) {
+    let i = 0
+    while (i < current.length - 1 && !(current[i] as Word).dynamic && ASSIGNMENT.test((current[i] as Word).text)) i++
+    current = current.slice(i)
+    out.words = current
+    const head = current[0]
+    if (!head || head.dynamic) return out
+    let rest = current.slice(1)
+    switch (basename(head.text)) {
+      case "command": {
+        let j = 0
+        let lookup = false
+        while (j < rest.length && !(rest[j] as Word).dynamic && (rest[j] as Word).text.startsWith("-")) {
+          if ((rest[j] as Word).text === "--") {
+            j++
+            break
+          }
+          if (/[vV]/.test((rest[j] as Word).text)) lookup = true
+          j++
+        }
+        if (lookup) return out
+        rest = rest.slice(j)
+        break
+      }
+      case "builtin":
+      case "nohup":
+        break
+      case "exec": {
+        let j = 0
+        while (j < rest.length && /^-[cla]+$/.test((rest[j] as Word).text)) j += (rest[j] as Word).text.endsWith("a") ? 2 : 1
+        rest = rest.slice(j)
+        break
+      }
+      case "time": {
+        let j = 0
+        while (j < rest.length && (rest[j] as Word).text.startsWith("-")) j += ["-f", "-o"].includes((rest[j] as Word).text) ? 2 : 1
+        rest = rest.slice(j)
+        break
+      }
+      case "env": {
+        const next = unwrapEnv(rest, out, ctx)
+        if (next === null) return out
+        let j = 0
+        while (j < next.length && !(next[j] as Word).dynamic && ASSIGNMENT.test((next[j] as Word).text)) j++
+        rest = next.slice(j)
+        if (!rest.length) {
+          out.words = [head]
+          return out
+        }
+        break
+      }
+      case "sudo": {
+        let j = 0
+        while (j < rest.length && (rest[j] as Word).text.startsWith("-") && !(rest[j] as Word).dynamic) {
+          const text = (rest[j] as Word).text
+          if (text === "--") {
+            j++
+            break
+          }
+          const chdir = /^(?:-D|--chdir)(?:=(.*))?$/.exec(text)
+          if (chdir) {
+            const dir = chdir[1] !== undefined ? { ...(rest[j] as Word), text: chdir[1] } : rest[++j]
+            if (dir) out.cwds = dir.dynamic ? null : out.cwds === null ? (isAbsolute(dir.text) ? [dir.text] : null) : out.cwds.map((cwd) => resolve(cwd, dir.text))
+          } else if (SUDO_VALUE.has(text)) j++
+          j++
+        }
+        rest = rest.slice(j)
+        break
+      }
+      case "xargs": {
+        let j = 0
+        while (j < rest.length && (rest[j] as Word).text.startsWith("-") && !(rest[j] as Word).dynamic) {
+          const word = rest[j] as Word
+          const text = word.text
+          if (text === "--") {
+            j++
+            break
+          }
+          if (text.startsWith("--")) {
+            const eq = text.indexOf("=")
+            const name = eq === -1 ? text : text.slice(0, eq)
+            const takes = ["--arg-file", "--max-args", "--max-lines", "--max-procs", "--delimiter", "--max-chars", "--replace", "--eof", "--process-slot-var"].includes(name)
+            const value = eq !== -1 ? { ...word, text: text.slice(eq + 1) } : takes && !["--replace", "--eof"].includes(name) ? rest[++j] : undefined
+            if (name === "--arg-file" && value) out.reads.push(value)
+            j++
+            continue
+          }
+          const flag = text[1] as string
+          if (XARGS_VALUE.includes(flag)) {
+            const value = text.length > 2 ? { ...word, text: text.slice(2) } : rest[++j]
+            if (flag === "a" && value) out.reads.push(value)
+          }
+          j++
+        }
+        rest = rest.slice(j)
+        out.fed = true
+        if (!rest.length) return out
+        break
+      }
+      default:
+        return out
+    }
+    if (!rest.length) return out
+    current = rest
+  }
+  out.words = current
+  return out
+}
+
+// One simple command: its folder changes, links, environment dumps, grep
+// -r walks and the files it reads.
+function command(ctx: Context, state: State, node: Extract<ShellNode, { kind: "command" }>): void {
+  let words = node.words
+  while (words.length && !(words[0] as Word).dynamic && RESERVED.has((words[0] as Word).text)) words = words.slice(1)
+  const apart = node.op === "|" || node.next === "|" || node.next === "&"
+  const unwrapped = unwrap(words, state.cwds, ctx)
+  const first = unwrapped.words[0]
+  const name = first === undefined ? "the redirect" : first.dynamic ? "the command" : `\`${basename(first.text)}\``
+  for (const input of node.inputs) if (judgeRead(ctx, state, state.cwds, name, input, true)) break
+  if (unwrapped.refuse) {
+    refuse(ctx, unwrapped.refuse)
+    return
+  }
+  for (const read of unwrapped.reads) judgeRead(ctx, state, state.cwds, "`xargs`", read, true)
+  words = unwrapped.words
+  const cwds = unwrapped.cwds
+  const head = words[0]
+  if (!head) return
+  const program = head.dynamic ? "" : basename(head.text)
+  const args = words.slice(1)
+
+  if (program === "cd" || program === "pushd" || program === "popd") {
+    folderChange(program, args, state, ctx.home, apart)
+    return
+  }
+  if (["sh", "bash", "zsh", "dash", "ksh"].includes(program)) {
+    const flag = args.findIndex((a) => !a.dynamic && /^-[a-z]*c[a-z]*$/.test(a.text))
+    if (flag === -1) return
+    const script = args[flag + 1]
+    if (!script || script.dynamic) return refuse(ctx, `can't tell what \`${program} -c\` runs; run the command directly`)
+    return lines(ctx, { ...state, cwds, stack: [...state.stack] }, parseShell(script.text, ctx.home))
+  }
+  if (program === "eval") {
+    if (args.some((a) => a.dynamic)) return refuse(ctx, "can't tell what `eval` runs; run the command directly")
+    return lines(ctx, state, parseShell(args.map((a) => a.text).join(" "), ctx.home))
+  }
+  const dump = environmentRead(words.map((w) => w.text), ctx.command)
+  if (dump) {
+    ctx.findings.push({ rule: "secret-file", reason: dump })
+    return
+  }
+  if (program === "ln") {
+    const ln = lnArgs(args)
+    if (cwds === null || ln.operands.some((w) => w.dynamic) || ln.operands.length === 0) return
+    for (const cwd of cwds) {
+      for (const { target, link } of lnPairs(ln, cwd)) {
+        const base = ln.symbolic && !ln.relative ? dirname(link) : cwd
+        const at = isAbsolute(target.text) ? normalize(target.text) : `${base}${sep}${target.text}`
+        const written = shown(target.text, ctx.home)
+        state.links.set(normalize(link), { target: at, kind: ln.symbolic ? "symbolic" : "hard", written })
+        const why = secretFile(at, "/", ctx.home, ctx.vaultDirs)
+        if (why && !ctx.findings.some((f) => f.path === written)) ctx.findings.push({ rule: "secret-file", reason: `\`${ln.symbolic ? "ln -s" : "ln"}\` would make a ${ln.symbolic ? "symbolic" : "hard"} link to ${written}: ${why}`, path: written })
+      }
+    }
+    return
+  }
+  if (program === "grep" || program === "egrep" || program === "fgrep") {
+    const grep = grepArgs(args)
+    if (grep.recursive) {
+      for (const target of grep.files.length ? grep.files : [{ text: ".", dynamic: false, glob: false }]) {
+        if (target.dynamic) return refuse(ctx, CANT_FILES("`grep -r`", shownWord(target)))
+        if (!isAbsolute(target.text) && cwds === null) return refuse(ctx, CANT_FOLDER("`grep -r`", shown(target.text, ctx.home)))
+        for (const cwd of isAbsolute(target.text) ? ["/"] : (cwds as string[])) {
+          const real = realOrNull(resolve(cwd, target.text))
+          if (real === null || !isDir(real)) continue
+          const walk = walkForSecrets(real, shown(target.text, ctx.home), grep, ctx.home, ctx.vaultDirs)
+          if (walk && "found" in walk) {
+            ctx.findings.push({ rule: "secret-file", reason: `\`grep -r\` would read ${walk.found}` })
+            return
+          }
+          if (walk) return refuse(ctx, walk.refused)
+        }
+      }
+    }
+    if (unwrapped.fed) return refuse(ctx, `can't tell which files \`xargs ${program}\` reads (they come from its input); name the files directly`)
+    for (const file of grep.files) if (judgeRead(ctx, state, cwds, `\`${program}\``, file, true)) return
+    return
+  }
+  const strict = program in FILE_READERS
+  if (!(READERS.has(program) || head.dynamic)) return
+  if (unwrapped.fed && strict) return refuse(ctx, `can't tell which files \`xargs ${program}\` reads (they come from its input); name the files directly`)
+  const operands = strict ? fileOperands(program, args) : args.filter((w) => w.dynamic || !w.text.startsWith("-"))
+  for (const word of operands) if (judgeRead(ctx, state, cwds, name, word, strict)) return
+}
+
+function lines(ctx: Context, state: State, nodes: ShellNode[]): void {
+  const saved: { cwds: Cwds; stack: Cwds[] }[] = []
+  for (const node of nodes) {
+    if (node.kind === "open") saved.push({ cwds: state.cwds, stack: [...state.stack] })
+    else if (node.kind === "close") Object.assign(state, saved.pop() ?? {})
+    else if (node.kind === "unknown") refuse(ctx, `can't tell what this command runs (${node.why}); run the part that reads files on its own`)
+    else command(ctx, state, node)
+  }
 }
 
 export function commandFindings(command: string, cwd: string, home = homedir(), vaultDirs: string[] = []): Finding[] {
   const findings: Finding[] = []
   const inText = secretInText(command)
   if (inText) findings.push({ rule: "secret-in-command", reason: `the command carries ${inText}` })
-  // Each folder a cd earlier in the line may have moved to: a relative path
-  // is judged against all of them, since && and || decide which one holds.
-  const cwds = [cwd]
-  const secretIn = (word: string): string | null => {
-    for (const dir of cwds) {
-      const why = secretFile(word, dir, home, vaultDirs)
-      if (why) return why
-    }
-    return null
-  }
-  for (const raw of segments(command, home)) {
-    const words = unwrap(raw)
-    const program = basename(words[0] ?? "")
-    const args = words.slice(1)
-    if ((program === "cd" || program === "pushd") && args.length) {
-      const dir = args.find((a) => !a.startsWith("-") || a === "-")
-      if (dir && dir !== "-") cwds.push(resolve(cwds.at(-1) as string, expandHome(dir, home)))
-      continue
-    }
-    const why = environmentRead(words, command) ?? cwds.map((dir) => recursiveRead(words, dir, home, vaultDirs)).find((w) => w !== null) ?? null
-    if (why) findings.push({ rule: "secret-file", reason: why })
-    if (program === "ln") {
-      for (const source of linkTargets(args)) {
-        const linked = secretIn(source)
-        if (linked) {
-          findings.push({ rule: "secret-file", reason: `\`ln\` would link to ${source}: ${linked}`, path: source })
-          break
-        }
-      }
-      continue
-    }
-    const reads = READERS.has(program) || words.includes("<")
-    if (!reads) continue
-    // cp and its kin only read their sources: copying a template onto .env
-    // writes it, and shows the agent nothing.
-    const operands = program === "cp" ? args.slice(0, -1) : args
-    for (const word of operands) {
-      if (word.startsWith("-") || word === "<") continue
-      const found = /[*?]/.test(basename(word)) ? (globMatchesSecret(word) ? "the pattern matches environment or key files" : null) : secretIn(word)
-      if (found) {
-        findings.push({ rule: "secret-file", reason: `\`${program}\` would read ${word}: ${found}`, path: word })
-        break
-      }
-    }
-  }
+  lines({ home, vaultDirs, command, findings }, { cwds: [cwd], stack: [], links: new Map() }, parseShell(command, home))
   return findings
 }

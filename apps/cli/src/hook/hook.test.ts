@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { rm } from "node:fs/promises"
 import { claudeAnswer, claudeToolCall, guardLevel, judge, SESSION_CONTEXT } from "./index.ts"
-import { GREP_WALK_DEPTH, GREP_WALK_ENTRIES, GREP_WALK_SKIPS, commandFindings, secretFile, secretInText } from "./rules.ts"
+import { GREP_WALK_DEPTH, GREP_WALK_ENTRIES, GREP_WALK_SKIPS, commandFindings, secretFile, secretInText, toolPath } from "./rules.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
 
 const HOME = "/home/a"
@@ -10,10 +11,10 @@ const env = { HOME, MEHEN_GUARD: "block" }
 describe("secret files", () => {
   test("environment files, key files and logins are secret; templates and public keys are not", () => {
     for (const path of [".env", ".env.local", "config/.env.production", ".envrc", ".dev.vars", "certs/server.pem", "tls.key", "~/.ssh/id_ed25519", "~/.aws/credentials", "~/.kube/config", "~/.config/gh/hosts.yml", "~/.npmrc", "~/.netrc", "/home/a/.config/mehen/workspaces/x/device-key.json", "~/.local-secrets/stripe"]) {
-      expect({ path, secret: secretFile(path, CWD, HOME) !== null }).toEqual({ path, secret: true })
+      expect({ path, secret: secretFile(toolPath(path, HOME), CWD, HOME) !== null }).toEqual({ path, secret: true })
     }
     for (const path of [".env.example", ".env.sample", "README.md", "src/index.ts", "~/.ssh/id_ed25519.pub", "package.json", "tsconfig.json", ".vscode/settings.json"]) {
-      expect({ path, secret: secretFile(path, CWD, HOME) !== null }).toEqual({ path, secret: false })
+      expect({ path, secret: secretFile(toolPath(path, HOME), CWD, HOME) !== null }).toEqual({ path, secret: false })
     }
   })
 
@@ -226,7 +227,7 @@ describe("review fixes: paths written another way", () => {
       expect(secretFile("cfg", dir.path, HOME)).toContain("environment file")
       expect(commandFindings("cat cfg", dir.path, HOME)).toHaveLength(1)
       const linking = commandFindings("ln -s .env settings && cat settings", dir.path, HOME)
-      expect(linking[0]).toMatchObject({ rule: "secret-file", reason: expect.stringContaining("`ln` would link to .env") })
+      expect(linking[0]).toMatchObject({ rule: "secret-file", reason: expect.stringContaining("`ln -s` would make a symbolic link to .env") })
       expect(commandFindings("ln -s README.md docs", dir.path, HOME)).toEqual([])
     } finally {
       await dir.remove()
@@ -273,7 +274,7 @@ describe("review fixes: grep -r skips tool output folders", () => {
     try {
       for (let i = 0; i < GREP_WALK_ENTRIES + 5; i++) await Bun.write(`${dir.path}/node_modules/pkg/f${i}.js`, "")
       await Bun.write(`${dir.path}/node_modules/pkg/.env`, "KEY=x")
-      for (const skipped of [".git", "dist", ".venv", "coverage"]) await Bun.write(`${dir.path}/${skipped}/.env`, "KEY=x")
+      for (const skipped of [".git", ".venv", "venv", "__pycache__"]) await Bun.write(`${dir.path}/${skipped}/.env`, "KEY=x")
       await Bun.write(`${dir.path}/src/index.ts`, "")
       expect(commandFindings("grep -r foo .", dir.path, HOME)).toEqual([])
       await Bun.write(`${dir.path}/src/deep/config/.env`, "KEY=x")
@@ -283,15 +284,16 @@ describe("review fixes: grep -r skips tool output folders", () => {
     }
   })
 
-  test("only folders are skipped: a key file named like one is still found", async () => {
+  test("only folders are skipped: a link named like one is read by grep -R, and grep -r skips links as grep does", async () => {
     const keys = await tempDir()
     const tree = await tempDir()
     try {
       await Bun.write(`${keys.path}/.env`, "KEY=x")
       await Bun.write(`${tree.path}/src/index.ts`, "")
       const { symlink } = await import("node:fs/promises")
-      await symlink(`${keys.path}/.env`, `${tree.path}/src/vendor`)
-      expect(commandFindings("grep -r foo .", tree.path, HOME)[0]?.reason).toContain("src/vendor")
+      await symlink(`${keys.path}/.env`, `${tree.path}/src/node_modules`)
+      expect(commandFindings("grep -R foo .", tree.path, HOME)[0]?.reason).toContain("src/node_modules")
+      expect(commandFindings("grep -r foo .", tree.path, HOME)).toEqual([])
     } finally {
       await keys.remove()
       await tree.remove()
@@ -307,5 +309,204 @@ describe("review fixes: grep -r skips tool output folders", () => {
     } finally {
       await dir.remove()
     }
+  })
+})
+
+describe("second review: what grep -r walks", () => {
+  test("only .git, node_modules, .venv, venv and __pycache__ are skipped; vendor, dist and the rest are walked", async () => {
+    const dir = await tempDir()
+    try {
+      await Bun.write(`${dir.path}/vendor/lib/.env`, "KEY=x")
+      expect(commandFindings("grep -r foo .", dir.path, HOME)[0]?.reason).toContain("vendor/lib/.env")
+      await rm(`${dir.path}/vendor`, { recursive: true })
+      await Bun.write(`${dir.path}/dist/.env.production`, "KEY=x")
+      expect(commandFindings("grep -r foo .", dir.path, HOME)[0]?.reason).toContain("dist/.env.production")
+      expect([...GREP_WALK_SKIPS].sort()).toEqual([".git", ".venv", "__pycache__", "node_modules", "venv"])
+    } finally {
+      await dir.remove()
+    }
+  })
+
+  test("grep -R follows folder links, once each; grep -r does not", async () => {
+    const keys = await tempDir()
+    const tree = await tempDir()
+    try {
+      await Bun.write(`${keys.path}/config/.env`, "KEY=x")
+      await Bun.write(`${tree.path}/src/index.ts`, "")
+      const { symlink } = await import("node:fs/promises")
+      await symlink(keys.path, `${tree.path}/linked`)
+      await symlink(tree.path, `${tree.path}/src/loop`)
+      expect(commandFindings("grep -R foo .", tree.path, HOME)[0]?.reason).toContain("linked/config/.env")
+      expect(commandFindings("grep --dereference-recursive foo src", tree.path, HOME)[0]?.reason).toContain(".env")
+      expect(commandFindings("grep -r foo .", tree.path, HOME)).toEqual([])
+      expect(commandFindings("grep -r foo linked", tree.path, HOME)[0]?.reason).toContain(".env")
+      await rm(`${tree.path}/linked`)
+      expect(commandFindings("grep -R foo .", tree.path, HOME)).toEqual([])
+    } finally {
+      await keys.remove()
+      await tree.remove()
+    }
+  })
+
+  test("--include and --exclude: the last matching one wins, and with none matching the first decides (GNU grep)", async () => {
+    const dir = await tempDir()
+    try {
+      await Bun.write(`${dir.path}/a/.env`, "KEY=x")
+      await Bun.write(`${dir.path}/a/b.ts`, "")
+      const found = (options: string) => commandFindings(`grep -r ${options} foo .`, dir.path, HOME).length > 0
+      expect(found("--exclude=.env --include=.env")).toBe(true)
+      expect(found("--include=.env --exclude=.env")).toBe(false)
+      expect(found("--exclude='*.md'")).toBe(true)
+      expect(found("--include='*.ts'")).toBe(false)
+      expect(found("--exclude='*.md' --include='*.ts'")).toBe(true)
+      expect(found("--include='*.ts' --exclude='*.md'")).toBe(false)
+      expect(found("--exclude '.e*'")).toBe(false)
+      expect(found("--exclude='\\.env'")).toBe(false)
+    } finally {
+      await dir.remove()
+    }
+  })
+
+  test("-d recurse and --directories=recurse are recursive, attached or not; -d skip is not", async () => {
+    const dir = await tempDir()
+    try {
+      await Bun.write(`${dir.path}/a/b/.env`, "KEY=x")
+      for (const options of ["-d recurse", "-drecurse", "--directories=recurse", "--directories recurse", "-nd recurse"]) {
+        expect({ options, found: commandFindings(`grep ${options} foo .`, dir.path, HOME).length > 0 }).toEqual({ options, found: true })
+      }
+      expect(commandFindings("grep -d skip foo .", dir.path, HOME)).toEqual([])
+    } finally {
+      await dir.remove()
+    }
+  })
+})
+
+describe("second review: wrappers", () => {
+  test("env -C changes the child's folder, -S is split into words, and an option env does not know is refused", () => {
+    expect(commandFindings("env -C ~/.aws cat credentials", CWD, HOME)[0]?.reason).toContain("credentials")
+    expect(commandFindings("env --chdir=/home/a/.aws cat credentials", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("env -C/home/a/.aws cat credentials", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("env -C src cat credentials", CWD, HOME)).toEqual([])
+    expect(commandFindings("env -C ~/.aws true && cat credentials", CWD, HOME)).toEqual([])
+    expect(commandFindings("env -S 'cat .env'", CWD, HOME)[0]?.reason).toContain(".env")
+    expect(commandFindings("env -S printenv", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("env --split-string='cat .env' ", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("env -S 'cat $(pick)'", CWD, HOME)[0]?.reason).toContain("can't tell")
+    expect(commandFindings("env --frobnicate cat .env", CWD, HOME)[0]?.reason).toContain("can't tell")
+  })
+
+  test("xargs -a reads its file, and a file reader fed by xargs cannot be checked", () => {
+    expect(commandFindings("xargs -a .env echo", CWD, HOME)[0]?.reason).toContain(".env")
+    expect(commandFindings("xargs --arg-file=.env echo", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("xargs -a.env echo", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("find . -name '*.txt' | xargs cat", CWD, HOME)[0]?.reason).toContain("can't tell which files")
+    expect(commandFindings("ls | xargs rm", CWD, HOME)).toEqual([])
+  })
+
+  test("command takes its own options only before the program", () => {
+    expect(commandFindings("command cat -v .env", CWD, HOME)[0]?.reason).toContain(".env")
+    expect(commandFindings("command -p cat .env", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("command -v cat", CWD, HOME)).toEqual([])
+    expect(commandFindings("command -pv cat", CWD, HOME)).toEqual([])
+  })
+})
+
+describe("second review: where a relative path points", () => {
+  test("a bare cd is the home folder", () => {
+    expect(commandFindings("cd && cat .aws/credentials", CWD, HOME)[0]?.reason).toContain(".aws/credentials")
+    expect(commandFindings("cd; cat .ssh/config", CWD, HOME)).toHaveLength(1)
+  })
+
+  test("a subshell's cd ends with it", () => {
+    expect(commandFindings("(cd ~/.aws) && cat credentials", CWD, HOME)).toEqual([])
+    expect(commandFindings("(cd ~/.aws && cat credentials)", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("(cd ~/.aws; (cd /tmp); cat credentials)", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("echo $(cd ~/.aws) && cat credentials", CWD, HOME)).toEqual([])
+  })
+
+  test("pushd and popd keep a stack", () => {
+    expect(commandFindings("pushd ~/.aws && cat credentials", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("pushd ~/.aws && popd && cat credentials", CWD, HOME)).toEqual([])
+    expect(commandFindings("pushd ~/.aws; pushd /tmp; popd; cat credentials", CWD, HOME)).toHaveLength(1)
+  })
+
+  test("a relative cd is applied to every folder the line might be in", () => {
+    expect(commandFindings("cd ../.. && cd .aws && cat credentials", CWD, HOME)[0]?.reason).toContain("credentials")
+  })
+
+  test("a folder change the guard does not model, then a relative read, is refused; an absolute read is still judged", () => {
+    for (const command of ["cd - && cat credentials", 'cd "$DIR" && cat notes.txt', "popd && cat notes.txt", "pushd +1 && cat notes.txt", "cd $(pick) && cat notes.txt"]) {
+      expect({ command, reason: commandFindings(command, CWD, HOME)[0]?.reason }).toEqual({ command, reason: expect.stringContaining("can't tell which folder") })
+    }
+    expect(commandFindings('cd "$DIR" && cat /etc/hostname', CWD, HOME)).toEqual([])
+    expect(commandFindings('cd "$DIR" && cat /home/a/.netrc', CWD, HOME)).toHaveLength(1)
+  })
+})
+
+describe("second review: quotes and escapes", () => {
+  test("a backslash escapes the next character, and an escaped space joins the word", async () => {
+    expect(commandFindings("cat /home/a/.a\\ws/credentials", CWD, HOME)[0]?.reason).toContain("credentials")
+    expect(commandFindings('cat "/home/a/.a\\ws/credentials"', CWD, HOME)).toEqual([])
+    const dir = await tempDir()
+    try {
+      await Bun.write(`${dir.path}/my .env`, "KEY=x")
+      expect(commandFindings("cat my\\ .env", dir.path, HOME)[0]?.path).toBe("my .env")
+      expect(commandFindings("cat 'my .env'", dir.path, HOME)[0]?.path).toBe("my .env")
+    } finally {
+      await dir.remove()
+    }
+  })
+
+  test("$HOME is expanded once, where the shell would; in single quotes or escaped it is a literal path", () => {
+    expect(commandFindings("cat '$HOME/.aws/credentials'", CWD, HOME)).toEqual([])
+    expect(commandFindings("cat \\$HOME/.aws/credentials", CWD, HOME)).toEqual([])
+    expect(commandFindings("cat '~/.aws/credentials'", CWD, HOME)).toEqual([])
+    expect(commandFindings('cat "$HOME/.aws/credentials"', CWD, HOME)).toHaveLength(1)
+  })
+
+  test("a variable or a substitution where a file reader takes a file cannot be checked; one elsewhere is fine", () => {
+    expect(commandFindings('cat "$FILE"', CWD, HOME)[0]?.reason).toContain("can't tell which files")
+    expect(commandFindings("cat $(ls)", CWD, HOME)[0]?.reason).toContain("can't tell which files")
+    expect(commandFindings('git commit -m "$(cat <<\'EOF\'\nFix the thing\n\ncat .env is mentioned here\nEOF\n)"', CWD, HOME)).toEqual([])
+    expect(commandFindings('echo "$PATH"', CWD, HOME)).toEqual([])
+    expect(commandFindings("X=$(cat .env) true", CWD, HOME)).toHaveLength(1)
+  })
+})
+
+describe("second review: links", () => {
+  let home: { path: string; remove(): Promise<void> }
+  beforeEach(async () => {
+    home = await tempDir()
+    const { mkdir } = await import("node:fs/promises")
+    await mkdir(`${home.path}/.aws/sub`, { recursive: true })
+    await mkdir(`${home.path}/work/sub`, { recursive: true })
+    await Bun.write(`${home.path}/.aws/credentials`, "[default]")
+  })
+  afterEach(async () => {
+    await home.remove()
+  })
+
+  test("a path through a link is resolved on disk before .. is collapsed", async () => {
+    const { symlink } = await import("node:fs/promises")
+    await symlink(`${home.path}/.aws/sub`, `${home.path}/work/lnk`)
+    expect(commandFindings("cat lnk/../credentials", `${home.path}/work`, home.path)[0]?.reason).toContain("~/.aws")
+    expect(secretFile("lnk/../credentials", `${home.path}/work`, home.path)).toContain("~/.aws")
+  })
+
+  test("ln -s targets are relative to the link's folder, -t included; a hard link's to the working folder", () => {
+    const cwd = home.path
+    expect(commandFindings("ln -s ../.aws/credentials work/x", cwd, home.path)[0]?.reason).toContain("`ln -s` would make a symbolic link to ../.aws/credentials")
+    expect(commandFindings("ln -s .aws/credentials work/x", cwd, home.path)).toEqual([])
+    expect(commandFindings("ln -s -t work ../.aws/credentials", cwd, home.path)).toHaveLength(1)
+    expect(commandFindings("ln -st work .aws/credentials", cwd, home.path)).toEqual([])
+    expect(commandFindings("ln --target-directory=work -s ../.aws/credentials", cwd, home.path)).toHaveLength(1)
+    expect(commandFindings("ln .aws/credentials work/x", cwd, home.path)[0]?.reason).toContain("`ln` would make a hard link to .aws/credentials")
+    expect(commandFindings("ln ../.aws/credentials work/x", cwd, home.path)).toEqual([])
+  })
+
+  test("reading a link made earlier in the same line is judged by what it points at", () => {
+    const findings = commandFindings("ln -s ../.aws/credentials work/x; cat work/x", home.path, home.path)
+    expect(findings.map((f) => f.reason)).toEqual([expect.stringContaining("`ln -s`"), expect.stringContaining("`cat` would read work/x, a symbolic link made earlier in this command")])
+    expect(commandFindings("ln -s ~/.aws work/d && cat work/d/credentials", home.path, home.path)[1]?.reason).toContain("work/d/credentials")
   })
 })
