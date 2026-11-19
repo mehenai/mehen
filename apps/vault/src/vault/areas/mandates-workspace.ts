@@ -70,14 +70,14 @@ CREATE INDEX mandate_asked_device ON mandate_asked(device, at);
 INSERT INTO mandate_asked(approval,device,item_id,cls,at) SELECT c.approval, c.device, COALESCE(json_extract(a.ask,'$.credential'), (SELECT i.id FROM items i WHERE i.slug=a.item)) AS item_id, j.value, c.at FROM mandate_cover_asks c JOIN approvals a ON a.id=c.approval, json_each(c.classes) j WHERE item_id IS NOT NULL;`
 // The credential id each slug a proposal named stood for when it was made:
 // signing refuses a slug that now names another credential.
-// An open proposal from before this is bound to the credentials its slugs
-// name now when each was made before it; any other (one naming every
-// credential, a slug gone, or one made again since) closes as unbound, and
-// its machine may propose again.
+// An open proposal from before this cannot prove which credential each
+// slug meant (a clock set back or a credential made again would fool any
+// check), and was proposed before the vault held a machine to what it
+// asked for: every one closes as unbound, and its machine may propose
+// again. Signed mandates are untouched.
 export const MANDATE_PROPOSALS_ITEMS_MIGRATION = `ALTER TABLE mandate_proposals ADD COLUMN item_ids TEXT;
 ALTER TABLE mandate_proposals ADD COLUMN closed_reason TEXT;
-UPDATE mandate_proposals SET item_ids=(SELECT json_group_object(j.value, i.id) FROM json_each(json_extract(mandate_proposals.terms,'$.items')) j JOIN items i ON i.slug=j.value) WHERE closed_at IS NULL AND json_type(terms,'$.items')='array' AND NOT EXISTS (SELECT 1 FROM json_each(json_extract(mandate_proposals.terms,'$.items')) j WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.slug=j.value AND i.created_at<=mandate_proposals.created_at));
-UPDATE mandate_proposals SET closed_at=CAST(strftime('%s','now') AS INTEGER)*1000, closed_reason='unbound' WHERE closed_at IS NULL AND item_ids IS NULL;`
+UPDATE mandate_proposals SET closed_at=CAST(strftime('%s','now') AS INTEGER)*1000, closed_reason='unbound' WHERE closed_at IS NULL;`
 
 // Whether mandates are on in this workspace (its tn_ id), read as
 // workspaceSwitchOn reads every switch.

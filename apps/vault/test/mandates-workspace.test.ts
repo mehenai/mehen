@@ -563,38 +563,36 @@ describe("a machine proposes only what it asked for", () => {
     })
   })
 
-  it("binds or closes every open proposal from before credential ids were kept, and never resolves one without them by its slugs", async () => {
+  it("closes every unsigned proposal from before credential ids were kept, binds none, and never resolves one without them by its slugs", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedCredential(ctx, "kept-key")
-      await seedCredential(ctx, "renewed-key")
       const now = ctx.now()
+      const narrow = () => ({ ...proposedTerms({ classes: ["change", "read"], caps: { read: 500, change: 100, send: 0, delete: 0 } }) })
+      const { mandate } = await signMandate(ctx, "owner", terms({ items: [itemId(ctx, "kept-key")] }))
       // As an earlier vault left them: no item_ids column.
       ctx.sql.exec("ALTER TABLE mandate_proposals DROP COLUMN item_ids")
       ctx.sql.exec("ALTER TABLE mandate_proposals DROP COLUMN closed_reason")
-      const legacy = (id: string, items: unknown) => ctx.sql.exec("INSERT INTO mandate_proposals(id,device,terms,reason,created_at,expires_at) VALUES (?,?,?,?,?,?)", id, "dev_owner", JSON.stringify({ ...proposedTerms({ classes: ["change", "read"], caps: { read: 500, change: 100, send: 0, delete: 0 } }), items }), "Old", now + 1, now + 7 * DAY)
+      const legacy = (id: string, items: unknown) => ctx.sql.exec("INSERT INTO mandate_proposals(id,device,terms,reason,created_at,expires_at) VALUES (?,?,?,?,?,?)", id, "dev_owner", JSON.stringify({ ...narrow(), items }), "Old", now + 1, now + 7 * DAY)
+      // Even one whose credential exists and is older than it: a clock or a remake could fool any check.
       legacy("mdp_kept000000000001", ["kept-key"])
-      legacy("mdp_renewed000000001", ["renewed-key"])
       legacy("mdp_everything000001", "all")
       legacy("mdp_gone000000000001", ["gone-key"])
-      // renewed-key was deleted and made again after its proposal.
-      ctx.sql.exec("UPDATE items SET created_at=? WHERE slug='renewed-key'", now + 2)
       ctx.sql.exec(MANDATE_PROPOSALS_ITEMS_MIGRATION)
       const state = (id: string) => ctx.sql.exec<{ closed_at: number | null; closed_reason: string | null; item_ids: string | null }>("SELECT closed_at,closed_reason,item_ids FROM mandate_proposals WHERE id=?", id).one()
-      expect(state("mdp_kept000000000001")).toEqual({ closed_at: null, closed_reason: null, item_ids: JSON.stringify({ "kept-key": itemId(ctx, "kept-key") }) })
-      for (const id of ["mdp_renewed000000001", "mdp_everything000001", "mdp_gone000000000001"]) expect(state(id), id).toMatchObject({ closed_at: expect.any(Number), closed_reason: "unbound", item_ids: null })
-      // A closed legacy proposal shows what it named as text, and offers none of it.
-      const view = await mandateOp(ctx, "mandates.proposal", "owner", { id: "mdp_renewed000000001" }) as MandateProposalView
-      expect(view).toMatchObject({ state: "expired", items: [], unbound: ["renewed-key"], closedReason: "unbound" })
-      expect((await refusal(() => signMandate(ctx, "owner", terms({ items: [itemId(ctx, "renewed-key")] }), "mdp_renewed000000001"))).code).toBe("bad_request")
-      // The one bound on upgrade: deleting its credential closes it, and one made again under its slug is never signed in its place.
+      for (const id of ["mdp_kept000000000001", "mdp_everything000001", "mdp_gone000000000001"]) expect(state(id), id).toMatchObject({ closed_at: expect.any(Number), closed_reason: "unbound", item_ids: null })
+      // A closed legacy proposal shows what it named as text, offers none of it, and says the machine can propose again.
+      const view = await mandateOp(ctx, "mandates.proposal", "owner", { id: "mdp_kept000000000001" }) as MandateProposalView
+      expect(view).toMatchObject({ state: "expired", items: [], unbound: ["kept-key"], closedReason: "unbound" })
+      expect((await refusal(() => signMandate(ctx, "owner", terms({ items: [itemId(ctx, "kept-key")] }), "mdp_kept000000000001"))).code).toBe("bad_request")
+      // Deleting its credential and making it again changes nothing: it stays closed and cannot be signed.
       await workspaceItemOps["items.delete"]!.handler(ctx, memberPrincipal(ctx), { slug: "kept-key" }, memberInvocation(ctx, "owner", { type: "item.delete", item: itemId(ctx, "kept-key") }))
-      expect(state("mdp_kept000000000001").closed_at).not.toBeNull()
       await seedCredential(ctx, "kept-key")
       expect((await refusal(() => signMandate(ctx, "owner", terms({ items: [itemId(ctx, "kept-key")] }), "mdp_kept000000000001"))).code).toBe("bad_request")
-      // Signed mandates are untouched; the machine can propose again.
+      // The signed mandate is untouched by the upgrade; the machine can propose again.
+      expect(ctx.sql.exec<{ state: string }>("SELECT state FROM mandates WHERE id=?", mandate.id).one().state).toBe("active")
       await askedFor(ctx, "dev_owner", "kept-key", ["change"])
-      expect(await propose(ctx, "dev_owner", proposedTerms({ items: ["kept-key"], classes: ["change", "read"], caps: { read: 500, change: 100, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+      expect(await propose(ctx, "dev_owner", { ...narrow(), items: ["kept-key"] })).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
     })
   })
 

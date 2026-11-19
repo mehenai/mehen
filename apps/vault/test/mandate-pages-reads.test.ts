@@ -209,14 +209,50 @@ describe("the mandate pages", () => {
     expect(vault.reads).not.toContain("/devices")
   })
 
-  it("opens the sign page on another mandate's terms, keeping the credentials this machine reaches", async () => {
+  // The live form, and the source's terms the person may choose to use.
+  const parts = (page: string) => {
+    const at = page.indexOf('<template data-region="mandate-source-form">')
+    return { live: at < 0 ? page : page.slice(0, at), source: at < 0 ? "" : page.slice(at, page.indexOf("</template>", at)) }
+  }
+  const checkedItems = (html: string) => [...html.matchAll(/data-input="mandate-item" value="(\w+)"[^>]*checked/g)].map((m) => m[1])
+  const checkedClasses = (html: string) => [...html.matchAll(/data-input="mandate-class" value="(\w+)" checked/g)].map((m) => m[1])
+  const broad = () => ({ ...MANDATE(), state: "expired" as const, endedReason: "expired" as const, items: "all" as const, classes: ["change", "delete", "read", "send"], caps: { read: 50_000, change: 10_000, send: 500, delete: 200 }, ttlDays: 90 as const })
+
+  it("names another mandate's terms as text with Use these terms, and opens the form narrow, for this machine or another with no history", async () => {
+    vault.answers.set(`/mandates/${MANDATE().id}`, broad())
     vault.answers.set(`/mandate-candidates?device=${fx.PEOPLE_DEVICE.device}`, { items: [CANDIDATES.items[1]!] })
     const page = await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}&from=${MANDATE().id}` })
     expect(mandateReads()).toEqual([`/mandates/${MANDATE().id}`, `/mandate-candidates?device=${fx.PEOPLE_DEVICE.device}`, "/mandates"])
-    expect([...page.matchAll(/data-input="mandate-item" value="(\w+)"[^>]*checked/g)].map((m) => m[1])).toEqual(["itm_slackplat000001"])
-    expect([...page.matchAll(/data-input="mandate-class" value="(\w+)" checked/g)].map((m) => m[1])).toEqual(["read", "change", "send"])
-    expect(page).toContain(`value="${MANDATE().note}"`)
+    const { live, source } = parts(page)
+    expect([checkedItems(live), checkedClasses(live)]).toEqual([[], ["read"]])
+    expect(live).toContain('data-input="mandate-ttl" value="30" checked')
+    expect(live).toContain('data-input="mandate-items" value="listed" checked')
+    expect(live).toContain('data-region="mandate-source"')
+    expect(live).toContain('data-action="mandate-use-source"')
+    // Its terms in words, and the form they would fill only once pressed.
+    expect(live).toContain("every credential it can use")
+    expect(source).toContain('data-input="mandate-items" value="all" checked')
+    expect(checkedClasses(source)).toEqual(["read", "change", "send", "delete"])
+    expect(source).toContain('data-input="mandate-ttl" value="90" checked')
     expect(page).not.toContain('data-region="mandate-renews"')
+  })
+
+  it("names a renewed mandate's terms as text with Use these terms, and opens the form narrow, even for an expired broad one", async () => {
+    vault.answers.set(`/mandates/${MANDATE().id}`, broad())
+    const page = await open(pages.sign, {}, { viewer: TOM, query: `?renew=${MANDATE().id}` })
+    const { live, source } = parts(page)
+    expect([checkedItems(live), checkedClasses(live)]).toEqual([[], ["read"]])
+    expect(live).toContain('data-input="mandate-ttl" value="30" checked')
+    expect(live).not.toContain('data-input="mandate-items" value="all" checked')
+    expect(live).toContain('data-action="mandate-use-source"')
+    expect(source).toContain('data-input="mandate-items" value="all" checked')
+    expect(source).toContain('data-input="mandate-ttl" value="90" checked')
+  })
+
+  it("starts a fresh form, and a class not yet ticked, at the caps a machine may propose", async () => {
+    const page = await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}` })
+    const caps = Object.fromEntries([...page.matchAll(/data-input="mandate-cap" data-class="(\w+)" value="(\d+)"/g)].map((m) => [m[1], Number(m[2])]))
+    expect(caps).toEqual({ read: 500, change: 100, send: 10, delete: 5 })
   })
 
   it("answers an address no mandate could have as not found, reading nothing", async () => {
@@ -258,12 +294,13 @@ describe("the mandate pages", () => {
     }
   })
 
-  it("renews a mandate on its terms, ticking the credentials it names that the person may name now", async () => {
+  it("renews a mandate: its terms, with the credentials it names that the person may name now, wait behind Use these terms", async () => {
     const page = await open(pages.sign, {}, { viewer: TOM, query: `?renew=${MANDATE().id}` })
     expect(mandateReads()).toEqual([`/mandates/${MANDATE().id}`, `/mandate-candidates?device=${fx.PEOPLE_DEVICE.device}`, "/mandates"])
-    expect([...page.matchAll(/data-input="mandate-item" value="(\w+)"[^>]*checked/g)].map((m) => m[1])).toEqual(["itm_githubtom0000001", "itm_slackplat000001"])
-    expect(page).toContain('value="Triage issues and post the daily build summary"')
-    expect(page).toContain('data-input="mandate-ttl" value="30" checked')
+    const { live, source } = parts(page)
+    expect(checkedItems(live)).toEqual([])
+    expect(checkedItems(source)).toEqual(["itm_githubtom0000001", "itm_slackplat000001"])
+    expect(source).toContain('value="Triage issues and post the daily build summary"')
   })
 
   it("refuses the form to anyone but the machine's owner", async () => {

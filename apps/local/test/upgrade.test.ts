@@ -23,7 +23,7 @@ const base = process.env.TMPDIR && process.env.TMPDIR !== "/tmp" ? tmpdir() : jo
 const made: string[] = []
 afterEach(() => { for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-test("a workspace database from before the mandate asked table gains it, filled from the held asks it kept, and its open proposals it cannot bind close as unbound", () => {
+test("a workspace database from before the mandate asked table gains it, filled from the held asks it kept, and every unsigned open proposal closes as unbound", () => {
   const dir = mkdtempSync(join(base, "mehen-upgrade-"))
   made.push(dir)
   const db = new Database(join(dir, "workspace.sqlite"))
@@ -56,8 +56,8 @@ test("a workspace database from before the mandate asked table gains it, filled 
     { approval: "apr_open", device: "dev_box", item_id: "itm_github", cls: "change", at: now },
     { approval: "apr_open", device: "dev_box", item_id: "itm_github", cls: "send", at: now },
   ])
-  // An open proposal it cannot bind to the credentials it meant closes as
-  // unbound; one already closed is left as it was.
+  // Every unsigned open proposal closes as unbound, binding none; one
+  // already closed is left as it was.
   const proposals = db.query("SELECT id,item_ids,closed_reason,closed_at FROM mandate_proposals ORDER BY id").all() as { id: string; item_ids: string | null; closed_reason: string | null; closed_at: number | null }[]
   expect(proposals.map((p) => [p.id, p.item_ids, p.closed_reason, p.closed_at === null ? null : p.closed_at === now ? "before" : "on upgrade"])).toEqual([
     ["mdp_every", null, "unbound", "on upgrade"],

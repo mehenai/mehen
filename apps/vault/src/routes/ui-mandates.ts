@@ -84,12 +84,16 @@ async function signPage(rc: RequestContext, page: WorkspacePageContext): Promise
   if (!machine.ok) return refused(page.shell, machine)
   if (!candidates.ok && candidates.error.error === "frozen") return refused(page.shell, candidates)
   const named = candidates.ok ? candidates.value : null
-  const start = proposal !== null ? proposalStart(proposal) : renews !== null ? renewStart(renews, named) : from !== null ? renewStart(from, named) : mandateSignDefaults(machine.value.name)
+  // A mandate renewed or copied only names a source: its terms wait behind
+  // Use these terms, and the form opens narrow.
+  const start = proposal !== null ? proposalStart(proposal) : mandateSignDefaults(machine.value.name)
+  const sourced = renews ?? from
+  const source = proposal === null && sourced !== null ? { kind: renews !== null ? "renew" as const : "from" as const, mandate: sourced, start: renewStart(sourced, named) } : null
   const replaces = liveMandateOf(list.ok ? list.value : null, device)
   return pageResponse(mandateSignPage(page.shell, {
     viewer: viewerOf(page), device: machine.value, candidates: named,
     start,
-    proposal, renews, replaces, now: Date.now(),
+    proposal, renews, source, replaces, now: Date.now(),
   }))
 }
 
