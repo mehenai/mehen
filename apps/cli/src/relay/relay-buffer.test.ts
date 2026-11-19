@@ -30,9 +30,12 @@ async function relayWith(api: FakeVaultApi, options: { perAnswer?: number; budge
 
 // An upstream answer: `first` at once, then `rest` once the gate opens, or
 // an error there when `fail` is set.
-function gated(first: Uint8Array, rest: Uint8Array, type: string, gate: Promise<void>, fail = false): Response {
+function gated(first: Uint8Array, rest: Uint8Array, type: string, gate: Promise<void>, fail = false, cancelled: () => void = () => {}): Response {
   let step = 0
   return new Response(new ReadableStream<Uint8Array>({
+    cancel() {
+      cancelled()
+    },
     async pull(controller) {
       step++
       if (step === 1) return controller.enqueue(first)
@@ -106,16 +109,28 @@ describe("a write's answer held before it is passed on", () => {
     await settled(budget)
     expect(budget.held).toBe(0)
 
+  })
+
+  // The fifth review: an answer whose client has gone is given up at once,
+  // the vault's read cancelled and the budget released, while the upstream
+  // still holds the rest back.
+  test("gives up a held answer as soon as its client disconnects, before the upstream sends any more", async () => {
+    const api = new FakeVaultApi(), budget = new AnswerBudget(10_000)
     const left = opener()
-    api.relayHandler = () => gated(bytes(700), bytes(10), "application/json", left.gate)
+    let cancelled = 0
+    api.relayHandler = () => gated(bytes(700), bytes(10), "application/json", left.gate, false, () => { cancelled++ })
+    const relay = await relayWith(api, { budget })
     const path = new URL(relay.baseUrl("llm")).pathname
     const socket = net.connect({ host: "127.0.0.1", port: relay.port }, () => socket.write(`POST ${path}/write HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-length: 1\r\n\r\nx`))
     for (let i = 0; i < 100 && budget.held === 0; i++) await Bun.sleep(10)
     expect(budget.held).toBe(700)
     socket.destroy()
-    left.open()
     await settled(budget)
-    expect(budget.held).toBe(0)
+    // The gate is still shut: the upstream has sent nothing since.
+    expect([budget.held, cancelled]).toEqual([0, 1])
+    left.open()
+    await Bun.sleep(50)
+    expect([budget.held, cancelled]).toEqual([0, 1])
   })
 })
 

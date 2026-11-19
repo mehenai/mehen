@@ -233,8 +233,11 @@ const PROCESS_ANSWER_LIMITS: AnswerLimits = { perAnswer: MAX_WRITE_ANSWER_BYTES,
 // as it came, within the answer's limit and the process's budget; past
 // either the rest is not read and the answer is a 424. The held answer is
 // then passed on chunk by chunk, never joined, and release gives the budget
-// back: the caller calls it however the answer ends.
-async function completeWriteAnswer(response: Response, limits: AnswerLimits): Promise<{ response: Response; release: () => void }> {
+// back: the caller calls it however the answer ends. A client that goes
+// while the answer is read ends it at once: the vault's read is cancelled
+// and the budget released, without waiting for the upstream. Every cleanup
+// here is safe to run twice.
+async function completeWriteAnswer(response: Response, limits: AnswerLimits, client: Duplex): Promise<{ response: Response; release: () => void }> {
   if (response.body === null) return { response, release: () => {} }
   const chunks: Uint8Array[] = []
   let total = 0
@@ -244,10 +247,19 @@ async function completeWriteAnswer(response: Response, limits: AnswerLimits): Pr
     chunks.length = 0
   }
   const reader = response.body.getReader()
+  let gone = false
+  const abandon = () => {
+    gone = true
+    release()
+    void reader.cancel().catch(() => {})
+  }
+  if (client.destroyed) abandon()
+  else client.once("close", abandon)
   try {
     for (;;) {
+      if (gone) break
       const { done, value } = await reader.read()
-      if (done) break
+      if (done || gone) break
       if (total + value.length > limits.perAnswer) throw new Error(`the answer is larger than ${limits.perAnswer} bytes`)
       if (!limits.budget.reserve(value.length)) throw new Error("mehen is already holding as many answers as it may, so it stopped reading this one")
       total += value.length
@@ -257,7 +269,11 @@ async function completeWriteAnswer(response: Response, limits: AnswerLimits): Pr
     await reader.cancel().catch(() => {})
     release()
     return { response: outcomeUnknownAnswer(`The answer to the request broke off while mehen read it (${error instanceof Error ? error.message : String(error)}). The request was sent and may have taken effect.`), release: () => {} }
+  } finally {
+    client.off("close", abandon)
   }
+  // Nobody is left to answer; writing to the closed socket ends the request.
+  if (gone) return { response: outcomeUnknownAnswer("The program disconnected before its answer arrived. The request was sent and may have taken effect."), release: () => {} }
   const bodiless = response.status < 200 || [204, 205, 304].includes(response.status)
   let next = 0
   const body = bodiless ? null : new ReadableStream<Uint8Array>({
@@ -444,7 +460,7 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
         const body = await readBody(reader, framing, MAX_RELAY_BODY)
         const called = await callVault(routed.relay, body)
         const passOn = retrySafeMethod(head.method) || options.streamWrites === true || streamingAnswer(called)
-        const { response, release } = passOn ? { response: called, release: () => {} } : await completeWriteAnswer(called, limits)
+        const { response, release } = passOn ? { response: called, release: () => {} } : await completeWriteAnswer(called, limits, socket)
         const close = oneRequest || head.version === "HTTP/1.0" || hasToken(head, "connection", "close")
         try {
           await writeResponse(socket, head.method, response, close)
