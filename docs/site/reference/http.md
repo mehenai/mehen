@@ -111,8 +111,9 @@ type MandatePropose = {
 type MandateProposalCreated = { id: string; url: string; expiresAt: string; existing?: true }
 
 // GET /v1/mandates/asked: what this machine may propose, sorted: the credentials
-// and the classes besides read of its own held requests that carried mandateCover,
-// and of what its own mandates let through, in the last 30 days
+// it can still reach and the classes besides read of its own held requests that
+// carried mandateCover and no person rejected, and of what its own mandates let
+// through, from the last 30 days up to now
 type MandateAsked = { items: string[]; classes: MandateClass[] }
 
 // GET /v1/mandates: newest first, at most 20, with this machine's open proposals

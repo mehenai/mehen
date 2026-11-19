@@ -36,6 +36,21 @@ function vault(answer: (seen: Seen) => unknown, asked: () => unknown = () => ASK
   return { api, seen }
 }
 
+test("vault_mandate advertises only what a machine may propose, and still sends wider terms on for the vault to refuse with its reason", async () => {
+  const schema = z.toJSONSchema(vaultMandate.advertised ?? vaultMandate.input, { io: "input" }) as { properties: Record<string, Record<string, unknown>> }
+  const items = JSON.stringify(schema.properties.items)
+  expect(items).not.toContain('"all"')
+  expect(schema.properties.items).toMatchObject({ type: "array", maxItems: 200 })
+  expect(JSON.stringify(schema.properties.days)).not.toContain("90")
+  const caps = schema.properties.caps as { properties: Record<string, { maximum: number }> }
+  expect(Object.fromEntries(Object.entries(caps.properties).map(([c, v]) => [c, v.maximum]))).toEqual({ read: 500, change: 100, send: 10, delete: 5 })
+  // The parser takes the wider values, so the vault's structured refusal reaches the agent.
+  const wide = vault(() => { throw new VaultApiError(403, { error: "forbidden", message: "A machine can propose a mandate for at most 30 days: lower 90 days to 30.", mandateRefused: "term_too_long" }) })
+  const refused = await vaultMandate.call({ action: "propose", note: "x", items: ["github-work"], classes: ["change"], days: 90, caps: { change: 2000 } }, deps(wide.api), call).catch((error: unknown) => error)
+  expect(toCliError(refused)).toMatchObject({ code: "forbidden", extras: { mandateRefused: "term_too_long" } })
+  expect(wide.seen.find((s) => s.path === "/v1/mandates/proposals")?.body).toMatchObject({ terms: { ttlDays: 90, caps: { change: 2000 } } })
+})
+
 test("vault_mandate has a closed object-root input schema with the five machine actions and no way to sign, resume or stop", () => {
   const schema = z.toJSONSchema(vaultMandate.input, { io: "input" })
   expect(schema.type).toBe("object")
@@ -158,10 +173,10 @@ test("propose with no items or classes names what this machine asked for, 30 day
   await vaultMandate.call({ action: "propose", note: "Nightly triage" }, deps(api), call)
   expect(seen.map((s) => s.path)).toEqual(["/v1/mandates/asked", "/v1/me", "/v1/mandates/proposals"])
   expect(seen.find((s) => s.path === "/v1/mandates/proposals")?.body).toEqual({ terms: { items: ["github-work"], classes: ["change", "read"], caps: { read: 500, change: 100, send: 0, delete: 0 }, ttlDays: 30, schedule: null, note: "Nightly triage" }, reason: "Nightly triage" })
-  const schema = z.toJSONSchema(vaultMandate.input, { io: "input" }) as { properties: Record<string, { description?: string }> }
-  expect(schema.properties.items?.description).toContain("The vault refuses all and any other.")
+  const schema = z.toJSONSchema(vaultMandate.advertised ?? vaultMandate.input, { io: "input" }) as { properties: Record<string, { description?: string }> }
+  expect(schema.properties.items?.description).toContain("The vault refuses any other.")
   expect(schema.properties.classes?.description).toContain("The vault refuses others.")
-  expect(schema.properties.days?.description).toContain("30 days (the default and the most)")
+  expect(schema.properties.days?.description).toContain("1, 7 or 30 days (the default)")
 })
 
 test("refusal/propose with nothing asked for proposes nothing; a refusal for naming more carries mandateRefused", async () => {

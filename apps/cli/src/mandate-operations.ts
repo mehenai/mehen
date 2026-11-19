@@ -6,7 +6,7 @@
 // ever printed.
 
 import { type Me, MANDATE_HEADER, type NextStep } from "@mehen/protocol/api"
-import { MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, type MandateAsked, MANDATE_RATE_LIMIT, MANDATE_STATES, MANDATE_TTL_DAYS, type MandateCaps, type MandateClass, MandateClassSchema, MandateIdSchema, type MandateOpenProposal, MandateProposalIdSchema, type MandatePropose, MandateProposeSchema, type MandateReceiptView, type MandateSchedule, MandateScheduleSchema, type MandateView, isMandateTimeZone, mandateReceiptsCursor, mandateScheduleText } from "@mehen/protocol/mandate-terms"
+import { MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_LIVE_STATES, MANDATE_MAX_ITEMS, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, type MandateAsked, MANDATE_RATE_LIMIT, MANDATE_STATES, MANDATE_TTL_DAYS, type MandateCaps, type MandateClass, MandateClassSchema, MandateIdSchema, type MandateOpenProposal, MandateProposalIdSchema, type MandatePropose, MandateProposeSchema, type MandateReceiptView, type MandateSchedule, MandateScheduleSchema, type MandateView, isMandateTimeZone, mandateReceiptsCursor, mandateScheduleText } from "@mehen/protocol/mandate-terms"
 import { PolicySlugSchema } from "@mehen/protocol/policy-mode"
 import { z } from "zod"
 import { type Ask, type AskUrl, askSay, askUrl, clockText, mandateAsk, mandatePageUrlFor, mandateProposalUrlFor, refusedLinkWarning, withContext } from "./ask.ts"
@@ -283,6 +283,8 @@ export function mandateProposal(input: MandateRequest, surface: MandateSurface, 
   if (proposalNeedsAsked(input)) {
     if (asked === null) throw usageError(`This vault does not say what this machine has asked for, so there is no default: name ${flag("items")} and ${flag("classes")}.`, help)
     if (asked.items.length === 0 && input.items === null) throw new CliError("forbidden", "This machine asked for nothing a mandate could cover in the last 30 days, so there is nothing to propose.", { say: "Ask for each request as usual; propose a mandate once more asks like them will follow." }, { mandateRefused: "item_unasked" })
+    // Never cut to 200 silently: which ones matters, and only the agent knows.
+    if (asked.items.length > MANDATE_MAX_ITEMS && input.items === null) throw usageError(`This machine asked for ${asked.items.length} credentials in the last 30 days, and a mandate names at most ${MANDATE_MAX_ITEMS}: choose at most ${MANDATE_MAX_ITEMS} with ${flag("items")}.`, help)
   }
   let items: "all" | string[] = input.items === null ? [...(asked?.items ?? [])].sort() : "all"
   if (input.items !== null && input.items !== "all") {
@@ -312,13 +314,13 @@ export function mandateProposal(input: MandateRequest, surface: MandateSurface, 
   return parsed.data
 }
 
-// --caps send=50,delete=20 as a record; each class once.
+// --caps send=5,delete=2 as a record; each class once.
 export function parseCapsFlag(text: string | null, help: string): Record<string, number> {
   if (text === null) return {}
   const caps: Record<string, number> = {}
   for (const part of text.split(",")) {
     const match = /^([a-z]+)=([0-9]{1,6})$/.exec(part.trim())
-    if (!match || Object.hasOwn(caps, match[1] as string)) throw usageError("--caps takes class=number pairs separated by commas, each class once: send=50,delete=20.", help)
+    if (!match || Object.hasOwn(caps, match[1] as string)) throw usageError("--caps takes class=number pairs separated by commas, each class once: send=5,delete=2.", help)
     caps[match[1] as string] = Number(match[2])
   }
   return caps

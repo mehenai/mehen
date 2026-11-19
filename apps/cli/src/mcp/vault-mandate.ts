@@ -1,4 +1,4 @@
-import { MANDATE_CAP_MAX, MANDATE_CLASSES, MandateIdSchema, parseMandateReceiptsCursor } from "@mehen/protocol/mandate-terms"
+import { MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_MAX_ITEMS, MANDATE_PROPOSAL_CAP_DEFAULTS, MandateIdSchema, parseMandateReceiptsCursor } from "@mehen/protocol/mandate-terms"
 import { PolicySlugSchema } from "@mehen/protocol/policy-mode"
 import { z } from "zod"
 import { CliError } from "../errors.ts"
@@ -29,12 +29,19 @@ const actionInput = z.union([
   z.strictObject({ action: z.literal("pause"), id: MandateIdSchema.optional() }),
 ])
 
-const input = z.strictObject({
+// What tools/list offers: only what a machine may propose. input parses the
+// wider values too, so the vault refuses them with its structured reason.
+const proposeOffered = {
+  items: z.array(PolicySlugSchema).min(1).max(MANDATE_MAX_ITEMS).optional(),
+  days: z.union([z.literal(1), z.literal(7), z.literal(30)]).optional(),
+  caps: z.strictObject(Object.fromEntries(MANDATE_CLASSES.map((c) => [c, z.number().int().min(1).max(MANDATE_PROPOSAL_CAP_DEFAULTS[c]).optional()])) as Record<(typeof MANDATE_CLASSES)[number], z.ZodOptional<z.ZodNumber>>).optional(),
+}
+const inputOf = (fields: { items: z.ZodType; days: z.ZodType; caps: z.ZodType }) => z.strictObject({
   action: z.enum(ACTIONS).describe("propose needs note; list takes nothing; show needs id; pause takes id, or none for this machine's live mandate; uses needs id and takes since and before. Supply only those fields."),
-  items: proposeFields.items.describe("propose: credential slugs; by default those this machine asked for in 30 days. The vault refuses all and any other."),
+  items: fields.items.describe("propose: credential slugs; by default those this machine asked for in 30 days. The vault refuses any other."),
   classes: proposeFields.classes.describe("propose: read, change, send, delete; by default read and those asked for. The vault refuses others."),
-  days: proposeFields.days.describe("propose: 1, 7 or 30 days (the default and the most)."),
-  caps: caps.optional().describe("propose: requests a day per class, such as { send: 5 }, at most the default, which fills any left out."),
+  days: fields.days.describe("propose: 1, 7 or 30 days (the default)."),
+  caps: fields.caps.describe("propose: requests a day per class, such as { send: 5 }; the default fills any left out."),
   schedule: proposeFields.schedule.describe(`propose: only in these hours, a time zone then windows separated by ";": "${SCHEDULE_EXAMPLE}". At any time when absent.`),
   note: z.string().optional().describe("Required for propose: what the mandate is for. The person signing reads it."),
   reason: proposeFields.reason.describe("propose: why this machine asks now; the note when absent."),
@@ -43,6 +50,8 @@ const input = z.strictObject({
   before: usesCursor.optional().describe(`uses: carry on from the next of an answer cut at ${USES_LIMIT} receipts.`),
   workspace: WORKSPACE_ARG,
 })
+const input = inputOf({ items: proposeFields.items, days: proposeFields.days, caps: caps.optional() })
+const advertised = inputOf(proposeOffered)
 
 const ACTION_FIELDS: Record<(typeof ACTIONS)[number], string> = {
   propose: "note, and optionally items, classes, days, caps, schedule and reason",
@@ -54,6 +63,7 @@ export const vaultMandate = tool({
   title: "Mandates",
   description: `Mandates: ask a person to let this machine's held requests through without asking, with the credentials and kinds named, within daily caps, until a date and optionally only in certain hours. propose returns the ask to show, or the same open proposal (existing true) for the same terms; the person signs it with their passkey and may change any term. list, show and uses read its proposals, mandates, today's use (UTC) and what went through on trust, ${USES_LIMIT} at a time; pause stops this machine's mandate covering anything now, without id its live one here. A paused, tripped or ended mandate comes with next.url, its page, to pass to the person who signed it. Agents cannot sign, resume or stop a mandate. A mandate never covers credential, access or money changes, nor anything an ask's mandateCover says it cannot. Never returns a secret.`,
   input,
+  advertised,
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   async call(value, deps) {
     const { workspace, ...action } = value

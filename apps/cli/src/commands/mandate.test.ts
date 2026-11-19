@@ -125,6 +125,23 @@ test("refusal/propose with nothing asked for in 30 days proposes nothing, and sa
   expect(proposalsSent()).toEqual([])
 })
 
+test("refusal/propose with more than 200 credentials asked for, and no --items, sends nothing and says to choose at most 200", async () => {
+  created()
+  vault.overrides.set("GET /v1/mandates/asked", () => Response.json({ items: Array.from({ length: 201 }, (_, i) => `key-${String(i).padStart(3, "0")}`), classes: ["change"] }))
+  const result = await propose("--json")
+  expect(result.code).toBe(EXIT.usage)
+  expect(json(result)).toMatchObject({ error: "usage", message: "This machine asked for 201 credentials in the last 30 days, and a mandate names at most 200: choose at most 200 with --items." })
+  expect(proposalsSent()).toEqual([])
+  expect((await propose("--items", "key-000", "--classes", "change", "--json")).code).toBe(EXIT.ok)
+})
+
+test("refusal/--caps in the wrong shape names an example a machine may propose", async () => {
+  const result = await propose("--caps", "send:5", "--json")
+  expect(result.code).toBe(EXIT.usage)
+  expect(String(json(result).message)).toContain("send=5,delete=2")
+  expect(String(json(result).message)).not.toContain("send=50")
+})
+
 test("refusal/propose against a vault that does not say what was asked for needs --items and --classes, and sends nothing", async () => {
   created()
   vault.overrides.set("GET /v1/mandates/asked", () => vaultError("not_found", "No such route."))

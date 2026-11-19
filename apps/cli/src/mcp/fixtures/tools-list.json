@@ -1239,21 +1239,14 @@
             "description": "propose needs note; list takes nothing; show needs id; pause takes id, or none for this machine's live mandate; uses needs id and takes since and before. Supply only those fields."
           },
           "items": {
-            "description": "propose: credential slugs; by default those this machine asked for in 30 days. The vault refuses all and any other.",
-            "anyOf": [
-              {
-                "type": "string",
-                "const": "all"
-              },
-              {
-                "minItems": 1,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9-]{1,63}$"
-                }
-              }
-            ]
+            "description": "propose: credential slugs; by default those this machine asked for in 30 days. The vault refuses any other.",
+            "minItems": 1,
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,63}$"
+            }
           },
           "classes": {
             "description": "propose: read, change, send, delete; by default read and those asked for. The vault refuses others.",
@@ -1270,7 +1263,7 @@
             }
           },
           "days": {
-            "description": "propose: 1, 7 or 30 days (the default and the most).",
+            "description": "propose: 1, 7 or 30 days (the default).",
             "anyOf": [
               {
                 "type": "number",
@@ -1283,36 +1276,32 @@
               {
                 "type": "number",
                 "const": 30
-              },
-              {
-                "type": "number",
-                "const": 90
               }
             ]
           },
           "caps": {
-            "description": "propose: requests a day per class, such as { send: 5 }, at most the default, which fills any left out.",
+            "description": "propose: requests a day per class, such as { send: 5 }; the default fills any left out.",
             "type": "object",
             "properties": {
               "change": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 10000
+                "maximum": 100
               },
               "delete": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 200
+                "maximum": 5
               },
               "read": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 50000
+                "maximum": 500
               },
               "send": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500
+                "maximum": 10
               }
             },
             "additionalProperties": false
