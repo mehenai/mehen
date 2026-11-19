@@ -14,6 +14,7 @@ import {
   parseHeader,
   selectBody,
   parseSelectPath,
+  readChunk,
   readLimited,
   fetchContext,
   relayReplaces,
@@ -92,13 +93,13 @@ async function openOutput(output: string): Promise<FileHandle> {
   return handle
 }
 
-async function writeBody(response: Response, handle: FileHandle | null): Promise<number> {
+async function writeBody(response: Response, handle: FileHandle | null, method: string): Promise<number> {
   await handle?.truncate(0)
   if (!response.body) return 0
   const reader = response.body.getReader()
   let total = 0
   for (;;) {
-    const { done, value } = await reader.read()
+    const { done, value } = await readChunk(reader, method)
     if (done) break
     const chunk = new Uint8Array(value)
     total += chunk.length
@@ -193,7 +194,7 @@ export const fetchCommand: Command = {
       if (mandate) note(`mehen: ${mandateAllowedText(mandate)}`)
       const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}) }
       if (select !== null) {
-        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY)
+        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
         const chosen = selectBody(bytes, head.status, request.method, select)
         if (!chosen.json) {
           note(`mehen: ${chosen.note}`)
@@ -206,14 +207,14 @@ export const fetchCommand: Command = {
           else await writeStdout(utf8(`${JSON.stringify(picked.value, null, 2)}\n`))
         }
       } else if (output !== null) {
-        const written = await writeBody(response, handle)
+        const written = await writeBody(response, handle, request.method)
         note(`mehen: wrote ${written} bytes to ${output}`)
         if (json) printJson({ ...head, output, bytes: written })
       } else if (json) {
-        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY)
+        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
         printJson({ ...head, ...bodyForJson(bytes) })
       } else {
-        await writeBody(response, null)
+        await writeBody(response, null, request.method)
       }
       if (args.bool("fail") && head.status >= 400) {
         throw new CliError("upstream_status", `The upstream answered ${head.status}${head.statusText ? ` ${head.statusText}` : ""}.`, {

@@ -6,6 +6,7 @@ import { bodyForJson, type UpstreamHead, fetchContext, parseSelectPath, readLimi
 import { mandateAllowed, mandateCapped } from "../mandate-operations.ts"
 import { type PostureAllowed, type RuleAllowed, postureAllowed, ruleEnded, rulesAllowed } from "../policy-operations.ts"
 import { sessionLabel } from "../session.ts"
+import { retrySafeMethod } from "../vault-api.ts"
 import { type ToolOutput, WORKSPACE_ARG, outputSchema, plain, tool } from "./shared.ts"
 import { FETCH_BODY_LIMIT } from "./constants.ts"
 
@@ -19,15 +20,17 @@ const MCP_SELECT = { option: "select", help: "mehen fetch --help" }
 type FetchHead = UpstreamHead & { rules?: RuleAllowed[]; postures?: PostureAllowed[]; mandate?: string }
 
 // vault_fetch's result without select: the body as text, cut at 256 KiB.
-async function fetchOutput(head: FetchHead, response: Response): Promise<ToolOutput> {
-  const { bytes, truncated, size } = await readLimited(response, FETCH_BODY_LIMIT)
-  return bodyOutput(head, bytes, truncated, size, [])
+async function fetchOutput(head: FetchHead, response: Response, method: string): Promise<ToolOutput> {
+  const { bytes, truncated, size } = await readLimited(response, FETCH_BODY_LIMIT, method)
+  return bodyOutput(head, bytes, truncated, size, [], method)
 }
 
-function bodyOutput(head: FetchHead, bytes: Bytes, truncated: boolean, size: number | null, notes: string[]): ToolOutput {
+// A read cut short can be sent again to get the rest; a write cannot.
+function bodyOutput(head: FetchHead, bytes: Bytes, truncated: boolean, size: number | null, notes: string[], method: string): ToolOutput {
   const strict = truncated ? null : bodyForJson(bytes)
   const text = strict && "body" in strict ? strict.body : new TextDecoder().decode(bytes)
-  if (truncated) notes.push(`The body was cut at 256 KiB${size ? ` of ${size} bytes` : ""}; pass select to pick the part you need from the whole response, or use \`mehen fetch -o <file>\` in a shell to save all of it.`)
+  const cut = `The body was cut at 256 KiB${size ? ` of ${size} bytes` : ""}`
+  if (truncated) notes.push(retrySafeMethod(method) ? `${cut}; pass select to pick the part you need from the whole response, or use \`mehen fetch -o <file>\` in a shell to save all of it.` : `${cut}. Sending the request again will not recover the rest and may do it twice: read the result back with a separate read, or ask the person.`)
   if (strict && "bodyBase64" in strict) notes.push("The body is not UTF-8 text; invalid bytes are shown as replacement characters.")
   return plain({ ...head, body: text, truncated, ...(notes.length ? { note: notes.join(" ") } : {}) })
 }
@@ -82,17 +85,17 @@ export const vaultFetch = tool({
       const mandate = mandateAllowed(response)
       const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}) }
       if (select !== null) {
-        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY)
+        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
         const chosen = selectBody(bytes, head.status, request.method, select, MCP_SELECT)
         if (!chosen.json) {
           const cut = bytes.length > FETCH_BODY_LIMIT
-          const output = bodyOutput(head, cut ? bytes.slice(0, FETCH_BODY_LIMIT) : bytes, cut, bytes.length, [chosen.note])
+          const output = bodyOutput(head, cut ? bytes.slice(0, FETCH_BODY_LIMIT) : bytes, cut, bytes.length, [chosen.note], request.method)
           return { ...output, structured: { ...output.structured, selected: null, found: false } }
         }
         const picked = chosen.picked
         return plain({ ...head, selected: picked.value, found: picked.found, ...(picked.found ? {} : { note: `select ${args.select} matched nothing in the body.` }) })
       }
-      return await fetchOutput(head, response)
+      return await fetchOutput(head, response, request.method)
     } catch (error) {
       if (timeout?.aborted && !call.signal.aborted && args.timeoutSeconds !== undefined) throw timedOut(args.timeoutSeconds, request.method)
       throw replacingRefused(ruleEnded(await mandateCapped(api, error, signal)), request, "mcp")

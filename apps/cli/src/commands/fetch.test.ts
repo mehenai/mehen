@@ -126,6 +126,25 @@ describe("mehen fetch", () => {
     }
   })
 
+  test("a write whose answer breaks off mid-stream is outcome_unknown, in every output; a read's is not", async () => {
+    await enrolled()
+    vault.relay = () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode(`{"id":`)) },
+        // After the head and the first chunk have gone out.
+        async pull(controller) { await Bun.sleep(100); controller.error(new Error("relay response too large")) },
+      }), { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
+    for (const extra of [["--json"], [], ["--select", "id", "--json"], ["-o", `${dir.path}/out.json`, "--json"]]) {
+      const write = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/x", "-d", "{}", ...extra], env)
+      expect(write.code, extra.join(" ")).toBe(EXIT.transient)
+      const said = `${write.stdout}${write.stderr}`
+      if (extra.includes("--json")) expect(json(write), extra.join(" ")).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+      expect(said, extra.join(" ")).toContain("The answer to the request broke off while mehen read it")
+      expect(said, extra.join(" ")).toContain(OUTCOME_UNKNOWN_SAY)
+    }
+    const read = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/x", "--json"], env)
+    expect(`${read.stdout}${read.stderr}`).not.toContain("outcome_unknown")
+  })
+
   test("--json returns status, headers and body", async () => {
     await enrolled()
     vault.relay = () => new Response("hello", { status: 404, headers: { [UPSTREAM_HEADER]: "1", [ITEM_HEADER]: "openai-personal", "x-request-id": "r1" } })
@@ -177,11 +196,12 @@ describe("mehen fetch", () => {
       const result = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/x", "--json"], env)
       expect(result.code).toBe(exit)
       const { ask, ...body } = json(result)
-      expect(body).toEqual({
+      // The vault marks upstream_failed as after forwarding: the write may
+      // have reached the upstream, so it is outcome_unknown.
+      expect(body).toEqual(code === "upstream_failed" ? { error: "outcome_unknown", message: `refused: ${code}`, next: { say: OUTCOME_UNKNOWN_SAY } } : {
         error: code,
         message: `refused: ${code}`,
-        // A write the upstream did not answer may have reached it: the next step is outcome_unknown's.
-        next: code === "upstream_failed" ? { say: OUTCOME_UNKNOWN_SAY } : { url: link, command: "mehen wait apr_1", say: "Ask the human." },
+        next: { url: link, command: "mehen wait apr_1", say: "Ask the human." },
         approval: "apr_1",
         bindingCode: "K7Q2",
       })

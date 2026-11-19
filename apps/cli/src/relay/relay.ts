@@ -163,12 +163,12 @@ function errorResponse(refusal: Refusal): Response {
   })
 }
 
-// A failed write that may still have reached the upstream: the connection to
-// the vault broke, the vault got no answer (or one in a compression it cannot
-// check), or a 5xx came from something in front of the vault.
+// A failed write that may still have reached the upstream: anything but a
+// readable refusal the vault made before forwarding (HttpVaultApi.relay),
+// whatever its status, and any answer something in front of the vault sent.
 function writeOutcomeUnknown(error: unknown): error is Error {
   if (error instanceof RelayOutcomeUnknownError) return true
-  if (error instanceof RelayUnmarkedAnswerError) return error.status >= 500
+  if (error instanceof RelayUnmarkedAnswerError) return true
   return error instanceof VaultApiError && error.body.error === "upstream_failed"
 }
 
@@ -197,7 +197,11 @@ async function writeResponse(socket: Duplex, method: string, response: Response,
         await writeWithBackpressure(socket, Buffer.concat([Buffer.from(`${value.length.toString(16)}\r\n`), value, Buffer.from("\r\n")]))
       }
     } catch (error) {
+      // The answer broke after its head went out: never the last chunk, so
+      // the program reads an incomplete body, as a write that may have
+      // landed must be read, and not a clean end.
       await reader.cancel().catch(() => {})
+      socket.destroy()
       throw error
     }
   }

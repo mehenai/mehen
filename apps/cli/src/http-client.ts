@@ -5,6 +5,7 @@ import {
   type ApiError,
   ERROR_CODES,
   ERROR_HEADER,
+  FORWARDED_HEADER,
   type ErrorCode,
   type NextStep,
   type RelayRequestInput,
@@ -15,7 +16,6 @@ import { POLICY_AREA_REFUSALS, POLICY_RULE_REFUSALS, type PolicyAreaRefusal, typ
 import { PROOF_HEADER, type ProofSigner, createProof, parseProof } from "@mehen/protocol/proof"
 import type { WorkspaceEnrolStatus } from "@mehen/protocol/workspace"
 import { z } from "zod"
-import { OUTCOME_UNKNOWN_SAY } from "./errors.ts"
 import { readMandateCover } from "./mandate-cover.ts"
 import { type CallContext, RelayOutcomeUnknownError, RelayUnmarkedAnswerError, type VaultApi, VaultApiError, VaultNetworkError, type VaultRequestOptions, retrySafeMethod } from "./vault-api.ts"
 import { BUILD_KIND, VERSION } from "./version.ts"
@@ -132,6 +132,16 @@ type ApiErrorWithExpiry = ApiError & { expiresAt?: string }
 // The mandate a cap kept from covering a held request; dropped unless well formed.
 const CappedMandateSchema = z.object({ id: MandateIdSchema, capped: z.array(MandateClassSchema).min(1) })
 
+// Whether a Mehen-Error body is one mehen can read: a known code and a message.
+function readableError(text: string): boolean {
+  try {
+    const body = JSON.parse(text) as unknown
+    return typeof body === "object" && body !== null && (ERROR_CODES as readonly unknown[]).includes((body as { error?: unknown }).error) && typeof (body as { message?: unknown }).message === "string"
+  } catch {
+    return false
+  }
+}
+
 // Reads a Mehen-Error body, keeping only the documented fields. relayedItem:
 // the item a relay sent, which mandateCover then names (MandateCover).
 export async function readApiError(response: Response, context: CallContext | null = null, relayedItem: string | null = null): Promise<VaultApiError> {
@@ -225,27 +235,31 @@ export class HttpVaultApi implements VaultApi {
     }
   }
 
+  // A write's answer is safe to send again only when the vault says, in a
+  // refusal it can be read from, that it refused before forwarding anything
+  // (Mehen-Forwarded: no), and that refusal is not its own failure. Every
+  // other answer to a write that is not the upstream's own may have come
+  // after it took effect: RelayOutcomeUnknownError. A vault that does not
+  // mark its refusals errs that way too.
   async relay(request: RelayRequestInput, options?: VaultRequestOptions): Promise<Response> {
     const write = !retrySafeMethod(request.method)
     const response = await this.send("POST", "/v1/relay", JSON.stringify(request), options, write)
+    if (response.headers.has(UPSTREAM_HEADER) && !response.headers.has(ERROR_HEADER)) return withDecodedHeaders(response)
     if (response.headers.has(ERROR_HEADER)) {
-      const error = await readApiError(response, this.options.context ?? null, request.item ?? null)
-      // A write the upstream did not answer may still have reached it.
-      if (write && error.body.error === "upstream_failed") {
-        const { retryAfter: _retryAfter, ...body } = error.body
-        throw new VaultApiError(error.status, { ...body, next: { say: OUTCOME_UNKNOWN_SAY } }, error.context)
-      }
-      throw error
+      if (!write) throw await readApiError(response, this.options.context ?? null, request.item ?? null)
+      const text = await response.text().catch(() => null)
+      const error = await readApiError(new Response(text, response), this.options.context ?? null, request.item ?? null)
+      const readable = text !== null && readableError(text)
+      const beforeForwarding = response.headers.get(FORWARDED_HEADER)?.trim().toLowerCase() === "no"
+      if (readable && beforeForwarding && !(error.body.error === "internal" && response.status >= 500)) throw error
+      throw new RelayOutcomeUnknownError(readable ? error.body.message : `The vault answered the write with HTTP ${response.status} and an error mehen cannot read.`)
     }
-    if (!response.headers.has(UPSTREAM_HEADER)) {
-      await response.body?.cancel()
-      const message = `The vault answered the relay with HTTP ${response.status} but neither ${UPSTREAM_HEADER} nor ${ERROR_HEADER}, so mehen will not treat it as the upstream's answer.`
-      // A 5xx from something in front of the vault, such as a proxy's 502 or
-      // 504, may have come after the vault sent the write upstream.
-      if (write && response.status >= 500) throw new RelayOutcomeUnknownError(message)
-      throw new RelayUnmarkedAnswerError(response.status, { error: "internal", message })
-    }
-    return withDecodedHeaders(response)
+    await response.body?.cancel()
+    const message = `The vault answered the relay with HTTP ${response.status} but neither ${UPSTREAM_HEADER} nor ${ERROR_HEADER}, so mehen will not treat it as the upstream's answer.`
+    // Something in front of the vault, such as a proxy, may have answered
+    // after the vault sent the write upstream.
+    if (write) throw new RelayOutcomeUnknownError(message)
+    throw new RelayUnmarkedAnswerError(response.status, { error: "internal", message })
   }
 }
 

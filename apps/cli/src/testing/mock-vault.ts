@@ -207,6 +207,9 @@ export class MockVault {
   // header it sends (a clock skew) or replaces the answer.
   healthz: () => Response = () => Response.json({ ok: true }, { headers: { date: new Date().toUTCString() } })
   relay: (request: RelayRequestInput) => Response = defaultRelay
+  // The Mehen-Forwarded the vault puts on a relay refusal that has none: "no"
+  // as for one before forwarding; null for a vault that does not mark them.
+  relayForwarded: "no" | "yes" | null = "no"
   readonly overrides = new Map<string, MockRoute>()
   // The /v1 version seam as the vault runs it: `cliAdvice` is
   // sent as Mehen-Cli on every /v1 response; with `cliMinimum`, an
@@ -366,6 +369,14 @@ export class MockVault {
       this.outdated.push(`${request.method} ${url.pathname}`)
       response = Response.json({ error: "cli_outdated", message: `This machine's mehen ${agent ?? "?"} is older than the vault supports (${this.cliMinimum ?? "?"}).`, next: { command: "mehen update --json", say: "Update mehen on this machine, then run the command again." } }, { status: 426, headers: { "Mehen-Error": "1" } })
     } else response = await this.route(request, url)
+    // As the vault marks a relay refusal made before it forwarded anything.
+    if (this.relayForwarded !== null && request.method === "POST" && url.pathname === "/v1/relay" && response.headers.get("Mehen-Error") === "1" && !response.headers.has("Mehen-Forwarded")) {
+      const text = await response.text()
+      // upstream_failed only ever comes after forwarding, as in the vault.
+      const after = text.includes('"error":"upstream_failed"')
+      response = new Response(text, response)
+      response.headers.set("Mehen-Forwarded", after ? "yes" : this.relayForwarded)
+    }
     if (this.cliAdvice === null) return response
     const out = new Response(response.body, response)
     out.headers.set("Mehen-Cli", this.cliAdvice)

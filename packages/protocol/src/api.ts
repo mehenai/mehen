@@ -430,6 +430,10 @@ export type RelayRequestInput = z.infer<typeof RelayRequest>
 // Mehen-Item: <slug> (<account>) and Mehen-Upstream: 1. A vault refusal carries
 // Mehen-Error: 1 instead.
 export const UPSTREAM_HEADER = "Mehen-Upstream"
+// On a /v1/relay refusal: "no" when the vault refused before it sent anything
+// upstream, so the request had no effect there; "yes" when it refused after
+// it sent the request. A refusal without it may have reached the upstream.
+export const FORWARDED_HEADER = "Mehen-Forwarded"
 
 // ---------------------------------------------------------------- /v1: OAuth connections
 

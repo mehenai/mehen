@@ -247,6 +247,41 @@ describe("intercepted hosts", () => {
     await expectOutcomeUnknown(await relayedFailure("POST", new RelayUnmarkedAnswerError(504, { error: "internal", message })), message)
   })
 
+  test("a write answered with any unmarked status, a 429 or a 200 from something in front of the vault, is a 424 outcome_unknown", async () => {
+    for (const status of [408, 429, 200]) {
+      const message = `The vault answered the relay with HTTP ${status} but neither Mehen-Upstream nor Mehen-Error, so mehen will not treat it as the upstream's answer.`
+      await expectOutcomeUnknown(await relayedFailure("POST", new RelayUnmarkedAnswerError(status, { error: "internal", message })), message)
+    }
+  })
+
+  test("a streamed answer that breaks after its first chunk reaches the program as an incomplete body, never a clean end, and is not buffered", async () => {
+    for (const method of ["POST", "GET"]) {
+      let pulled = 0, release = () => {}
+      const held = new Promise<void>((resolve) => { release = resolve })
+      api.relayHandler = () => new Response(new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          pulled++
+          if (pulled === 1) return controller.enqueue(new TextEncoder().encode("data: first\n\n"))
+          await held
+          controller.error(new Error("stream reset"))
+        },
+      }), { headers: { "Mehen-Upstream": "1", "content-type": "text/event-stream" } })
+      try {
+        // The headers and the first chunk arrive while the rest is held back:
+        // the relay streams the answer, it does not buffer it.
+        const response = await withTimeout(fetch(`https://${INTERCEPT}/stream`, { method, ...(method === "GET" ? {} : { body: "x" }), proxy: relay.proxyUrl, tls: { ca: ca.certPem } }), 5000, `${method} stream`)
+        expect(response.status, method).toBe(200)
+        const reader = response.body!.getReader()
+        const first = await withTimeout(reader.read(), 5000, `${method} first chunk`)
+        expect(new TextDecoder().decode(first.value), method).toBe("data: first\n\n")
+        release()
+        await expect((async () => { for (;;) if ((await reader.read()).done) return "clean end" })(), method).rejects.toBeDefined()
+      } finally {
+        api.relayHandler = (request) => Response.json({ echoed: request }, { headers: { "Mehen-Upstream": "1" } })
+      }
+    }
+  })
+
   test("a read the vault answers upstream_failed keeps its retryable 502", async () => {
     const response = await relayedFailure("GET", new VaultApiError(502, { error: "upstream_failed", message: "Could not reach api.mehen.test. Nothing was changed by the vault; retry later.", retryAfter: 5 }))
     expect(response.status).toBe(502)

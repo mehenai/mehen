@@ -31,7 +31,7 @@ import { KINDS, isItemKind, isSlug } from "@mehen/protocol/kinds"
 import { OAUTH_PROVIDERS, type OAuthProviderTemplate, getOAuthProvider, getTemplate } from "@mehen/protocol/templates"
 import type { z } from "zod"
 import { relativeExpiry } from "./ask.ts"
-import { CliError, usageError } from "./errors.ts"
+import { CliError, outcomeUnknown, usageError } from "./errors.ts"
 import { MANDATES_OFF_LINE } from "./mandate-operations.ts"
 import { type VaultApi, VaultApiError, retrySafeMethod } from "./vault-api.ts"
 
@@ -890,14 +890,30 @@ export function upstreamHead(response: Response): UpstreamHead {
 }
 
 // Reads up to `limit` bytes of a body and cancels the rest.
-export async function readLimited(response: Response, limit: number): Promise<{ bytes: Bytes; truncated: boolean; size: number | null }> {
+// An answer to a write that breaks off while it is read: the request was
+// sent, so it may have taken effect.
+export function answerBrokeOff(error: unknown): CliError {
+  return outcomeUnknown(`The answer to the request broke off while mehen read it (${error instanceof Error ? error.message : String(error)}), so only part of it arrived. The request was sent and may have taken effect.`)
+}
+// A chunk of an answer's body; for a write, a read that fails is
+// answerBrokeOff.
+export async function readChunk(reader: ReadableStreamDefaultReader<Uint8Array>, method: string): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
+  try {
+    return await reader.read()
+  } catch (error) {
+    if (!retrySafeMethod(method)) throw answerBrokeOff(error)
+    throw error
+  }
+}
+
+export async function readLimited(response: Response, limit: number, method = "GET"): Promise<{ bytes: Bytes; truncated: boolean; size: number | null }> {
   const chunks: Bytes[] = []
   let total = 0
   let truncated = false
   if (response.body) {
     const reader = response.body.getReader()
     for (;;) {
-      const { done, value } = await reader.read()
+      const { done, value } = await readChunk(reader, method)
       if (done) break
       const chunk = new Uint8Array(value)
       if (total + chunk.length > limit) {

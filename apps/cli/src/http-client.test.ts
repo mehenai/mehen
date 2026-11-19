@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { ERROR_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
+import { ERROR_HEADER, FORWARDED_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
 import { type ProofSigner, parseProof } from "@mehen/protocol/proof"
 import { readConfig } from "./config.ts"
 import { DEFAULT_NEXT, OUTCOME_UNKNOWN_SAY, errorBody, toCliError } from "./errors.ts"
@@ -227,17 +227,46 @@ describe("HttpVaultApi relay", () => {
     expect(read.error).toBe("upstream_failed")
     expect(read.next?.say).toContain("retry later")
     const write = await failed("POST")
-    expect(write.error).toBe("upstream_failed")
-    expect(write.next?.say).toContain("Do not send it again until you have checked")
-    expect(write.next?.say).not.toContain("retry later")
+    expect(write.error).toBe("outcome_unknown")
+    expect(write.message).toBe("Could not get an answer from gmail.googleapis.com.")
+    expect(write.next?.say).toBe(OUTCOME_UNKNOWN_SAY)
+  })
+
+  test("a write is safe to send again only after a readable refusal marked as made before forwarding, and not the vault's own failure", async () => {
+    const api = await client()
+    const write = async () => toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
+    const answer = (status: number, headers: Record<string, string>, text: string) => vault.overrides.set("POST /v1/relay", () => new Response(text, { status, headers }))
+    const refusal = JSON.stringify({ error: "approval_required", message: "Needs a human.", approval: "apr_1", next: { url: `${vault.url}/w/mock-space/a/apr_1`, say: "Ask." } })
+    // Marked no and readable: the vault's own answer, which may be resent.
+    answer(409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, refusal)
+    expect((await write()).code).toBe("approval_required")
+    const unknown: [string, number, Record<string, string>, string][] = [
+      ["a refusal from a vault that does not mark them", 409, { [ERROR_HEADER]: "1" }, refusal],
+      ["a refusal marked as after forwarding", 413, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "yes" }, JSON.stringify({ error: "too_large", message: "The answer was too large." })],
+      ["a marked refusal whose body cannot be read", 409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, "<html>"],
+      ["a marked refusal with an unknown code", 409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, JSON.stringify({ error: "brand_new", message: "x" })],
+      ["the vault's own failure, even marked", 500, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, JSON.stringify({ error: "internal", message: "It broke." })],
+      ...[408, 429, 499, 200].map((status): [string, number, Record<string, string>, string] => [`an unmarked ${status}`, status, {}, "from a proxy"]),
+    ]
+    for (const [name, status, headers, text] of unknown) {
+      answer(status, headers, text)
+      vault.relayForwarded = null
+      const failed = await write().finally(() => { vault.relayForwarded = "no" })
+      expect([failed.code, failed.next?.say], name).toEqual(["outcome_unknown", OUTCOME_UNKNOWN_SAY])
+      expect(failed.extras, name).not.toHaveProperty("retryAfter")
+    }
+    // A read is judged as before: an unmarked answer is retryable.
+    answer(429, {}, "from a proxy")
+    const read = toCliError(await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
+    expect(read.code).toBe("internal")
   })
 
   test("a write's upstream_failed loses any retryAfter the vault sent, as its next says to check first", async () => {
     const api = await client()
     vault.overrides.set("POST /v1/relay", () => Response.json({ error: "upstream_failed", message: "Could not get an answer.", retryAfter: 5 }, { status: 502, headers: { [ERROR_HEADER]: "1" } }))
-    const failed = async (method: string) => (await api.relay({ item: "gmail", method, url: "https://gmail.googleapis.com/x", headers: [] }).catch((e: unknown) => e)) as VaultApiError
-    expect((await failed("POST")).body.retryAfter).toBeUndefined()
-    expect((await failed("GET")).body.retryAfter).toBe(5)
+    const failed = async (method: string) => toCliError(await api.relay({ item: "gmail", method, url: "https://gmail.googleapis.com/x", headers: [] }).catch((e: unknown) => e))
+    expect((await failed("POST")).extras.retryAfter).toBeUndefined()
+    expect((await failed("GET")).extras.retryAfter).toBe(5)
   })
 
   test("returns the streamed upstream response", async () => {

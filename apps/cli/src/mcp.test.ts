@@ -920,6 +920,32 @@ describe("mehen mcp tools", () => {
     expect(read.structuredContent).toMatchObject({ error: "usage", message: expect.stringContaining("run it again without select") })
   })
 
+  test("vault_fetch: a write whose answer breaks off mid-stream is outcome_unknown, with select or without", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.relay = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode(`{"id":`)) },
+      async pull(controller) { await Bun.sleep(100); controller.error(new Error("relay response too large")) },
+    }), { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
+    for (const select of [{}, { select: "id" }]) {
+      const write = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", body: "{}", ...select })
+      expect(write.isError).toBe(true)
+      expect(write.structuredContent).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+    }
+  })
+
+  test("vault_fetch: a write's answer over 256 KiB says the body was cut and that sending it again will not recover it", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.relay = () => new Response("x".repeat(300 * 1024), { status: 201, headers: { [UPSTREAM_HEADER]: "1", "content-length": String(300 * 1024) } })
+    const write = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", body: "{}" })
+    const note = String((write.structuredContent as { note: string }).note)
+    expect(write.structuredContent).toMatchObject({ status: 201, truncated: true })
+    expect(note).toContain("Sending the request again will not recover the rest")
+    expect(note).toContain("read the result back with a separate read, or ask the person")
+    expect(note).not.toMatch(/pass select|mehen fetch -o/)
+    const read = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/x" })
+    expect(String((read.structuredContent as { note: string }).note)).toContain("pass select")
+  })
+
   test("vault_fetch with timeoutSeconds stops waiting: a read with a network error safe to resend, a write with outcome_unknown", async () => {
     await vault.enrolSoftware(dir.path)
     vault.relay = () => new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
