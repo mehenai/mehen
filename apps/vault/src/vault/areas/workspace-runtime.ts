@@ -205,11 +205,13 @@ export function recordExposure(ctx: VaultContext, fact: ExposureFact): void {
 export function shareRequestPath(project: string, member: string): string {
   return `/projects/${encodeURIComponent(project)}?share=${encodeURIComponent(member)}`
 }
-// The accounts a share request goes to: every active member who manages
-// the project, owners and admins among them.
-function projectManagerAccounts(ctx: VaultContext, project: string): string[] {
-  const state = accessState(ctx), now = ctx.now()
-  return state.members.filter((m) => m.status === "active" && effectiveAccess(state, { kind: "member", id: m.id }, project, now).level === "manage").map((m) => m.account)
+// The accounts a share request goes to: every active member who may share
+// this project with that member now, as the share itself is decided (an
+// owner or admin for a guest). There is no session here, so each one's
+// identity gate is left out (capabilityState); the share asks for it.
+function shareRequestAccounts(ctx: VaultContext, project: string, member: string): string[] {
+  const state = accessState(ctx), now = ctx.now(), after = { level: "use" as const, protected: false, expiresAt: null }
+  return state.members.filter((m) => m.status === "active" && m.id !== member && can(capabilityState(state, m.id), { kind: "member", memberId: m.id, account: m.account, session: "ses_notice", securityEpoch: 0, sessionCheck: null }, { type: "project.share", after }, { project, member }, now).allowed).map((m) => m.account)
 }
 // How many accounts it queued the notice for.
 export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, sourceId?: string): number {
@@ -219,7 +221,7 @@ export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, 
   const checked = WorkspaceNoticePayloadSchema.parse(payload)
   const members = memberRows(ctx)
   const recipients = checked.kind === "member_joined" ? members.filter((m) => m.status === "active" && m.id === checked.by).map((m) => m.account) : checked.kind === "mandate_ending" || checked.kind === "mandate_lapsed" ? [] : members.filter((m) => m.status === "active" && (m.role === "owner" || checked.kind !== "owner_changed" && m.role === "admin")).map((m) => m.account)
-  if (checked.kind === "project_share_requested") recipients.splice(0, recipients.length, ...projectManagerAccounts(ctx, checked.project.id))
+  if (checked.kind === "project_share_requested") recipients.splice(0, recipients.length, ...shareRequestAccounts(ctx, checked.project.id, checked.member.member))
   if (checked.kind === "owner_changed" || checked.kind === "backup_recipient") { const subject = members.find((m) => m.id === checked.member); if (subject) recipients.push(subject.account) }
   // A mandate that tripped goes to its signer too, whatever their role; one
   // ending or lapsed goes to its signer alone.

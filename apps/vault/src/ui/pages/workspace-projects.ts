@@ -197,6 +197,8 @@ function shareLevelOptions(): Html {
   return html`<option value="use">Use</option><option value="edit">Edit</option><option value="manage">Manage</option>`
 }
 
+const SHARE_GUEST_OWNER_ONLY = "Only an owner or admin can share this project with a guest."
+
 function sharesCard(data: ProjectPageData, controls: ProjectControls, names: Names): Html {
   const shares = data.project.shares
   if (shares === undefined) {
@@ -208,6 +210,9 @@ function sharesCard(data: ProjectPageData, controls: ProjectControls, names: Nam
   const teams = data.viewer.role === "guest" ? [] : (data.teams ?? [])
   const reach = workspaceReach(data)
   const asked = data.shareWith != null && members.some((m) => m.member === data.shareWith) ? data.shareWith : null
+  // A share request naming a guest this viewer may not share with: the form
+  // says why and chooses no one, so nobody else is shared with by mistake.
+  const notOffered = data.shareWith != null && asked === null && controls.share && !controls.shareWithGuests && (data.members ?? []).some((m) => m.member === data.shareWith && m.status === "active" && m.role === "guest") ? SHARE_GUEST_OWNER_ONLY : null
   return html`<section class="card" aria-label="Shared with" data-region="shares">
     <div class="card-head"><h2>Shared with</h2></div>
     ${shares.length
@@ -218,10 +223,11 @@ function sharesCard(data: ProjectPageData, controls: ProjectControls, names: Nam
         )}</ul>`
       : html`<p class="muted">Not shared with anyone yet.</p>`}
     ${controls.share
-      ? html`<details class="fold edit" data-region="share-fold"${asked !== null ? " open" : ""}>
+      ? html`<details class="fold edit" data-region="share-fold"${asked !== null || notOffered !== null ? " open" : ""}>
           <summary>${icon("chevronRight")}<span>Share this project</span></summary>
           <form class="stack" data-form="share" novalidate>
-            <label class="field"><span class="label">With</span><select data-input="subject"><optgroup label="People">${members.map(
+            ${notOffered !== null ? html`<p class="notice warn" data-region="share-not-offered">${notOffered}</p>` : ""}
+            <label class="field"><span class="label">With</span><select data-input="subject">${notOffered !== null ? html`<option value="" selected>Choose who to share with</option>` : ""}<optgroup label="People">${members.map(
               (m) => html`<option value="${m.member}" data-kind="member" data-role="${m.role}"${m.member === asked ? " selected" : ""}>${cardText(m.name)} (${m.member})${m.role === "guest" ? ", guest" : ""}</option>`,
             )}</optgroup>${teams.length
               ? html`<optgroup label="Teams" data-region="team-subjects">${teams.map((t) => html`<option value="${t.id}" data-kind="team">${cardText(t.name)} (team ${cardText(t.slug)})</option>`)}</optgroup>`

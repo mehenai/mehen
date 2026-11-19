@@ -93,6 +93,14 @@ describe("controls", () => {
     expect(form).toMatch(/<p class="small warn-text" data-region="share-end-change" hidden><\/p>\s*<button type="button" class="btn primary" data-action="share">/)
   })
 
+  it("a share request for a guest the manager cannot share with: the form says why and chooses no one", () => {
+    const page = rendered("ws-project-share-guest-not-offered")
+    expect(page).toContain('data-region="share-fold" open>')
+    expect(page).toContain('<p class="notice warn" data-region="share-not-offered">Only an owner or admin can share this project with a guest.</p>')
+    expect(page).toContain('<option value="" selected>Choose who to share with</option>')
+    expect(page).not.toContain('value="mem_sam00001"')
+  })
+
   it("a member who manages it gets the vault's owner-only words where loosening and fences would be", () => {
     const page = rendered("ws-project-manager")
     const prod = between(page, 'data-env-card="prod"', "</section>")

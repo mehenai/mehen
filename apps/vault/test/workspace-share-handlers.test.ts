@@ -65,8 +65,9 @@ afterEach(() => {
   browser = null
 })
 
-function open(shareWith: string | null = null): MiniBrowser {
-  const markup = renderDocument(workspaceProjectPage(galleryShell(VIEWERS.owner), { viewer: VIEWERS.owner, project, items, members: GALLERY_MEMBERS, overrides: [], teams: GALLERY_TEAMS, shareWith })).value
+type Viewer = (typeof VIEWERS)[keyof typeof VIEWERS] | { role: "admin"; member: string }
+function open(shareWith: string | null = null, viewer: Viewer = VIEWERS.owner): MiniBrowser {
+  const markup = renderDocument(workspaceProjectPage(galleryShell(viewer), { viewer, project, items, members: GALLERY_MEMBERS, overrides: [], teams: GALLERY_TEAMS, shareWith })).value
   browser = installPage(markup, (path, body) => {
     if (path === "/api/w/northwind/projects/action") return { status: 200, body: prepared((body as { input: Record<string, unknown> }).input) }
     if (path === "/api/w/northwind") return { status: 200, body: WORKSPACE }
@@ -90,6 +91,7 @@ function shareForm(b: MiniBrowser) {
   }
   return {
     option,
+    subject,
     pick(o: MiniElement) {
       o.selected = true
       subject.dispatchEvent(new MiniEvent("change", { bubbles: true }))
@@ -180,6 +182,27 @@ describe("the share form's team subjects in the browser", () => {
       expect(b.document.querySelectorAll("option[selected]"), String(shareWith)).toEqual([])
       b.restore()
     }
+  })
+
+  for (const viewer of [VIEWERS.owner, { role: "admin" as const, member: "mem_tom00001" }])
+    it(`?share= naming a guest opens the form with the guest chosen for an ${viewer.role}`, () => {
+      const b = open("mem_sam00001", viewer)
+      expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open")).toBe(true)
+      expect(b.document.querySelectorAll("option[selected]").map((o) => o.getAttribute("value"))).toEqual(["mem_sam00001"])
+      expect(b.document.querySelector('[data-region="share-not-offered"]')).toBeNull()
+    })
+
+  it("?share= naming a guest a project manager may not share with says so, chooses no one, and shares with no one", async () => {
+    const b = open("mem_sam00001", VIEWERS.manager)
+    expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open")).toBe(true)
+    expect(b.document.querySelector('[data-region="share-not-offered"]')!.textContent).toBe("Only an owner or admin can share this project with a guest.")
+    const form = shareForm(b)
+    expect(form.subject.value).toBe("")
+    expect(b.document.querySelectorAll("option[selected]").map((o) => o.getAttribute("value"))).toEqual([""])
+    expect(() => form.option("mem_sam00001")).toThrow()
+    await form.share()
+    expect(sent(b, "/api/w/northwind/projects/action")).toEqual([])
+    expect(passkey.prompts).toBe(0)
   })
 
   it("a prepared action about anyone but the chosen team refuses before the step-up starts", async () => {

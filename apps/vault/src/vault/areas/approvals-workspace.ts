@@ -270,8 +270,10 @@ export const MACHINE_MAX_OPEN_ASKS = 20
 // of its own, the workspace's home, whose Needs you lists them (mehen
 // accepts the home as a refusal's link, not /pending). With batch approvals
 // off, Review together refuses, so the link is the ask's own page. Only ids
-// the asker already knows go in.
+// the asker already knows go in. A managed workspace has no pages: its
+// platform decides the asks, so its refusal carries no link.
 export function machineAsksFull(ctx: VaultContext, asker: { device: string; workload?: string }, slug: string, message: string): VaultError {
+  if (managedSetting(ctx) !== null) return new VaultError("rate_limited", message, { next: { say: "The platform decides this machine's open asks; ask for the rest once some are settled." } })
   const now = ctx.now(), base = `${ctx.env.VAULT_ORIGIN}/w/${encodeURIComponent(slug)}`
   const oldest = one(ctx.sql.exec<{ id: string; review_group: string | null; bundle: string | null }>("SELECT id,review_group,bundle FROM approvals WHERE device=? AND workload IS ? AND ask IS NOT NULL AND status='pending' AND policy_status IS NULL AND expires_at>? ORDER BY created_at,id LIMIT 1", asker.device, asker.workload ?? null, now))
   const batches = batchesHere(ctx)

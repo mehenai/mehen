@@ -80,6 +80,18 @@ describe("runs.create refused project_unshared", () => {
     })
   })
 
+  it("tells only those who may share with a guest when the refused machine is a guest's: not a member who manages the project", async () => {
+    const f = await projectFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", "shr_member_b", "prj_b", "member", "mem_member", JSON.stringify({ id: "shr_member_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: false, expiresAt: null }))
+      const error = await refused(ctx, UNSHARED, "dev_guest")
+      expect(error.code).toBe("project_unshared")
+      expect(error.extra.next?.url).toBe(`${ctx.env.VAULT_ORIGIN}/w/work/projects/prj_b`)
+      expect(shareNotices(ctx).map((n) => n.account)).toEqual(["acc_admin", "acc_owner"])
+      expect(shareNotices(ctx)[0]!.payload).toMatchObject({ member: { member: "mem_guest" } })
+    })
+  })
+
   it("leaves a team machine's refusal as it was: no notice, and no link to the project", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
