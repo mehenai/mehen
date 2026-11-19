@@ -216,10 +216,13 @@ describe("every template and provider, checked the same way", () => {
         const paths = rule.paths ?? [pathInBinding(s.binding)]
         for (const pattern of paths) {
           const path = samplePath(pattern)
+          // A GraphQL rule with no body matcher is reached by a plain query,
+          // which a fail-closed mutation rule on the same path lets by.
+          const body = rule.body === undefined && path.toLowerCase().endsWith("/graphql") ? { query: "query { __typename }" } : undefined
           for (const method of rule.action === "allow" ? methods.slice(0, 1) : methods) {
             const request = `${s.id}: ${method} ${path}`
             expect({ request, inBinding: inBinding(s, method, path) }).toEqual({ request, inBinding: true })
-            expect({ request, action: decide(s.policy, method, urlOf(s, path)).action }).toEqual({ request, action: rule.action })
+            expect({ request, action: decide(s.policy, method, urlOf(s, path), body).action }).toEqual({ request, action: rule.action })
           }
         }
       }

@@ -1,16 +1,25 @@
 import type { Template } from "../templates.ts"
-import { ALLOW_READS, WRITES } from "./shared.ts"
+import { NAMED_READS, WRITES } from "./shared.ts"
 
-const REST = "/ex/jira/*/rest"
+const API = "/ex/jira/*/rest/api/3"
 
 // A Jira Cloud API token with scopes, which Atlassian serves only through
 // its gateway, api.atlassian.com/ex/jira/<cloud id>, with the account
 // email and the token as HTTP Basic credentials. A token without scopes
 // works only at <site>.atlassian.net, a host that depends on the site, so
-// it is not bound. Without a human: reads and JQL searches. Creating,
-// editing and moving issues, comments and everything else need an
-// approval. Webhooks, users, groups, project roles, permission schemes,
-// app installs and deleting a project are refused.
+// it is not bound. The binding names any cloud id, so it covers every Jira
+// site the token can reach; the token's own scopes and the account's
+// access decide which those are. It binds the platform REST API v3 only:
+// v2, the webhooks API, app APIs and Service Management are outside it, so
+// every refusal below holds for every version the binding admits.
+// Without a human: the named reads (the account, issues and their
+// comments, changelogs, transitions and worklogs, JQL searches, projects
+// with their statuses, components and versions, issue types, fields,
+// priorities, statuses, resolutions, users and filters). Every other read
+// asks. Creating, editing and moving issues, comments and everything else
+// need an approval. Webhooks, users, groups, project roles and role
+// actors, permission schemes, issue security schemes, filter permissions
+// and deleting a project are refused.
 // https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/
 export const jira: Template = {
   id: "jira",
@@ -18,22 +27,58 @@ export const jira: Template = {
   kind: "basic-auth",
   category: "productivity",
   docsUrl: "https://id.atlassian.com/manage-profile/security/api-tokens",
-  binding: { hosts: ["api.atlassian.com"], paths: [`${REST}/**`] },
+  binding: { hosts: ["api.atlassian.com"], paths: [`${API}/**`] },
   injection: { in: "basic", username: "username", password: "password" },
   policy: {
     default: "approve",
     rules: [
-      ALLOW_READS,
-      { action: "allow", methods: ["POST"], paths: [`${REST}/api/3/search/jql`, `${REST}/api/3/search/approximate-count`, `${REST}/api/3/issue/bulkfetch`], note: "JQL searches and bulk issue reads" },
-      { action: "deny", methods: WRITES, paths: [`${REST}/api/3/webhook/**`, `${REST}/webhooks/**`], note: "webhooks send issue events elsewhere" },
+      NAMED_READS(
+        [
+          `${API}/myself`,
+          `${API}/serverInfo`,
+          `${API}/issue/*`,
+          `${API}/issue/*/comment/**`,
+          `${API}/issue/*/changelog`,
+          `${API}/issue/*/transitions`,
+          `${API}/issue/*/worklog/**`,
+          `${API}/issue/createmeta/**`,
+          `${API}/search/jql`,
+          `${API}/project`,
+          `${API}/project/search`,
+          `${API}/project/*`,
+          `${API}/project/*/statuses`,
+          `${API}/project/*/components`,
+          `${API}/project/*/versions`,
+          `${API}/issuetype/**`,
+          `${API}/field`,
+          `${API}/priority/**`,
+          `${API}/status/**`,
+          `${API}/resolution/**`,
+          `${API}/user`,
+          `${API}/user/search`,
+          `${API}/filter/*`,
+        ],
+        "reads of issues, comments, projects, fields, users and filters",
+      ),
+      { action: "allow", methods: ["POST"], paths: [`${API}/search/jql`, `${API}/search/approximate-count`, `${API}/issue/bulkfetch`], note: "JQL searches and bulk issue reads" },
+      { action: "deny", methods: WRITES, paths: [`${API}/webhook/**`], note: "webhooks send issue events elsewhere" },
       {
         action: "deny",
         methods: WRITES,
-        paths: [`${REST}/api/3/user/**`, `${REST}/api/3/group/**`, `${REST}/api/3/project/*/role/**`, `${REST}/api/3/permissionscheme/**`, `${REST}/api/3/project/*/permissionscheme/**`],
-        note: "users, groups, roles and permission schemes give someone else access",
+        paths: [
+          `${API}/user/**`,
+          `${API}/group/**`,
+          `${API}/project/*/role/**`,
+          `${API}/role/*/actors/**`,
+          `${API}/permissionscheme/**`,
+          `${API}/project/*/permissionscheme/**`,
+          `${API}/issuesecurityschemes/**`,
+          `${API}/project/*/issuesecuritylevelscheme/**`,
+          `${API}/filter/*/permission/**`,
+        ],
+        note: "users, groups, roles, permission and issue security schemes, and filter sharing give someone else access",
       },
-      { action: "deny", methods: WRITES, paths: [`${REST}/atlassian-connect/**`, `${REST}/plugins/**`], note: "installs or changes apps, which receive events and tokens" },
-      { action: "deny", methods: ["DELETE"], paths: [`${REST}/api/3/project/*`], note: "deletes a project and its issues" },
+      { action: "deny", methods: ["DELETE"], paths: [`${API}/project/*`], note: "deletes a project and its issues" },
     ],
   },
   ceiling: "relay",
@@ -48,7 +93,7 @@ export const jira: Template = {
       { title: "Give your account email", body: "The email address of the Atlassian account the token belongs to.", field: "username" },
       {
         title: "Create an API token with scopes",
-        body: "Choose Create API token with scopes, pick Jira, and tick the read scopes the agent needs, adding write scopes only if it is to change issues. Agents call https://api.atlassian.com/ex/jira/<cloud id>/rest/api/3/...; the cloud id is at https://<site>.atlassian.net/_edge/tenant_info.",
+        body: "Choose Create API token with scopes, pick Jira, and tick the read scopes the agent needs, adding write scopes only if it is to change issues. Agents call https://api.atlassian.com/ex/jira/<cloud id>/rest/api/3/...; the cloud id is at https://<site>.atlassian.net/_edge/tenant_info. The credential may be used on every Jira site the token can reach, so limit the token's scopes and the account's access to the sites the agent needs.",
         field: "password",
       },
     ],
