@@ -88,6 +88,24 @@ export const MandateScheduleSchema = z.strictObject({
   windows: z.array(MandateWindowSchema).min(1).max(MANDATE_MAX_WINDOWS),
 })
 export type MandateSchedule = z.infer<typeof MandateScheduleSchema>
+// A schedule as mehen mandate propose --schedule takes it:
+// "Europe/Paris mon-fri 08:00-19:00; sat 10:00-14:00".
+const SCHEDULE_DAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const
+const SCHEDULE_WEEK = [1, 2, 3, 4, 5, 6, 0] as const
+function scheduleDaysText(days: readonly number[]): string {
+  if (days.length === 7) return "daily"
+  const runs: number[][] = []
+  for (const day of SCHEDULE_WEEK) {
+    if (!days.includes(day)) continue
+    const last = runs.at(-1)
+    if (last && SCHEDULE_WEEK.indexOf(last.at(-1) as (typeof SCHEDULE_WEEK)[number]) === SCHEDULE_WEEK.indexOf(day) - 1) last.push(day)
+    else runs.push([day])
+  }
+  return runs.map((run) => (run.length >= 3 ? `${SCHEDULE_DAY_NAMES[run[0] as number]}-${SCHEDULE_DAY_NAMES[run.at(-1) as number]}` : run.map((d) => SCHEDULE_DAY_NAMES[d]).join(","))).join(",")
+}
+export function mandateScheduleText(schedule: MandateSchedule): string {
+  return `${schedule.tz} ${schedule.windows.map((w) => `${scheduleDaysText(w.days)} ${w.from}-${w.to}`).join("; ")}`
+}
 
 const CapSchema = z.number().int().min(0).max(Math.max(...Object.values(MANDATE_CAP_MAX)))
 const MandateCapsSchema = z.strictObject({ read: CapSchema, change: CapSchema, send: CapSchema, delete: CapSchema })

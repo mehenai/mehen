@@ -6,7 +6,7 @@
 // ever printed.
 
 import { type Me, MANDATE_HEADER, type NextStep } from "@mehen/protocol/api"
-import { MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, type MandateAsked, MANDATE_RATE_LIMIT, MANDATE_STATES, MANDATE_TTL_DAYS, type MandateCaps, type MandateClass, MandateClassSchema, MandateIdSchema, type MandateOpenProposal, MandateProposalIdSchema, type MandatePropose, MandateProposeSchema, type MandateReceiptView, type MandateSchedule, MandateScheduleSchema, type MandateView, isMandateTimeZone, mandateReceiptsCursor } from "@mehen/protocol/mandate-terms"
+import { MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, type MandateAsked, MANDATE_RATE_LIMIT, MANDATE_STATES, MANDATE_TTL_DAYS, type MandateCaps, type MandateClass, MandateClassSchema, MandateIdSchema, type MandateOpenProposal, MandateProposalIdSchema, type MandatePropose, MandateProposeSchema, type MandateReceiptView, type MandateSchedule, MandateScheduleSchema, type MandateView, isMandateTimeZone, mandateReceiptsCursor, mandateScheduleText } from "@mehen/protocol/mandate-terms"
 import { PolicySlugSchema } from "@mehen/protocol/policy-mode"
 import { z } from "zod"
 import { type Ask, type AskUrl, askSay, askUrl, clockText, mandateAsk, mandatePageUrlFor, mandateProposalUrlFor, refusedLinkWarning, withContext } from "./ask.ts"
@@ -244,20 +244,7 @@ export function parseMandateSchedule(text: string, flag: string, help: string): 
   return parsed.data
 }
 
-function daysText(days: readonly number[]): string {
-  if (days.length === 7) return "daily"
-  const runs: number[][] = []
-  for (const day of WEEK) {
-    if (!days.includes(day)) continue
-    const last = runs.at(-1)
-    if (last && WEEK.indexOf(last.at(-1) as (typeof WEEK)[number]) === WEEK.indexOf(day) - 1) last.push(day)
-    else runs.push([day])
-  }
-  return runs.map((run) => (run.length >= 3 ? `${DAY_NAMES[run[0] as number]}-${DAY_NAMES[run.at(-1) as number]}` : run.map((d) => DAY_NAMES[d]).join(","))).join(",")
-}
-export function scheduleText(schedule: MandateSchedule): string {
-  return `${schedule.tz} ${schedule.windows.map((w) => `${daysText(w.days)} ${w.from}-${w.to}`).join("; ")}`
-}
+export const scheduleText = mandateScheduleText
 
 // ---------------------------------------------------------------- proposing
 

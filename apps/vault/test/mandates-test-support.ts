@@ -19,10 +19,12 @@ export function proposedTerms(overrides: Partial<Omit<MandateTerms, "items">> & 
 // As if the machine's held requests on the credential, in these classes,
 // had carried a mandateCover hint at this moment: what a proposal of its own
 // may name.
-export async function askedFor(ctx: VaultContext, device: string, slug = ASKED_KEY, classes: string[] = ["change", "delete", "send"], at = ctx.now()): Promise<void> {
+export async function askedFor(ctx: VaultContext, device: string, slug = ASKED_KEY, classes: string[] = ["change", "delete", "send"], at = ctx.now()): Promise<string> {
   if (ctx.sql.exec("SELECT 1 FROM items WHERE slug=?", slug).toArray().length === 0) await seedCredential(ctx, slug)
   const item = ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug=?", slug).toArray()[0]!.id
-  for (const cls of classes) ctx.sql.exec("INSERT INTO mandate_asked(device,item_id,cls,at) VALUES (?,?,?,?) ON CONFLICT(device,item_id,cls) DO UPDATE SET at=excluded.at", device, item, cls, at)
+  const approval = `apr_seed${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`
+  for (const cls of classes) ctx.sql.exec("INSERT INTO mandate_asked(approval,device,item_id,cls,at) VALUES (?,?,?,?,?)", approval, device, item, cls, at)
+  return approval
 }
 // The action a passkey signs, or { stepUp: null } for a resume without one.
 export async function mandateAction(ctx: VaultContext, role: string, input: Record<string, unknown>): Promise<MandateActionAnswer> {
