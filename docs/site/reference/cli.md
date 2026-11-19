@@ -76,5 +76,6 @@ The variables `mehen` reads:
 | `MEHEN_SERVICE` | `launchd`, `systemd` or `process`: how `mehen up` keeps the vault running, instead of the one it picks for this machine. |
 | `MEHEN_SERVE_PORT`, `MEHEN_SERVE_DATA` | The port and data folder for `mehen serve` and `mehen up` when `--port` and `--data` are not given. |
 | `MEHEN_SERVE_ORIGIN`, `MEHEN_SERVE_HOST` | The `--origin` and `--bind` for `mehen serve` when the flags are not given. `mehen up` ignores both: its vault is on this machine's loopback. |
+| `MEHEN_RUN_STREAM_WRITES` | `1` does what `mehen run --stream-writes` does: the local relay passes every write's answer on as it comes instead of reading it in full first. Turn the program's transport retries off for those writes. |
 | `MEHEN_QR` | `0` turns the terminal QR code off; `light` or `dark` picks its colours when the terminal does not say. |
 | `NO_COLOR`, `FORCE_COLOR`, `TERM` | Colour is used only on a terminal, never with `NO_COLOR` set or `TERM=dumb`; `FORCE_COLOR` forces it on. Colour never carries meaning on its own. |

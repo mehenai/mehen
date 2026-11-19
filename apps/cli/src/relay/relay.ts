@@ -57,6 +57,13 @@ export type LocalRelayOptions = {
   baseUrls: readonly BaseUrlRoute[]
   // Null when nothing is intercepted: every CONNECT is then tunnelled or fenced.
   ca: RunCa | null
+  // Pass every write's answer on as it comes, as streamed types always are
+  // (mehen run --stream-writes): a break mid-body then reaches the program
+  // as an incomplete body, which some transports retry.
+  streamWrites?: boolean
+  // What a held write's answer may take: one answer's limit and the budget
+  // shared by every answer in this process. Tests set smaller ones.
+  answerLimits?: AnswerLimits
 }
 
 export type LocalRelay = {
@@ -181,34 +188,87 @@ function outcomeUnknownAnswer(message: string): Response {
 }
 
 // Answers that are streams by nature, passed on as they come: buffering an
-// LLM's server-sent events would hold them all until the end.
-const STREAMING_TYPES: ReadonlySet<string> = new Set(["text/event-stream", "application/x-ndjson", "application/jsonl"])
-const streamingAnswer = (response: Response): boolean => STREAMING_TYPES.has((response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase())
+// LLM's server-sent events, a Bedrock event stream or a gRPC stream would
+// hold them all until the end. A structured suffix (application/grpc+proto)
+// counts as its type.
+const STREAMING_TYPES: ReadonlySet<string> = new Set([
+  "text/event-stream",
+  "application/x-ndjson",
+  "application/jsonl",
+  "application/vnd.amazon.eventstream",
+  "application/grpc",
+  "application/grpc-web",
+  "application/grpc-web-text",
+])
+export function streamingAnswer(response: Response): boolean {
+  const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase()
+  return STREAMING_TYPES.has(type) || STREAMING_TYPES.has(type.replace(/\+[^/]*$/, ""))
+}
 // The vault's own response limit (relay/forward.ts MAX_RELAY_RESPONSE_BYTES).
 const MAX_WRITE_ANSWER_BYTES = 32 * 1024 * 1024
 
+// What every write's answer held in this process may take together, taken
+// as chunks arrive and given back however the answer ends.
+export class AnswerBudget {
+  readonly limit: number
+  held = 0
+  constructor(limit: number) {
+    this.limit = limit
+  }
+  reserve(bytes: number): boolean {
+    if (this.held + bytes > this.limit) return false
+    this.held += bytes
+    return true
+  }
+  release(bytes: number): void {
+    this.held = Math.max(0, this.held - bytes)
+  }
+}
+export type AnswerLimits = { perAnswer: number; budget: AnswerBudget }
+const PROCESS_ANSWER_LIMITS: AnswerLimits = { perAnswer: MAX_WRITE_ANSWER_BYTES, budget: new AnswerBudget(128 * 1024 * 1024) }
+
 // A write's answer, read in full before its head goes to the program, so a
 // body that breaks is still a complete 424 no client resends on its own,
-// where a reset mid-body is one some transports retry.
-async function completeWriteAnswer(response: Response): Promise<Response> {
-  if (response.body === null) return response
+// where a reset mid-body is one some transports retry. Each chunk is held
+// as it came, within the answer's limit and the process's budget; past
+// either the rest is not read and the answer is a 424. The held answer is
+// then passed on chunk by chunk, never joined, and release gives the budget
+// back: the caller calls it however the answer ends.
+async function completeWriteAnswer(response: Response, limits: AnswerLimits): Promise<{ response: Response; release: () => void }> {
+  if (response.body === null) return { response, release: () => {} }
   const chunks: Uint8Array[] = []
   let total = 0
+  const release = () => {
+    limits.budget.release(total)
+    total = 0
+    chunks.length = 0
+  }
   const reader = response.body.getReader()
   try {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
+      if (total + value.length > limits.perAnswer) throw new Error(`the answer is larger than ${limits.perAnswer} bytes`)
+      if (!limits.budget.reserve(value.length)) throw new Error("mehen is already holding as many answers as it may, so it stopped reading this one")
       total += value.length
-      if (total > MAX_WRITE_ANSWER_BYTES) throw new Error(`the answer is larger than ${MAX_WRITE_ANSWER_BYTES} bytes`)
       chunks.push(value)
     }
   } catch (error) {
     await reader.cancel().catch(() => {})
-    return outcomeUnknownAnswer(`The answer to the request broke off while mehen read it (${error instanceof Error ? error.message : String(error)}). The request was sent and may have taken effect.`)
+    release()
+    return { response: outcomeUnknownAnswer(`The answer to the request broke off while mehen read it (${error instanceof Error ? error.message : String(error)}). The request was sent and may have taken effect.`), release: () => {} }
   }
   const bodiless = response.status < 200 || [204, 205, 304].includes(response.status)
-  return new Response(bodiless ? null : Buffer.concat(chunks), { status: response.status, statusText: response.statusText, headers: response.headers })
+  let next = 0
+  const body = bodiless ? null : new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = chunks[next]
+      if (chunk === undefined) return controller.close()
+      chunks[next++] = new Uint8Array(0)
+      controller.enqueue(chunk)
+    },
+  })
+  return { response: new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers }), release }
 }
 
 async function writeResponse(socket: Duplex, method: string, response: Response, close: boolean): Promise<void> {
@@ -233,7 +293,9 @@ async function writeResponse(socket: Duplex, method: string, response: Response,
         const { done, value } = await reader.read()
         if (done) break
         if (value.length === 0) continue
-        await writeWithBackpressure(socket, Buffer.concat([Buffer.from(`${value.length.toString(16)}\r\n`), value, Buffer.from("\r\n")]))
+        await writeWithBackpressure(socket, `${value.length.toString(16)}\r\n`)
+        await writeWithBackpressure(socket, Buffer.from(value.buffer, value.byteOffset, value.byteLength))
+        await writeWithBackpressure(socket, "\r\n")
       }
     } catch (error) {
       // The answer broke after its head went out: never the last chunk, so
@@ -254,6 +316,7 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
   const contexts = new Map<string, Promise<tls.SecureContext>>()
   const sockets = new Set<net.Socket | tls.TLSSocket>()
   const ca = options.ca
+  const limits = options.answerLimits ?? PROCESS_ANSWER_LIMITS
   let port = 0
 
   const isFenced = (host: string) => options.fencedHosts.some((pattern) => hostMatches(pattern, host))
@@ -380,9 +443,14 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
         if (framing.kind !== "none" && hasToken(head, "expect", "100-continue")) await writeWithBackpressure(socket, "HTTP/1.1 100 Continue\r\n\r\n")
         const body = await readBody(reader, framing, MAX_RELAY_BODY)
         const called = await callVault(routed.relay, body)
-        const response = retrySafeMethod(head.method) || streamingAnswer(called) ? called : await completeWriteAnswer(called)
+        const passOn = retrySafeMethod(head.method) || options.streamWrites === true || streamingAnswer(called)
+        const { response, release } = passOn ? { response: called, release: () => {} } : await completeWriteAnswer(called, limits)
         const close = oneRequest || head.version === "HTTP/1.0" || hasToken(head, "connection", "close")
-        await writeResponse(socket, head.method, response, close)
+        try {
+          await writeResponse(socket, head.method, response, close)
+        } finally {
+          release()
+        }
         if (close) break
         head = null
       }
