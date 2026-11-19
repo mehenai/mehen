@@ -379,6 +379,17 @@ describe("refresh", () => {
     expect(provider.tokenBodies.at(-1)?.get("client_secret")).toBe(GOOGLE_SECRET)
   })
 
+  // No device can reconnect a managed workspace's connection: its
+  // description says the platform does, so mehen's hint names no command.
+  it("tells a device reading the connection that the platform reconnects it", async () => {
+    const f = await subject()
+    await f.googleClient()
+    await f.finish(google().consent((await f.start({ provider: "google-gmail", slug: "gmail" })).authorizeUrl))
+    const machine = await f.device()
+    const described = await json<{ connection?: Record<string, unknown> }>(await signed(f.tenant, machine, "/v1/items/gmail"))
+    expect(described.connection).toMatchObject({ reconnect: "platform" })
+  })
+
   it("waits while the platform is suspended, without calling the provider", async () => {
     const f = await subject()
     await f.googleClient()
@@ -495,6 +506,29 @@ describe("custom providers", () => {
     const [attempt] = await sql<{ detail: string }>(f.tenant, "SELECT detail FROM audit WHERE action='oauth.refresh_attempt' ORDER BY seq DESC LIMIT 1")
     expect(JSON.parse(attempt!.detail)).toMatchObject({ provider: CUSTOM_OAUTH_PROVIDER_ID, host: "auth.acme-crm.example.com" })
     expect(attempt!.detail).not.toContain(provider.refreshToken)
+  })
+
+  // A custom provider's rotation is not known, so it is treated as strict:
+  // a lost refresh answer keeps its marker, the stored token is used while
+  // it lasts, and no second refresh goes out inside the window.
+  it("keeps using a token that still works after a refresh whose answer was lost, sending no second refresh, and refuses only once it has expired", async () => {
+    const f = await subject()
+    await f.customClient()
+    const provider = acmeProvider()
+    await f.finish(provider.consent((await f.start({ client: "acme-client", slug: "acme" })).authorizeUrl))
+    await inAccess(f.tenant, async (ctx) => {
+      const item = checkedCredential(ctx, "acme")!
+      const now = ctx.now()
+      ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", now + 30_000, item.id)
+      let sends = 0
+      setUpstreamFetch(async () => { sends++; throw new Error("connection reset") })
+      const at = (ms: number) => ({ ...ctx, now: () => ms })
+      expect(await workspaceAccessToken(at(now), checkedCredential(ctx, "acme")!)).toBe(provider.accessToken)
+      expect(await workspaceAccessToken(at(now + 1_000), checkedCredential(ctx, "acme")!)).toBe(provider.accessToken)
+      expect(sends).toBe(1)
+      await expect(workspaceAccessToken(at(now + 31_000), checkedCredential(ctx, "acme")!)).rejects.toMatchObject({ code: "refresh_retrying" })
+      expect(sends).toBe(1)
+    })
   })
 
   it("a public client sends no secret and always uses PKCE; one stored without PKCE is refused", async () => {

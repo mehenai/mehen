@@ -332,8 +332,9 @@ export type ItemDescription = ItemSummary & {
 }
 // client: the slug of the OAuth client it signs in through, which a
 // reconnect names; absent from a vault that does not say, and from a reader
-// who may not see that client.
-export type ItemConnection = { scopes: string[]; expiresAt: string | null; refreshing: boolean; client?: string | undefined }
+// who may not see that client. reconnect: "platform" in a managed
+// workspace, whose platform reconnects it; no device can.
+export type ItemConnection = { scopes: string[]; expiresAt: string | null; refreshing: boolean; client?: string | undefined; reconnect?: "platform" | undefined }
 export type ItemDescriptionPosture = { level: import("./policy-mode.ts").PostureLevel; coversThisKey: boolean; catalogue: import("./policy-mode.ts").PostureCatalogue | null }
 
 // ---------------------------------------------------------------- /v1: enrolment (proof by the new key, `ten` = "enrol")

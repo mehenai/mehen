@@ -507,22 +507,35 @@ async function refreshOrAccessToken(ctx: VaultContext, item: CheckedCredential):
   const exchange = exchangeFor(ctx, item.provider ?? CUSTOM_OAUTH_PROVIDER_ID, before.client)
   if (clientRejectedNow(ctx, before.client))
     throw new ClientRejected(ctx, item.slug, before.client, exchange.displayName)
-  if (before.basis.refreshAttempt) {
-    const remaining = before.basis.refreshAttempt.startedAt + REFRESH_UNCERTAINTY_MS - ctx.now()
-    if (remaining >= 0)
-      throw new RefreshInFlight("refresh_retrying", "A credential refresh is already in progress.", { retryAfter: Math.max(1, Math.ceil(remaining / 1000)) })
-  }
+  const expired = before.conn.expires_at !== null && before.conn.expires_at <= ctx.now()
+  // A refresh still in flight, or one whose answer was lost inside its
+  // window: no second refresh is sent, but a stored token that has not
+  // expired is still served.
+  const remaining = before.basis.refreshAttempt ? before.basis.refreshAttempt.startedAt + REFRESH_UNCERTAINTY_MS - ctx.now() : -1
+  const inFlight = remaining >= 0
+  if (inFlight && expired)
+    throw new RefreshInFlight("refresh_retrying", "A credential refresh is already in progress.", { retryAfter: Math.max(1, Math.ceil(remaining / 1000)) })
   // An interrupted refresh is sent again. A strictly rotating token the lost
   // exchange spent is refused with a terminal error, which then says so.
   const resent = before.basis.refreshAttempt !== undefined && strictRotation(exchange)
-  const expired = before.conn.expires_at !== null && before.conn.expires_at <= ctx.now()
   const waiting = before.basis.retryAt !== undefined && before.basis.retryAt > ctx.now()
   if (waiting && expired)
     throw new VaultError("refresh_retrying", "The provider refresh is waiting to retry.", { retryAfter: Math.ceil((before.basis.retryAt! - ctx.now()) / 1000) })
   const secrets = await openCredentialSecrets(ctx, item)
-  // While a failed refresh waits to retry, the old token is used until it expires.
-  if (before.conn.expires_at === null || before.conn.expires_at > ctx.now() + 60000 || waiting) {
+  // With an attempt in flight there is no second refresh: no stored token
+  // to serve means waiting for the window.
+  if (inFlight && secrets.access_token === undefined)
+    throw new RefreshInFlight("refresh_retrying", "A credential refresh is already in progress.", { retryAfter: Math.max(1, Math.ceil(remaining / 1000)) })
+  // While a failed refresh waits to retry, or one is in flight, the old
+  // token is used until it expires.
+  if (before.conn.expires_at === null || before.conn.expires_at > ctx.now() + 60000 || waiting || inFlight) {
     refreshBasis(ctx, currentValue())
+    // A token served past its refresh time because of an attempt in flight
+    // is refreshed once that attempt has ended, unless something already
+    // is due to, so the refresh chain never stops here.
+    const key = `workspace-refresh:${item.id}`
+    if (inFlight && !one(ctx.sql.exec("SELECT 1 FROM schedule WHERE area='oauth' AND key=?", key)))
+      ctx.schedule("oauth", key, before.basis.refreshAttempt!.startedAt + REFRESH_UNCERTAINTY_MS + 1000)
     return { accessToken: secrets.access_token ?? "", item: currentValue() }
   }
   const clientSecret = (await openCredentialSecrets(ctx, before.client)).client_secret ?? ""

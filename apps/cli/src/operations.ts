@@ -107,7 +107,7 @@ function pickDescription(item: ItemDescription): ItemDescription {
 }
 
 function pickConnection(connection: ItemConnection): ItemConnection {
-  return { scopes: [...connection.scopes], expiresAt: connection.expiresAt, refreshing: connection.refreshing, ...(connection.client !== undefined ? { client: connection.client } : {}) }
+  return { scopes: [...connection.scopes], expiresAt: connection.expiresAt, refreshing: connection.refreshing, ...(connection.client !== undefined ? { client: connection.client } : {}), ...(connection.reconnect === "platform" ? { reconnect: "platform" as const } : {}) }
 }
 
 function pickHome(home: CredentialHome): CredentialHome {
@@ -874,8 +874,14 @@ export function credentialRejectedHint(head: Pick<UpstreamHead, "status" | "head
   const slug = shellWord(item.slug), why = "'<why>'"
   const home = item.home === undefined ? "" : ` ${homeWords(item.home.kind === "member" ? { home: "private" } : item.home.kind === "project" ? { home: "project", project: item.home.project } : { home: "workspace" }).map(shellWord).join(" ")}`
   if (item.kind === "oauth-connection") {
-    const client = item.connection?.client !== undefined ? ` --client ${shellWord(item.connection.client)}` : item.provider === null ? " --client <client>" : ""
-    const connect = `mehen connect ${item.provider === null ? "<provider>" : shellWord(item.provider)}${client} --name ${slug}`
+    // A managed workspace's connection, or one made with a custom provider
+    // (which mehen connect cannot name), only its platform reconnects.
+    if (item.connection?.reconnect === "platform" || item.provider === null) {
+      if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. The platform reconnects this account; mehen show ${slug} lists the scopes it holds.`
+      return `The service rejected ${item.slug}'s sign-in. The platform reconnects this account.`
+    }
+    const client = item.connection?.client !== undefined ? ` --client ${shellWord(item.connection.client)}` : ""
+    const connect = `mehen connect ${shellWord(item.provider)}${client} --name ${slug}`
     if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. Ask a human to reconnect it with more: ${connect}${scopes.length ? ` --scopes ${shellWord(scopes.join(","))}` : " --scopes <scope>"} --reason ${why}${home}; mehen show ${slug} lists the scopes it holds.`
     return `The service rejected ${item.slug}'s sign-in. If it was revoked, ask a human to reconnect it: ${connect} --reason ${why}${home}.`
   }

@@ -75,6 +75,6 @@ Whoever may reconnect a connection (or replace the client) sees it in [Needs you
 mehen fetch gmail-personal GET https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10
 ```
 
-`mehen show gmail-personal` (MCP `vault_show`) says what the connection may do: its `scopes:` and when its `token:` expires, and `--json` has them as `connection: { scopes, expiresAt, refreshing, client }`, where `client` is the OAuth client it signs in through, named only when you may see that client. Read the scopes before you ask for a reconnect with more.
+`mehen show gmail-personal` (MCP `vault_show`) says what the connection may do: its `scopes:` and when its `token:` expires, and `--json` has them as `connection: { scopes, expiresAt, refreshing, client, reconnect }`, where `client` is the OAuth client it signs in through, named only when you may see that client, and `reconnect` is `platform` in a managed workspace, whose platform reconnects it. Read the scopes before you ask for a reconnect with more.
 
 Reads go through; most writes and every send wait for an approval ([When a request needs approval](approvals.md)). Name the slug every time: two Gmail accounts are two connections with two slugs, and the vault never picks one for you. Say which account you will act as before you act.

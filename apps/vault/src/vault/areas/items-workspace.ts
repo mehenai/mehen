@@ -260,7 +260,8 @@ function connectionOf(ctx: VaultContext, item: CheckedCredential, reader: Connec
   if (!row) return {}
   const basis = JSON.parse(row.payload) as { scopes?: string[]; retryAt?: number }
   const seesClient = reader !== undefined && row.client_id !== null && can(credentialAccessState(ctx, reader.invocation), reader.principal, { type: "item.read" }, { credential: row.client_id }, ctx.now()).allowed
-  return { connection: { scopes: basis.scopes ?? [], expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(), refreshing: basis.retryAt !== undefined && basis.retryAt > ctx.now(), ...(seesClient && row.client !== null ? { client: row.client } : {}) } }
+  // In a managed workspace only the platform reconnects it.
+  return { connection: { scopes: basis.scopes ?? [], expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(), refreshing: basis.retryAt !== undefined && basis.retryAt > ctx.now(), ...(seesClient && row.client !== null ? { client: row.client } : {}), ...(managedSetting(ctx) !== null ? { reconnect: "platform" as const } : {}) } }
 }
 
 // ItemDescription.pushes: where this item was put, in a workspace with

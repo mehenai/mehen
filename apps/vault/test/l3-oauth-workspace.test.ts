@@ -651,6 +651,27 @@ it("keeps using a token that still works while a failed refresh waits to retry",
   })
 })
 
+// A strictly rotating token whose refresh may have been spent keeps its
+// marker, so no second refresh is sent inside the window; the stored token
+// still works until it expires, and only then is the caller told to wait.
+it("keeps using a GitHub token that still works after a refresh whose answer was lost, sending no second refresh, and refuses only once it has expired", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await githubConnection(ctx)
+    const now = ctx.now()
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", now + 30_000, item.id)
+    let sends = 0
+    setUpstreamFetch(async () => { sends++; throw new Error("connection reset") })
+    const at = (ms: number) => ({ ...ctx, now: () => ms })
+    expect(await workspaceAccessToken(at(now), checkedCredential(ctx, item.slug)!)).toBe("gh-access")
+    expect(await workspaceAccessToken(at(now + 1_000), checkedCredential(ctx, item.slug)!)).toBe("gh-access")
+    expect(sends).toBe(1)
+    expect(connectionPayload(ctx, item.id).refreshAttempt).toBeDefined()
+    await expect(workspaceAccessToken(at(now + 31_000), checkedCredential(ctx, item.slug)!)).rejects.toMatchObject({ code: "refresh_retrying" })
+    expect(sends).toBe(1)
+  })
+})
+
 // Each failure in a row waits longer (30 s doubling to an hour, 20% jitter
 // either way), and a provider's Retry-After is waited out, up to a day.
 it("waits longer after a second failed refresh than after the first", async () => {
@@ -734,6 +755,49 @@ it("a scheduled refresh that meets an edit racing it fails, so the scheduler ret
     expect(due()).toBe(now + 120_000)
     await run(120_001)
     expect(sends).toBe(2)
+    expect(checkedCredential(ctx, item.slug)?.status).toBe("active")
+    expect(connectionPayload(ctx, item.id)).not.toHaveProperty("refreshAttempt")
+  })
+})
+
+// With an attempt in flight and no stored access token to serve, the caller
+// waits for the window rather than getting an empty token or a second refresh.
+it("refuses to wait, sending nothing, when an attempt is in flight and no access token is stored", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await connected(ctx)
+    const now = ctx.now()
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=?,payload=json_set(payload,'$.refreshAttempt',json(?)) WHERE item=?", now + 50_000, JSON.stringify({ id: "rfa_inflight", startedAt: now }), item.id)
+    ctx.sql.exec("DELETE FROM item_secrets WHERE item=? AND name='access_token'", item.id)
+    let sends = 0
+    setUpstreamFetch(async () => { sends++; return Response.json({ access_token: "renewed", expires_in: 3600 }) })
+    await expect(workspaceAccessToken({ ...ctx, now: () => now + 1_000 }, checkedCredential(ctx, item.slug)!)).rejects.toMatchObject({ code: "refresh_retrying" })
+    expect(sends).toBe(0)
+  })
+})
+
+// The same race with a token that still works when the scheduled refresh
+// meets the attempt in flight: the token is served, and the refresh is
+// still scheduled for when that attempt has ended, so the chain goes on.
+it("a scheduled refresh that meets an attempt in flight while the token still works schedules itself for when the attempt has ended", async () => {
+  const { oauthArea } = await import("../src/vault/areas/oauth.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await connected(ctx)
+    const now = ctx.now(), key = `workspace-refresh:${item.id}`
+    const at = (ms: number) => ({ ...ctx, now: () => now + ms })
+    const due = () => ctx.sql.exec<{ due_at: number }>("SELECT due_at FROM schedule WHERE area='oauth' AND key=?", key).toArray()[0]?.due_at
+    const run = (ms: number) => { ctx.sql.exec("DELETE FROM schedule WHERE area='oauth' AND key=?", key); return oauthArea.alarm!(at(ms), key) }
+    // Due in 50 s, inside the refresh margin, with an attempt started now.
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=?,payload=json_set(payload,'$.refreshAttempt',json(?)) WHERE item=?", now + 50_000, JSON.stringify({ id: "rfa_inflight", startedAt: now }), item.id)
+    let sends = 0
+    setUpstreamFetch(async () => { sends++; return Response.json({ access_token: "renewed", expires_in: 3600 }) })
+    await run(1_000)
+    expect(sends).toBe(0)
+    expect(due()).toBe(now + 121_000)
+    // Then it renews.
+    await run(121_000)
+    expect(sends).toBe(1)
     expect(checkedCredential(ctx, item.slug)?.status).toBe("active")
     expect(connectionPayload(ctx, item.id)).not.toHaveProperty("refreshAttempt")
   })

@@ -244,14 +244,26 @@ test("credentialRejectedHint names a workspace or project credential's home, and
   const revoked = { status: 401, headers: {} }
   const workspaceConnection = { slug: "gmail-team", kind: "oauth-connection" as const, provider: "google-gmail", home: { kind: "workspace" as const }, connection: { scopes: [], expiresAt: null, refreshing: false, client: "google-client" } }
   expect(credentialRejectedHint(revoked, workspaceConnection)).toBe("The service rejected gmail-team's sign-in. If it was revoked, ask a human to reconnect it: mehen connect google-gmail --client google-client --name gmail-team --reason '<why>' --home workspace.")
-  // A reader who may not see the client: a catalogue reconnect needs none,
-  // a custom provider's must name its own, so it is left to fill in.
+  // A reader who may not see the client: a catalogue reconnect needs none.
   const unnamed = { ...workspaceConnection, connection: { scopes: [], expiresAt: null, refreshing: false } }
   expect(credentialRejectedHint(revoked, unnamed)).toContain("mehen connect google-gmail --name gmail-team ")
-  expect(credentialRejectedHint(revoked, { ...unnamed, provider: null })).toContain("mehen connect <provider> --client <client> --name gmail-team ")
   const projectKey = { slug: "openai-evals", kind: "api-key" as const, provider: "openai", home: { kind: "project" as const, project: "prj_3kQ9vXyZ7" } }
   expect(credentialRejectedHint(revoked, projectKey)).toBe("The service rejected openai-evals. If its value was revoked or expired, ask a human to replace it: mehen request api-key --name openai-evals --provider openai --reason '<why>' --home project --project prj_3kQ9vXyZ7.")
   expect(credentialRejectedHint(revoked, { ...projectKey, home: { kind: "member", member: "mem_1" } })).toMatch(/--reason '<why>' --home private\.$/)
+})
+
+// Only the platform reconnects a managed workspace's connection, or one
+// made with a custom provider (mehen connect cannot name one): the hint
+// says so and names no command the agent cannot run.
+test("credentialRejectedHint leaves a managed or custom-provider connection to the platform, with no mehen connect", async () => {
+  const { credentialRejectedHint } = await import("./operations.ts")
+  const revoked = { status: 401, headers: {} }, narrow = { status: 403, headers: { "www-authenticate": 'Bearer error="insufficient_scope", scope="gmail.send"' } }
+  const managed = { slug: "gmail-team", kind: "oauth-connection" as const, provider: "google-gmail", home: { kind: "workspace" as const }, connection: { scopes: [], expiresAt: null, refreshing: false, reconnect: "platform" as const } }
+  const custom = { ...managed, slug: "acme", provider: null, connection: { scopes: [], expiresAt: null, refreshing: false } }
+  expect(credentialRejectedHint(revoked, managed)).toBe("The service rejected gmail-team's sign-in. The platform reconnects this account.")
+  expect(credentialRejectedHint(narrow, managed)).toBe("The service said gmail-team lacks a scope it needs. The platform reconnects this account; mehen show gmail-team lists the scopes it holds.")
+  expect(credentialRejectedHint(revoked, custom)).toBe("The service rejected acme's sign-in. The platform reconnects this account.")
+  for (const head of [revoked, narrow]) for (const item of [managed, custom]) expect(credentialRejectedHint(head, item)).not.toContain("mehen connect")
 })
 
 test("policy operations export the real producer implementations", async () => {
