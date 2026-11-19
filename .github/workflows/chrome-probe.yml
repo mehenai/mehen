@@ -5,50 +5,35 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - run: |
-          set -u
+          set +e
           C=/usr/bin/google-chrome
-          "$C" --version
-          readlink -f "$C"
-          echo "uid $(id -u); DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unset}; XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}; DISPLAY=${DISPLAY:-unset}"
-          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true
-          ls -la /opt/google/chrome/chrome-sandbox 2>/dev/null || true
-          ls ~/.cache/fontconfig 2>/dev/null | head -3; echo "fontconfig cache entries: $(ls ~/.cache/fontconfig 2>/dev/null | wc -l)"
+          echo "cpus $(nproc); mem $(free -m | awk '/Mem/ {print $2}') MB; chrome $(du -sh /opt/google/chrome | cut -f1)"
           probe() {
             name=$1; shift
-            p=$(mktemp -d); start=$(date +%s.%N)
-            "$C" --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run --no-default-browser-check "$@" --enable-logging=stderr --v=0 about:blank 2> "$p.err" &
+            p=$(mktemp -d); start=$(date +%s%N)
+            "$C" --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run --no-default-browser-check "$@" about:blank 2> "$p.err" &
             pid=$!
-            while :; do
-              if [ -s "$p/DevToolsActivePort" ] && [ "$(wc -l < "$p/DevToolsActivePort")" -ge 1 ]; then break; fi
-              now=$(date +%s.%N); if [ "$(echo "$now - $start > 60" | bc)" = 1 ]; then echo "TIMEOUT"; break; fi
-              sleep 0.05
+            until [ -s "$p/DevToolsActivePort" ]; do
+              [ $(( ($(date +%s%N) - start) / 1000000 )) -gt 90000 ] && { echo TIMEOUT; break; }
+              sleep 0.02
             done
-            echo "== $name: $(echo "$(date +%s.%N) - $start" | bc) s"
-            kill $pid; wait $pid 2>/dev/null
-            sed -e 's/^/   /' "$p.err" | head -25
-            rm -rf "$p" "$p.err"
+            echo "== $name: $(( ($(date +%s%N) - start) / 1000000 )) ms (stderr $(wc -l < "$p.err") lines, $(grep -vc 'dbus' "$p.err") not about dbus)"
+            kill $pid 2>/dev/null; wait $pid 2>/dev/null; sleep 0.3
+            rm -rf "$p" "$p.err" 2>/dev/null
           }
-          probe cold-1
-          probe warm-2
-          probe warm-3
-          probe password-store-basic --password-store=basic --use-mock-keychain
-          probe no-dbus-session --disable-features=MediaRouter
-          probe background-off --disable-background-networking --disable-component-update --disable-sync
-          probe all-flags --password-store=basic --use-mock-keychain --disable-background-networking --disable-component-update --disable-sync --no-proxy-server
-          DBUS_SESSION_BUS_ADDRESS=disabled: probe dbus-env-disabled
-          probe no-sandbox --no-sandbox
-          probe disable-gpu --disable-gpu
-      - name: strace a cold-profile start
-        run: |
-          sudo apt-get install -y -q strace >/dev/null 2>&1 || true
-          p=$(mktemp -d)
-          timeout 40 strace -f -tt -e trace=connect,openat,execve,wait4,poll,ppoll,epoll_wait,futex -o /tmp/st.txt /usr/bin/google-chrome --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run about:blank 2>/dev/null &
-          for i in $(seq 1 600); do [ -s "$p/DevToolsActivePort" ] && break; sleep 0.05; done
-          echo "port file after $i polls"
-          sleep 1; kill %1 2>/dev/null; sleep 1
-          echo "connects:"; grep -E "connect\(" /tmp/st.txt | grep -v "ENOENT" | cut -c1-200 | head -40
-          echo "gaps over 1 s between consecutive lines:"
-          awk '{split($2,t,":"); s=t[1]*3600+t[2]*60+t[3]; if (prev && s-prev>1) print "GAP " s-prev " before: " substr($0,1,200); prev=s}' /tmp/st.txt | head -20
+          drop() { sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null; }
+          load() { for i in $(seq 1 $(nproc)); do (timeout 120 sh -c 'while :; do :; done') & done; (timeout 120 sh -c 'while :; do dd if=/dev/zero of=$RUNNER_TEMP/io.$$ bs=1M count=512 oflag=direct status=none; rm -f $RUNNER_TEMP/io.$$; done') & }
+          unload() { pkill -f "while :; do" 2>/dev/null; sleep 1; }
+          probe first-start-of-the-job
+          probe warm
+          drop; probe cold-cache
+          drop; probe cold-cache-again
+          drop; load; sleep 2; probe cold-cache-under-cpu-and-io-load; unload
+          load; sleep 2; probe warm-under-load; unload
+          drop; load; sleep 2; probe cold-under-load-all-flags --password-store=basic --use-mock-keychain --disable-background-networking --disable-component-update --disable-sync --no-proxy-server --disable-gpu; unload
+          drop; t=$(date +%s%N); cat /opt/google/chrome/chrome /opt/google/chrome/*.so* /opt/google/chrome/*.pak /opt/google/chrome/icudtl.dat /opt/google/chrome/*.bin > /dev/null 2>&1; echo "read ahead: $(( ($(date +%s%N) - t) / 1000000 )) ms"; probe after-read-ahead
+          drop; load; sleep 2; t=$(date +%s%N); cat /opt/google/chrome/chrome /opt/google/chrome/*.so* /opt/google/chrome/*.pak /opt/google/chrome/icudtl.dat /opt/google/chrome/*.bin > /dev/null 2>&1; echo "read ahead under load: $(( ($(date +%s%N) - t) / 1000000 )) ms"; probe after-read-ahead-under-load; unload
+          for i in 1 2 3; do drop; load; sleep 2; probe cold-under-load-$i; unload; done
