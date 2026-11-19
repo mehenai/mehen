@@ -106,6 +106,18 @@ function failed(step: string, result: { code: number; out: string; err: string }
 type SetupAgent = { name?: unknown; mcp?: unknown; reason?: unknown }
 type GuardAgent = { agent?: unknown; status?: unknown; reason?: unknown }
 
+const GUARDED = new Set(["claude-code", "pi", "cursor", "codex"])
+
+// The guard's part of an agent's line: on, on once Codex trusts it, or not
+// on and why; nothing for an agent the guard does not cover.
+function guardNote(name: string, g: GuardAgent | undefined, ran: boolean): string {
+  if (!GUARDED.has(name)) return ""
+  if (!ran) return ", guard not on (run `mehen guard install` to see why)"
+  if (g && (g.status === "added" || g.status === "updated" || g.status === "unchanged")) return name === "codex" ? ", guard on once you trust it in Codex's /hooks" : ", guard on"
+  if (g && typeof g.reason === "string") return `, guard not on (${g.reason})`
+  return ""
+}
+
 // What setup and the guard actually did, one line per agent, so a skipped
 // or failed one is never reported as wired.
 export function agentLines(setup: Record<string, unknown> | null, guard: Record<string, unknown> | null): string {
@@ -114,9 +126,7 @@ export function agentLines(setup: Record<string, unknown> | null, guard: Record<
   const guards = new Map((Array.isArray(guard?.agents) ? (guard.agents as GuardAgent[]) : []).map((g) => [String(g.agent), g]))
   if (wired.length === 0) return "Agents: none found on this machine. Install one, then run `mehen setup`."
   const lines = wired.map((a) => {
-    const g = guards.get(a.name)
-    const guarded = g && (g.status === "added" || g.status === "updated" || g.status === "unchanged") ? ", guard on" : ""
-    return a.ok ? `  ${a.name}: wired${guarded}` : `  ${a.name}: not wired (${a.reason ?? "see mehen setup"})`
+    return a.ok ? `  ${a.name}: wired${guardNote(a.name, guards.get(a.name), guard !== null)}` : `  ${a.name}: not wired (${a.reason ?? "see mehen setup"})`
   })
   return `Agents (restart them to pick Mehen up):\n${lines.join("\n")}`
 }
@@ -268,7 +278,7 @@ export const upCommand: Command = {
     else {
       const setup = await self(command, ["setup", "--json"], childEnv)
       const body = lastJson(setup.out)
-      // The guard hooks, where an agent runs them: Claude Code and pi.
+      // The guard hooks, where an agent runs them: Claude Code, pi, Cursor and Codex.
       const guard = await self(command, ["guard", "install", "--json"], childEnv)
       const guarded = guard.code === 0 ? lastJson(guard.out) : null
       out.event("agents", { ok: setup.code === 0, setup: body, guard: guarded }, agentLines(setup.code === 0 ? body : null, guarded))

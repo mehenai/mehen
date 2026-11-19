@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { isServeOf, LAUNCHD_LABEL, launchdPath, launchdPlist, serviceKind, systemdPath, systemdUnit } from "./service.ts"
 import { openerFor } from "./browser.ts"
-import { enrolLines } from "./index.ts"
+import { agentLines, enrolLines } from "./index.ts"
 
 const plan = { kind: "launchd" as const, command: ["/Users/a/.local/bin/mehen", "serve", "--port", "7787", "--data", "/Users/a/Library/Application Support/Mehen/vault"], dataDir: "/Users/a/Library/Application Support/Mehen/vault", home: "/Users/a", logFile: "/Users/a/Library/Application Support/Mehen/vault/serve.log" }
 
@@ -74,5 +74,20 @@ describe("which process is this vault's", () => {
     expect(isServeOf("/usr/local/bin/mehen serve --port 7787 --data /home/a/vault2", "/home/a/vault")).toBe(false)
     expect(isServeOf("/usr/local/bin/mehen serve --port 7787 --data /home/a/vault/sub", "/home/a/vault")).toBe(false)
     expect(isServeOf("/usr/bin/sleep 30", "/home/a/vault")).toBe(false)
+  })
+})
+
+describe("the agent lines", () => {
+  test("each agent the guard covers says whether its guard is on, and why not", () => {
+    const setup = { agents: ["claude-code", "pi", "cursor", "codex", "gemini"].map((name) => ({ name, mcp: "added" })) }
+    const guard = { agents: [{ agent: "claude-code", status: "added" }, { agent: "pi", status: "unchanged" }, { agent: "cursor", status: "skipped", reason: "hooks.json: Malformed agent settings." }, { agent: "codex", status: "added" }] }
+    expect(agentLines(setup, guard).split("\n").slice(1)).toEqual([
+      "  claude-code: wired, guard on",
+      "  pi: wired, guard on",
+      "  cursor: wired, guard not on (hooks.json: Malformed agent settings.)",
+      "  codex: wired, guard on once you trust it in Codex's /hooks",
+      "  gemini: wired",
+    ])
+    expect(agentLines(setup, null)).toContain("  cursor: wired, guard not on (run `mehen guard install` to see why)")
   })
 })

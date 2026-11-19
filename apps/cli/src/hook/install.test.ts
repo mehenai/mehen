@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runJv } from "../testing/run-mehen.ts"
-import { CLAUDE_TOOLS, claudeHookCommand, claudeSettings, installClaudeGuard, installPiGuard } from "./install.ts"
+import { CLAUDE_TOOLS, CODEX_TOOLS, CODEX_TRUST, CURSOR_WRITE_MATCHER, claudeHookCommand, claudeSettings, codexHooks, cursorHooks, installClaudeGuard, installCodexGuard, installCursorGuard, installPiGuard } from "./install.ts"
 import { piExtension } from "./pi.ts"
 
 const BIN = "/Users/a/.local/bin/mehen"
@@ -105,7 +105,7 @@ describe("the file", () => {
     await mkdir(join(home, ".claude"))
     const result = await runJv(["guard", "install", "--json"], { HOME: home, MEHEN_SELF_EXECUTABLE: BIN })
     expect(result.code).toBe(0)
-    expect(JSON.parse(result.stdout)).toMatchObject({ agents: [{ agent: "claude-code", status: "added" }, { agent: "pi", status: "skipped" }] })
+    expect(JSON.parse(result.stdout)).toMatchObject({ agents: [{ agent: "claude-code", status: "added" }, { agent: "pi", status: "skipped" }, { agent: "cursor", status: "skipped", absent: true }, { agent: "codex", status: "skipped", absent: true }] })
     expect(JSON.parse(await readFile(file(), "utf8")).hooks.SessionStart[0].hooks[0].command).toBe(`${BIN} hook claude-code`)
   })
 })
@@ -157,5 +157,142 @@ describe("pi", () => {
     await rm(fake)
     expect(await handlers.tool_call!({ toolName: "read", input: { path: "a.ts" } }, ctx)).toBeUndefined()
     expect(notes.at(-1)).toContain("not installed")
+  })
+})
+
+describe("Cursor's hooks.json", () => {
+  const cmd = `${BIN} hook cursor`
+  const permission = { command: cmd, timeout: 10, failClosed: true }
+  const theirs = { command: "./hooks/audit.sh" }
+
+  test("mehen's four hooks join the person's, fail closed where Cursor allows it, and a second install changes nothing", () => {
+    const first = cursorHooks({ version: 1, hooks: { beforeShellExecution: [theirs], afterFileEdit: [theirs] } }, BIN, false)
+    expect(first).toEqual({
+      version: 1,
+      hooks: {
+        beforeShellExecution: [theirs, permission],
+        afterFileEdit: [theirs],
+        beforeReadFile: [permission],
+        preToolUse: [{ ...permission, matcher: CURSOR_WRITE_MATCHER }],
+        sessionStart: [{ command: cmd, timeout: 10 }],
+      },
+    })
+    expect(cursorHooks(first, BIN, false)).toEqual(first)
+    expect(cursorHooks({}, BIN, false)).toMatchObject({ version: 1 })
+  })
+
+  test("a moved mehen replaces its own entries where they were; removal leaves only the person's", () => {
+    const installed = cursorHooks({ version: 1, hooks: { beforeShellExecution: [theirs] } }, BIN, false)
+    const later = { ...installed, hooks: { ...(installed.hooks as Record<string, unknown[]>), beforeShellExecution: [theirs, permission, { command: "./hooks/after.sh" }] } }
+    const moved = cursorHooks(later, "/opt/mehen", false) as { hooks: Record<string, { command: string }[]> }
+    expect(moved.hooks.beforeShellExecution?.map((e) => e.command)).toEqual(["./hooks/audit.sh", "/opt/mehen hook cursor", "./hooks/after.sh"])
+    expect(cursorHooks(installed, BIN, true)).toEqual({ version: 1, hooks: { beforeShellExecution: [theirs] } })
+  })
+
+  test("an entry the person changed to run something else is theirs, and stays, as do their other events, empty or not", () => {
+    const edited = { version: 1, hooks: { beforeReadFile: [{ command: `${BIN} hook cursor | tee /tmp/log` }], stop: [] } }
+    expect(cursorHooks(edited, BIN, true)).toEqual(edited)
+    expect(cursorHooks(cursorHooks(edited, BIN, false), BIN, true)).toEqual(edited)
+  })
+})
+
+describe("Codex's hooks.json", () => {
+  const command = { type: "command", command: `${BIN} hook codex`, timeout: 10 }
+  const theirs = { matcher: "Bash", hooks: [{ type: "command", command: "python3 ~/.codex/hooks/policy.py" }] }
+
+  test("PreToolUse on Bash and apply_patch and a SessionStart note join the person's, once", () => {
+    const first = codexHooks({ description: "mine", hooks: { PreToolUse: [theirs] } }, BIN, false)
+    expect(first).toEqual({ description: "mine", hooks: { PreToolUse: [theirs, { matcher: CODEX_TOOLS, hooks: [command] }], SessionStart: [{ hooks: [command] }] } })
+    expect(codexHooks(first, BIN, false)).toEqual(first)
+    expect(codexHooks(first, BIN, true)).toEqual({ description: "mine", hooks: { PreToolUse: [theirs] } })
+    expect(codexHooks(codexHooks({}, BIN, false), BIN, true)).toEqual({})
+  })
+})
+
+describe("the Cursor and Codex files", () => {
+  let home: string
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "mehen-guard-cc-"))
+  })
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true })
+  })
+  const cursor = (remove = false, dryRun = false) => installCursorGuard({ home, binary: BIN, remove, dryRun })
+  const codex = (remove = false, dryRun = false, codexHome?: string) => installCodexGuard({ home, binary: BIN, remove, dryRun, codexHome })
+
+  test("no ~/.cursor or ~/.codex folder: skipped, nothing written", async () => {
+    expect(await cursor()).toMatchObject({ status: "skipped", absent: true, reason: expect.stringContaining("no ~/.cursor folder") })
+    expect(await codex()).toMatchObject({ status: "skipped", absent: true, reason: expect.stringContaining("no ~/.codex folder") })
+    expect(await cursor(true)).toMatchObject({ status: "skipped", absent: true })
+    expect(await Bun.file(join(home, ".cursor")).exists()).toBe(false)
+  })
+
+  test("a file mehen made: added, unchanged the second time, and deleted on removal", async () => {
+    await mkdir(join(home, ".cursor"))
+    const file = join(home, ".cursor", "hooks.json")
+    expect(await cursor(false, true)).toMatchObject({ status: "added" })
+    expect(await Bun.file(file).exists()).toBe(false)
+    expect(await cursor()).toMatchObject({ status: "added" })
+    expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ version: 1, hooks: { beforeReadFile: [{ command: `${BIN} hook cursor`, failClosed: true }] } })
+    expect(await Bun.file(`${file}.mehen-backup`).exists()).toBe(false)
+    expect(await cursor()).toMatchObject({ status: "unchanged" })
+    expect(await cursor(true, true)).toMatchObject({ status: "removed" })
+    expect(await Bun.file(file).exists()).toBe(true)
+    expect(await cursor(true)).toMatchObject({ status: "removed" })
+    expect(await Bun.file(file).exists()).toBe(false)
+    expect(await cursor(true)).toMatchObject({ status: "unchanged" })
+  })
+
+  test("a hand-edited file: backed up once, the person's hooks and comments kept in the backup, and kept on removal", async () => {
+    await mkdir(join(home, ".codex"))
+    const file = join(home, ".codex", "hooks.json")
+    const mine = '{\n  // my policy\n  "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "./stop.sh" }] }] },\n}\n'
+    await writeFile(file, mine)
+    expect(await codex(false, true)).toMatchObject({ status: "added", next: CODEX_TRUST })
+    expect(await readFile(file, "utf8")).toBe(mine)
+    expect(await codex()).toMatchObject({ status: "added", next: CODEX_TRUST })
+    expect(await readFile(`${file}.mehen-backup`, "utf8")).toBe(mine)
+    expect(JSON.parse(await readFile(file, "utf8")).hooks.Stop).toEqual([{ hooks: [{ type: "command", command: "./stop.sh" }] }])
+    expect(await codex()).toMatchObject({ status: "unchanged" })
+    expect(await codex(false, false)).not.toHaveProperty("next")
+    expect(await installCodexGuard({ home, binary: "/opt/mehen", remove: false, dryRun: false })).toMatchObject({ status: "updated", next: CODEX_TRUST })
+    expect(await readFile(`${file}.mehen-backup`, "utf8")).toBe(mine)
+    expect(await codex(true)).toMatchObject({ status: "removed" })
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ hooks: { Stop: [{ hooks: [{ type: "command", command: "./stop.sh" }] }] } })
+  })
+
+  test("a malformed file is skipped and left as it was", async () => {
+    await mkdir(join(home, ".cursor"))
+    const file = join(home, ".cursor", "hooks.json")
+    await writeFile(file, "{ not json")
+    expect(await cursor()).toMatchObject({ status: "skipped", reason: expect.stringContaining("Malformed") })
+    expect(await cursor(true)).toMatchObject({ status: "skipped" })
+    expect(await readFile(file, "utf8")).toBe("{ not json")
+  })
+
+  test("CODEX_HOME moves Codex's file, and hooks declared in its config.toml are pointed out", async () => {
+    const codexHome = join(home, "codex-home")
+    await mkdir(codexHome)
+    await writeFile(join(codexHome, "config.toml"), 'model = "x"\n\n[[hooks.PreToolUse]]\nmatcher = "^Bash$"\n')
+    expect(await codex(false, false, codexHome)).toMatchObject({ status: "added", file: join(codexHome, "hooks.json"), reason: expect.stringContaining("config.toml also declares hooks") })
+    expect(JSON.parse(await readFile(join(codexHome, "hooks.json"), "utf8")).hooks.PreToolUse[0].matcher).toBe(CODEX_TOOLS)
+  })
+
+  test("mehen guard install and remove wire both, and --dry-run writes neither", async () => {
+    await mkdir(join(home, ".cursor"))
+    await mkdir(join(home, ".codex"))
+    const env = { HOME: home, MEHEN_SELF_EXECUTABLE: BIN }
+    const dry = await runJv(["guard", "install", "--dry-run", "--json"], env)
+    expect(JSON.parse(dry.stdout)).toMatchObject({ dryRun: true, agents: [{ agent: "claude-code" }, { agent: "pi" }, { agent: "cursor", status: "added" }, { agent: "codex", status: "added" }] })
+    expect(await Bun.file(join(home, ".cursor", "hooks.json")).exists()).toBe(false)
+    const human = await runJv(["guard", "install"], env)
+    expect(human.stdout).toContain("cursor           guard added")
+    expect(human.stdout).toContain("Open /hooks in Codex")
+    expect(JSON.parse(await readFile(join(home, ".codex", "hooks.json"), "utf8")).hooks.SessionStart[0].hooks[0].command).toBe(`${BIN} hook codex`)
+    const again = await runJv(["guard", "install", "--json"], env)
+    expect(JSON.parse(again.stdout).agents.slice(2).map((a: { status: string }) => a.status)).toEqual(["unchanged", "unchanged"])
+    const removed = await runJv(["guard", "remove", "--json"], env)
+    expect(JSON.parse(removed.stdout).agents.slice(2).map((a: { status: string }) => a.status)).toEqual(["removed", "removed"])
+    expect(await Bun.file(join(home, ".codex", "hooks.json")).exists()).toBe(false)
   })
 })

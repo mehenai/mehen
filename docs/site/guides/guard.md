@@ -21,12 +21,18 @@ mehen guard install --dry-run
 mehen guard install
 ```
 
-It needs an installed `mehen`, since the hooks name its path. For each agent it reports `added`, `updated`, `unchanged` or `skipped` with the reason. Restart the agent afterwards (in pi, `/reload` is enough).
+It needs an installed `mehen`, since the hooks name its path. For each agent it reports `added`, `updated`, `unchanged` or `skipped` with the reason. Restart the agent afterwards (in pi, `/reload` is enough; Cursor picks up its file by itself).
 
 - **Claude Code.** It adds a `PreToolUse` hook for Read, Grep, Glob, Bash, Write, Edit, MultiEdit and NotebookEdit, and a `SessionStart` hook that tells the agent how to use the vault, to `~/.claude/settings.json`. The file is backed up once, to `settings.json.mehen-backup`, before the first change. It is skipped when there is no `~/.claude` folder.
 - **pi.** It writes a guard extension into `~/.pi/agent/extensions`, which pi loads by itself. It checks bash, read, grep, find, ls, write and edit. If `mehen hook check` fails, the extension blocks the call rather than let it through unseen; if `mehen` is no longer installed at all, it says so once and stops guarding. It is skipped when there is no `~/.pi` folder, and a file of the same name that `mehen` did not write is left alone.
+- **Cursor.** It adds four hooks to `~/.cursor/hooks.json`, each running `mehen hook cursor`: `beforeShellExecution` checks every shell command, `beforeReadFile` every file the agent is about to read, `preToolUse` the Write tool's input, and `sessionStart` tells the agent how to use the vault. The shell, read and write hooks carry `failClosed: true`, so a crash, a timeout or a missing `mehen` blocks the call instead of letting it through. Cursor reloads the file by itself. It is skipped when there is no `~/.cursor` folder.
+- **Codex.** It adds a `PreToolUse` hook for `Bash` and `apply_patch` and a `SessionStart` hook to `~/.codex/hooks.json` (`$CODEX_HOME/hooks.json` when `CODEX_HOME` is set), each running `mehen hook codex`. Codex reads files through its shell, so the Bash hook covers reads as well as commands; the `apply_patch` hook checks the lines a patch adds. Codex runs a new or changed hook only after you trust it: open `/hooks` in Codex and trust Mehen's two hooks after the first install, and again whenever `mehen guard install` reports `updated`. It is skipped when there is no `~/.codex` folder.
 
-`mehen guard remove` takes out only what `mehen guard install` wrote.
+Each file is backed up once, to `<file>.mehen-backup`, before Mehen first changes it, and written only when something changes, so running the install again reports `unchanged`. A hook is Mehen's while its command is `<mehen> hook <harness>`; any other hook in the file is yours and is never touched. A file that does not parse is reported and left as it is.
+
+`mehen guard remove` takes out only what `mehen guard install` wrote. A `hooks.json` that Mehen created is deleted once nothing else is in it; one you had before keeps everything but Mehen's entries.
+
+`mehen doctor` has a `guard` row for each of these agents set up on the machine: on, missing, out of date (it names another path to `mehen`), or off because of the level.
 
 ## What it stops
 
@@ -58,6 +64,27 @@ mehen guard off
 
 With a vault on the same machine, a program running as you can read the vault's files, and so can an agent's shell. The guard stops an agent's tools reading the data folder, but it reads command lines, which a determined program can disguise. Claude Code's sandbox closes that gap at the operating system's level: turn it on (`/sandbox` in Claude Code), then run `mehen guard install` again. With the sandbox on, the install also adds the vault's data folder to the sandbox's `denyRead` and `denyWrite` lists, so the agent's shell can neither read nor change the vault's files. Claude Code runs its MCP servers and hooks outside the sandbox, so `mehen mcp` and `mehen hook` still reach the vault. The install only touches a sandbox you have turned on, and `mehen guard remove` takes those paths out again. [The threat model](../security/threat-model.md#a-vault-on-your-own-machine) has the rest.
 
+## What each agent enforces
+
+The rules are the same everywhere; what reaches them depends on the hooks each agent offers.
+
+| | Claude Code | pi | Cursor | Codex |
+| --- | --- | --- | --- | --- |
+| Shell commands | Bash | bash | every command (`beforeShellExecution`) | Bash and `exec_command` |
+| The agent's file reads | Read, and Grep and Glob with a path | read, grep, find, ls | every agent read (`beforeReadFile`) | through the shell; Codex's only other file reader is `view_image`, for images |
+| Keys written to files | Write, Edit, MultiEdit, NotebookEdit | write, edit | Write (`preToolUse`) | `apply_patch`, the lines it adds |
+| When the check cannot answer | goes through, except input `mehen` cannot read (exit 2) | blocked | blocked (`failClosed`) | blocked when `mehen` answers with an error (exit 2); goes through when `mehen` cannot start at all or times out |
+| Warn | a card | a notice | allowed; Cursor documents `user_message` for denials, so the card may not show | a `systemMessage` warning |
+
+What is not checked:
+
+- **Cursor.** Its Grep tool and its other tools, and MCP calls: the docs do not describe the input of Read, Grep or Write in `preToolUse`, so the Write check looks for a key in every string of the tool's input and names no file. A denied read shows you the card; Cursor's `beforeReadFile` answer has no field for a message to the agent, so the agent learns what to use instead from the session note. Hooks in `~/.cursor/hooks.json` do not run in Cursor's cloud agents, which load only a project's `.cursor/hooks.json`.
+- **Codex.** Input typed into a command that is already running: Codex sends it with `write_stdin`, which does not run `PreToolUse` again, so `cat .env` typed into an interactive shell the agent started is not seen. MCP tools and Codex's other function tools, and hosted tools such as web search, which do not go through its hooks. Codex's own docs call tool hooks "a useful guardrail, not a complete enforcement boundary". A hook you have not trusted in `/hooks` does not run at all, and an enterprise `allow_managed_hooks_only = true` skips it too. If the `config.toml` beside `hooks.json` also declares `[hooks]`, Codex loads both and warns at startup; the install says so.
+
+Cursor also loads Claude Code's hooks from `~/.claude/settings.json` while its "Include Third-Party Plugins, Skills, and Other Configs" setting is on, which it is by default. Mehen's Claude Code hooks then run in Cursor beside its Cursor hooks; a denial from either blocks the call.
+
+With Cursor's hooks failing closed, uninstall in order: run `mehen guard remove` before you delete the `mehen` binary, or Cursor blocks every shell command, read and write until you take Mehen's entries out of `~/.cursor/hooks.json` by hand.
+
 ## Another harness
 
-`mehen hook check` takes one JSON object on stdin, `{ "tool": "read" | "write" | "shell", "path", "content", "command", "cwd" }`, and prints `{ decision, reason, card, findings }`, where `decision` is `deny`, `warn` or `allow`. A harness with a pre-tool hook of its own can call it and block on `deny`. `mehen hook claude-code` is the same check in Claude Code's hook shape.
+`mehen hook check` takes one JSON object on stdin, `{ "tool": "read" | "write" | "shell", "path", "content", "command", "cwd" }`, and prints `{ decision, reason, card, findings }`, where `decision` is `deny`, `warn` or `allow`. A harness with a pre-tool hook of its own can call it and block on `deny`. `mehen hook claude-code`, `mehen hook cursor` and `mehen hook codex` are the same check in each of those agents' hook shapes.

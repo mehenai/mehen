@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { basename, dirname, join } from "node:path"
 import { EXIT } from "@mehen/protocol/api"
-import { type DoctorCheck, type DoctorReport, doctorAll as doctor } from "./doctor.ts"
+import { type DoctorCheck, type DoctorReport, doctorAll as doctor, guardRows } from "./doctor.ts"
 import { MOCK_TENANT, MockVault } from "../testing/mock-vault.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
 
@@ -48,7 +48,7 @@ describe("mehen doctor", () => {
     expect(result.code).toBe(EXIT.ok)
     const report = JSON.parse(result.stdout) as DoctorReport
     expect(report).toMatchObject({ ok: true, next: null, exitCode: 0, strays: [], migration: null, origins: [{ origin: vault.url }], workspaces: [{ slot: vault.slotDir(dir.path), state: "active", workspace: { id: MOCK_TENANT, slug: "mock-space", name: "Mock Space" } }] })
-    expect(statusOf(report)).toEqual({ home: "ok", migration: "ok", vault_url: "ok", on_path: "skipped", update: "skipped", skill: "ok", enrolled: "ok", key: "ok", session: "ok", reachable: "ok", clock: "ok", identity: "ok", frozen: "ok", pending: "ok" })
+    expect(statusOf(report)).toEqual({ home: "ok", migration: "ok", vault_url: "ok", on_path: "skipped", update: "skipped", skill: "ok", guard: "skipped", enrolled: "ok", key: "ok", session: "ok", reachable: "ok", clock: "ok", identity: "ok", frozen: "ok", pending: "ok" })
     expect(report.cli).toMatchObject({ installed: null, previous: null, highestSeen: null, holdBelow: null, pending: null, check: null, vault: {}, lastUpdate: null })
     // What a server started now would decide; a source run is a development build.
     expect(report.cli.mcpHandover).toEqual({ handover: "off", reason: "a development build" })
@@ -482,4 +482,32 @@ describe("doctor's migration journal projection", () => {
     expect(report.machine.find((c) => c.check === "migration")).toMatchObject({ status: "fail", error: "key_insecure" })
     expect(report.migration).toBeNull()
   })
+})
+
+// The guard rows: one per agent set up here that runs the hooks, from a dry
+// run of mehen guard install, so doctor writes nothing.
+test("an installed mehen: a guard row for each of Claude Code, pi, Cursor and Codex set up here, missing, on, then off", async () => {
+  const { mkdir, readdir } = await import("node:fs/promises")
+  const binary = "/opt/mehen/bin/mehen"
+  for (const agent of [".claude", ".pi", ".cursor", ".codex"]) await mkdir(join(home.path, agent))
+  const installed = { ...env, MEHEN_SELF_EXECUTABLE: binary, MEHEN_NO_AUTO_UPDATE: "1" }
+  const rows = async (extra: Record<string, string> = {}) => (JSON.parse((await runJv(["doctor", "--json"], { ...installed, ...extra })).stdout) as DoctorReport).machine.filter((c) => c.check === "guard")
+  const before = await rows()
+  expect(before.map((r) => [r.status, r.detail.split(":")[0]])).toEqual([["warn", "Claude Code"], ["warn", "pi"], ["warn", "Cursor"], ["warn", "Codex"]])
+  expect(before[2]).toMatchObject({ detail: expect.stringContaining("no guard hooks"), next: { command: "mehen guard install --json" } })
+  expect(await readdir(join(home.path, ".cursor"))).toEqual([])
+  expect((await runJv(["guard", "install", "--json"], installed)).code).toBe(0)
+  const on = await rows()
+  expect(on.map((r) => r.status)).toEqual(["ok", "ok", "ok", "ok"])
+  expect(on[2]?.detail).toBe(`Cursor: guard on (block) in ${join(home.path, ".cursor", "hooks.json")}.`)
+  expect(on[3]?.detail).toContain("once they are trusted in /hooks")
+  const off = await rows({ MEHEN_GUARD: "off" })
+  expect(off.map((r) => r.status)).toEqual(["warn", "warn", "warn", "warn"])
+  expect(off[0]?.next).toMatchObject({ command: "mehen guard block" })
+})
+
+test("guard rows: no agent set up is one ok row; a file the guard could not read is a warning with its reason", () => {
+  expect(guardRows([{ agent: "cursor", status: "skipped", file: "/h/.cursor/hooks.json", absent: true, reason: "no ~/.cursor folder" }], "block")).toEqual([{ check: "guard", status: "ok", detail: expect.stringContaining("No agent that runs the guard hooks") }])
+  expect(guardRows([{ agent: "codex", status: "skipped", file: "/h/.codex/hooks.json", reason: "Malformed agent settings." }], "block")).toEqual([{ check: "guard", status: "warn", detail: "Codex: Malformed agent settings." }])
+  expect(guardRows([{ agent: "codex", status: "updated", file: "/h/.codex/hooks.json" }], "warn")[0]?.next?.say).toContain("/hooks")
 })

@@ -17,7 +17,11 @@ paths = [
 
 [[allowlists]]
 description = "The command hook tests prove that keys typed into commands are caught; every key in them is made up"
-paths = ['''^apps/cli/src/hook/hook\.test\.ts$''']
+paths = [
+  '''^apps/cli/src/hook/codex\.test\.ts$''',
+  '''^apps/cli/src/hook/cursor\.test\.ts$''',
+  '''^apps/cli/src/hook/hook\.test\.ts$''',
+]
 
 [[allowlists]]
 description = "Made-up values the output scrubbing and backup tests check never leave the machine"
