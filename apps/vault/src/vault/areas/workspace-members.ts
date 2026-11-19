@@ -5,7 +5,7 @@ import { one } from "../core.ts"
 import { VaultError } from "../../http.ts"
 import { forgetCliVersions } from "./device-cli-versions.ts"
 import { INVITE_TTL_MS } from "@mehen/protocol"
-import { activateInvitedMember, pendingRoleOf, accessChanged, inviteCreatorEligible, requireInviteIdentity, accessState, authorise, beforeOffboarding, bumpAccessRevision, digest, memberRows, queueNotice, requireStepUp, runOffboardingHooks, setSetting, setting, workspaceRef, WorkspaceInviteViewSchema } from "./workspace-runtime.ts"
+import { activateInvitedMember, pendingRoleOf, accessChanged, beforeManagementChange, inviteCreatorEligible, requireInviteIdentity, accessState, authorise, beforeOffboarding, bumpAccessRevision, digest, memberRows, queueNotice, requireStepUp, runOffboardingHooks, setSetting, setting, workspaceRef, WorkspaceInviteViewSchema } from "./workspace-runtime.ts"
 import type { WorkspaceInvocationContext } from "./workspace-runtime.ts"
 const ROLE_RANK = { owner: 3, admin: 2, member: 1, guest: 0 } as const
 const MemberInput = z.strictObject({ member: z.string() })
@@ -64,7 +64,7 @@ export const workspaceMemberOps: NonNullable<Area["workspaceOps"]> = {
       const subject = targetMember(ctx, input.member)
       if (!accessState(ctx).teams.some((t) => t.id === input.team) || subject.status !== "active") throw new VaultError("not_found", "No such active team member.")
       if (input.change === "remove") { accessChanged(ctx, input.member, "team.remove", { team: input.team }); ctx.sql.exec("DELETE FROM team_members WHERE team=? AND member=?", input.team, input.member) }
-      else ctx.sql.exec("INSERT OR IGNORE INTO team_members(team,member) VALUES (?,?)", input.team, input.member)
+      else { beforeManagementChange(ctx); ctx.sql.exec("INSERT OR IGNORE INTO team_members(team,member) VALUES (?,?)", input.team, input.member) }
       bumpAccessRevision(ctx)
       ctx.audit({ actor: decision.principal.kind === "member" ? `member:${decision.principal.memberId}` : "system", action: `team.member_${input.change}`, target: input.team, detail: { member: input.member } })
       return teamViews(ctx).find((t) => t.id === input.team)

@@ -10,7 +10,7 @@ import { policyAreaGrantTermsDigest, policyRuleTermsDigest } from "@mehen/protoc
 import { VaultError } from "../src/http.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { can } from "../src/vault/access.ts"
-import { MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATES_MIGRATION, mandatesArea, scheduleMandateSweep, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
+import { MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATE_SHARE_EXPIRIES_MIGRATION, MANDATES_MIGRATION, mandatesArea, scheduleMandateSweep, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
 import { AREAS } from "../src/vault/registry.ts"
 import { auditLine } from "../src/ui/wording.ts"
 import { projects } from "../src/vault/areas/projects.ts"
@@ -993,6 +993,98 @@ describe("the signer at each use", () => {
       })
     })
 
+    // The review's delayed sweeps: a change to access after a share ended and
+    // before the sweep came to it neither hides the lapse nor stands in for
+    // the passkey resume.
+    const team = (ctx: VaultContext, change: "add" | "remove", member: string, t = "tm_engineering") => memberOp(ctx, "access.team.members", { team: t, member, change }, { type: "team.members", team: t, member, change })
+    const covered = async (ctx: VaultContext) => (await relayAs(ctx, "dev_kim", READ_ISSUES)).error === null
+
+    it("lapses when a team whose expiring manage share was the signer's only management is deleted before the sweep, and a later manage share does not restore cover", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        await seedGithub(ctx, "github-work", PROJECT)
+        await share(ctx, level("manage"), level("use"))
+        await team(ctx, "add", "mem_kim")
+        const end = ctx.now() + DAY / 2
+        await share(ctx, ENGINEERING_USE, { level: "manage", protected: false, expiresAt: new Date(end).toISOString() }, ENGINEERING)
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim" }))
+        expect(await covered(ctx)).toBe(true)
+        const later = at(ctx, end + 1)
+        const remove = { team: "tm_engineering", change: "delete" as const, name: null, slug: null }
+        await memberOp(later, "access.team.update", remove, { type: "team.update", ...remove })
+        expect(lapsedAt(ctx, mandate.id)).not.toBeNull()
+        await share(later, level("use"), level("manage"))
+        sweepMandates(at(ctx, end + 2))
+        expect(await covered(at(ctx, end + 3))).toBe(false)
+        expect(audits(ctx, "mandate.lapse").map((row) => row.detail)).toEqual([{ device: "dev_kim", cause: "share" }])
+      })
+    })
+
+    it("lapses when the signer joins another managing team after their manage share ended and before the sweep", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        await seedGithub(ctx, "github-work", PROJECT)
+        await share(ctx, ENGINEERING_USE, level("manage"), ENGINEERING)
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim" }))
+        const { end } = await endKims(ctx)
+        await team(at(ctx, end + 1), "add", "mem_kim")
+        expect(lapsedAt(ctx, mandate.id)).not.toBeNull()
+        sweepMandates(at(ctx, end + 2))
+        expect(await covered(at(ctx, end + 3))).toBe(false)
+      })
+    })
+
+    it("lapses when the credential is rehomed after the signer's manage share ended and before the sweep, and moving it back does not restore cover", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        const item = await seedGithub(ctx, "github-work", PROJECT)
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim" }))
+        const { end, ending } = await endKims(ctx)
+        const later = at(ctx, end + 1)
+        const rehome = async (to: { kind: "workspace" } | typeof PROJECT) => {
+          const live = ctx.sql.exec<{ dependency_revision: number }>("SELECT dependency_revision FROM items WHERE slug='github-work'").toArray()[0]!
+          const action = { type: "item.rehome" as const, item: item.id, before: to.kind === "workspace" ? PROJECT : { kind: "workspace" as const }, after: to, dependencyRevision: live.dependency_revision }
+          return workspaceItemOps["items.rehome"]!.handler(later, memberPrincipal(ctx, "owner"), { slug: "github-work", home: to }, memberInvocation(ctx, "owner", action))
+        }
+        await rehome({ kind: "workspace" })
+        expect(lapsedAt(ctx, mandate.id)).not.toBeNull()
+        sweepMandates(at(ctx, end + 2))
+        await rehome(PROJECT)
+        await share(at(ctx, end + 3), ending, level("manage"))
+        expect(await covered(at(ctx, end + 4))).toBe(false)
+      })
+    })
+
+    it("lapses on a share given an end below an earlier sweep's clock, after the clock went back, once it ends and is granted again", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        await seedGithub(ctx, "github-work", PROJECT)
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim" }))
+        // A sweep with the clock a day ahead, then the clock back to now.
+        sweepMandates(at(ctx, ctx.now() + DAY))
+        const { end, ending } = await endKims(ctx)
+        expect(end).toBeLessThan(ctx.now() + DAY)
+        await share(at(ctx, end + 1), ending, level("manage"))
+        expect(lapsedAt(ctx, mandate.id)).not.toBeNull()
+        expect(await covered(at(ctx, end + 2))).toBe(false)
+      })
+    })
+
+    it.each([
+      ["signed at the instant the share ends", 0, false],
+      ["signed a millisecond before it ends", -1, true],
+    ])("a mandate %s: lapsed by it, %s", async (_, offset, lapses) => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        await seedGithub(ctx, "github-work", PROJECT)
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim" }))
+        const { end } = await endKims(ctx)
+        ctx.sql.exec("UPDATE mandates SET created_at=? WHERE id=?", end + offset, mandate.id)
+        sweepMandates(at(ctx, end + 1))
+        expect(lapsedAt(ctx, mandate.id) !== null).toBe(lapses)
+      })
+    })
+
     it("lapses a mandate covering a credential rehomed out of a home its signer manages into one they do not, never one that names other credentials", async () => {
       const f = await fixture()
       await inAccess(f.tenant, async (ctx) => {
@@ -1195,6 +1287,30 @@ describe("the signer at each use", () => {
       expect((await relayAs(ctx, "dev_owner", READ_ISSUES)).error).toBeNull()
       setSetting(ctx, "identity_rule_rev", 2)
       expect((await relayAs(ctx, "dev_owner", READ_ISSUES)).error?.code).toBe("approval_required")
+    })
+  })
+
+  // A mandate is standing authority: the signing session's identity check
+  // ageing out does not lapse it; an explicit invalidation does.
+  it("keeps covering once the signing session's identity check has expired, and lapses only when the check is invalidated", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await seedGithub(ctx)
+      setSetting(ctx, "identity_rule", { provider: "google", domains: ["example.com"], roles: ["owner", "admin", "member"] })
+      setSetting(ctx, "identity_rule_rev", 1)
+      const generation = ctx.sql.exec<{ gate_generation: number }>("SELECT gate_generation FROM members WHERE id='mem_owner'").toArray()[0]!.gate_generation
+      const sessionCheck = { id: "chk_owner", checkSequence: 1, gateGeneration: generation, identityRuleRev: 1, succeededAt: new Date(ctx.now() - 1000).toISOString(), expiresAt: new Date(ctx.now() + 600_000).toISOString() }
+      installTestIdentity(ctx, { ...accountAuth("owner"), sessionCheck })
+      const invocation = (action?: Parameters<typeof accountAuth>[1]): WorkspaceInvocationContext => ({ auth: { ...accountAuth("owner", action), sessionCheck }, workspace: { id: ctx.tenant, slug: "work", name: "Work" } })
+      const signed = terms()
+      const action = await workspaceMandateOps["mandates.action"]!.handler(ctx, memberPrincipal(ctx, "owner"), { op: "sign", terms: signed }, invocation()) as Parameters<typeof accountAuth>[1]
+      const { mandate } = await workspaceMandateOps["mandates.sign"]!.handler(ctx, memberPrincipal(ctx, "owner"), { terms: signed }, invocation(action)) as { mandate: MandateView }
+      const aged = at(ctx, Date.parse(sessionCheck.expiresAt) + DAY)
+      expect((await relayAs(aged, "dev_owner", READ_ISSUES)).error).toBeNull()
+      expect(ctx.sql.exec("SELECT lapsed_at FROM mandates WHERE id=?", mandate.id).toArray()).toEqual([{ lapsed_at: null }])
+      const sec = accountAuth("owner")
+      await accessArea.workspaceOps!["access.identity.install"]!.handler(aged, { kind: "system" } as never, { account: sec.account, member: "mem_owner", session: sec.session, securityEpoch: sec.securityEpoch, sessionCheck: null, invalidation: "evt_idp_owner" }, { auth: { kind: "system" } } as never)
+      expect((await relayAs(aged, "dev_owner", READ_ISSUES)).error?.code).toBe("approval_required")
     })
   })
 
@@ -1699,6 +1815,6 @@ describe("the sweep", () => {
 
   it("is its own area after pushes, with its own migrations, each added after the last", () => {
     expect(AREAS.at(-1)).toBe(mandatesArea)
-    expect(mandatesArea.migrations).toEqual([MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION])
+    expect(mandatesArea.migrations).toEqual([MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATE_SHARE_EXPIRIES_MIGRATION])
   })
 })

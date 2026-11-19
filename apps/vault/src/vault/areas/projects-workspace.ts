@@ -21,7 +21,7 @@ import * as workspaceRuntime from "./workspace-runtime.ts"
 import type { WorkspaceInvocationContext } from "./workspace-runtime.ts"
 import { auditPrivateEvent } from "../audit.ts"
 import { managedDefaultsRevision } from "../managed-platform.ts"
-import { lapseMandatesOnExpiredShares, lapseMandatesOnLostManagement, scheduleMandateSweep } from "./mandates-workspace.ts"
+import { lapseMandatesOnLostManagement, scheduleMandateSweep, settleShareExpiries } from "./mandates-workspace.ts"
 
 export type CheckedCredential = { id: string; slug: string; home: CredentialHome; version?: number; configRevision?: number }
 export type ProtectedSnapshot = {
@@ -396,7 +396,7 @@ function workspaceProjectOperations(runtime: ProjectRuntime): Record<string, Pro
         runtime.requireStepUp(ctx, decision, { type: "project.share", ...input }, invocation)
         // A manage share that expired before the sweep came to it lapses
         // first, so granting it again does not restore cover.
-        lapseMandatesOnExpiredShares(ctx)
+        settleShareExpiries(ctx)
         runtime.setProjectShare(ctx, input.after ? { id: old?.id ?? randomId("shr"), project: input.project, subject: input.subject, ...input.after } : null, old)
         // Management of the project's credentials' home taken away lapses
         // the mandates its holders signed, for good.
@@ -438,6 +438,7 @@ function workspaceProjectOperations(runtime: ProjectRuntime): Record<string, Pro
         const decision = runtime.authorise(ctx, invocation, { type: "project.delete" }, { project: id }, ctx.now())
         if (state.credentials.some((c) => c.home.kind === "project" && c.home.project === id)) throw new VaultError("conflict", "Delete or re-home this project's credentials before deleting the project.")
         runtime.requireStepUp(ctx, decision, { type: "project.delete", project: id }, invocation)
+        settleShareExpiries(ctx)
         const project = mustProject(ctx, id)
         for (const env of state.projects.find((p) => p.id === id)?.environments ?? []) if (env.protected && env.references.some((r) => r.home.kind === "workspace")) protectedNotice(runtime, ctx, invocation, principal, project, env.name, ["project_deleted"])
         for (const share of state.shares.filter((s) => s.project === id)) runtime.setProjectShare(ctx, null, share)

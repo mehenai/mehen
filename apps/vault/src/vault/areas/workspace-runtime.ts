@@ -297,6 +297,12 @@ const offboardingHooks = new Map<string, import("../services.ts").OffboardingHoo
 export type AccessChangeTarget = { team?: string; device?: string; role?: import("@mehen/protocol").WorkspaceRole; narrowing?: boolean }
 export type AccessChangeHook = (ctx: VaultContext, member: string | null, reason: string, target: AccessChangeTarget) => void
 const accessChangeHooks = new Map<string, AccessChangeHook>()
+// What must run before any change to who manages what, ahead of the access
+// change hooks: mandates lapse what expired shares took (settleShareExpiries)
+// while access is still as it was.
+const managementGuards = new Map<string, (ctx: VaultContext) => void>()
+export function registerManagementGuard(name: string, guard: (ctx: VaultContext) => void): void { managementGuards.set(name, guard) }
+export function beforeManagementChange(ctx: VaultContext): void { for (const guard of managementGuards.values()) guard(ctx) }
 let exposureProvider: ((ctx: VaultContext) => { item: string; version: number; ceiling: import("@mehen/protocol").Mode }[]) | null = null
 export function registerOffboardingHook(name: string, hook: import("../services.ts").OffboardingHook): void { offboardingHooks.set(name, hook) }
 export function registerAccessChangeHook(name: string, hook: AccessChangeHook): void { accessChangeHooks.set(name, hook) }
@@ -304,12 +310,14 @@ export function registerAccessChangeHook(name: string, hook: AccessChangeHook): 
 export function isolateAccessLifecycleForTests(): () => void {
   const offboarding = new Map(offboardingHooks)
   const changes = new Map(accessChangeHooks)
+  const guards = new Map(managementGuards)
   const exposures = exposureProvider
-  offboardingHooks.clear(); accessChangeHooks.clear(); exposureProvider = null
+  offboardingHooks.clear(); accessChangeHooks.clear(); managementGuards.clear(); exposureProvider = null
   return () => {
-    offboardingHooks.clear(); accessChangeHooks.clear()
+    offboardingHooks.clear(); accessChangeHooks.clear(); managementGuards.clear()
     for (const [name, hook] of offboarding) offboardingHooks.set(name, hook)
     for (const [name, hook] of changes) accessChangeHooks.set(name, hook)
+    for (const [name, guard] of guards) managementGuards.set(name, guard)
     exposureProvider = exposures
   }
 }
@@ -317,6 +325,7 @@ export function registerExposureProvider(provider: NonNullable<typeof exposurePr
 function requireHooks(names: string[], registered: Map<string, unknown>): void { if (names.some((name) => !registered.has(name))) throw new VaultError("internal", "Workspace lifecycle services are not registered.") }
 export function accessChanged(ctx: VaultContext, member: string | null, reason: string, target: AccessChangeTarget = {}): void {
   requireHooks(["consent", "projects", "overrides"], accessChangeHooks)
+  beforeManagementChange(ctx)
   for (const hook of accessChangeHooks.values()) hook(ctx, member, reason, target)
   const state = accessState(ctx)
   const subject = state.members.find((m) => m.id === member)
