@@ -2,7 +2,13 @@
 
 The version is printed by `mehen version --json`, with the commit it was built from. Releases are served from `https://mehen.dev/dl/`; `mehen update` installs the latest one.
 
-## Unreleased
+## 0.4.1
+
+A first run on your own machine now goes right from start to finish. After `mehen up`, the local vault is the default vault, so a new enrolment and the links `mehen` checks use it rather than Mehen Cloud. A `mehen up` that times out says to run it again, and plain-text output prints real line breaks. `mehen up --remove` waits until the service has stopped, so it no longer leaves a LaunchAgent that brings the vault back at the next login. The service `mehen up` installs keeps the Mehen home and update choice it ran with. The installer at `https://mehen.dev/install` checks the release manifest's signature before it trusts any checksum in it, and `npx @mehenai/cli up` and `npm create mehen` install and run the same signed `mehen`. A held request in a review group or bundle carries the one code its Review together page shows. `mehen mandate propose` proposes only what this machine asked for in the last 30 days, at low caps and for 30 days, and the vault refuses a proposal for more, with `mandateRefused` saying what to drop. Installed machines update themselves on their next call to the vault once this release is published, or at their next hourly check.
+
+### Added
+
+- **`npx @mehenai/cli up` and `npm create mehen`.** Both run the signed `mehen` from `https://mehen.dev`, installing it with the installer when it is missing; the npm packages carry this release's version and hold no binary of their own.
 
 ### Fixed
 
