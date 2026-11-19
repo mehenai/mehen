@@ -108,7 +108,7 @@ export function initMandateSign(boot: Boot, shell: ShellState | null): void {
   const redraw = () => {
     const choice = formChoice(form)
     for (const field of all('[data-region="mandate-cap"]', form)) field.hidden = !(field.dataset.class === "read" || choice.classes.includes(field.dataset.class as MandateClass))
-    for (const tick of all<HTMLInputElement>('[data-input="mandate-item"]', form)) tick.disabled = choice.items === "all"
+    for (const tick of all<HTMLInputElement>('[data-input="mandate-item"]', form)) tick.disabled = choice.items === "all" || tick.dataset.never !== undefined
     must('[data-region="mandate-schedule"]', form).hidden = choice.schedule === null
     const built = mandateTermsOf(device, choice)
     if ("refusal" in built) {

@@ -51,14 +51,32 @@ const FIXTURE: PolicyCatalogue = {
 }
 
 describe("GitHub and Stripe, moved to catalogue v2", () => {
-  test("give every request the answers mehen-policy-safety/v4 gave", async () => {
-    const answers = catalogueCorpus().map(({ input }) => {
+  // The corpus's answers, worked out a chunk at a time so that no one test
+  // runs long under CI's load; each chunk is kept for the digest.
+  const CORPUS = catalogueCorpus()
+  const CHUNK = 500
+  const chunks = new Map<number, unknown[]>()
+  const answersOf = (chunk: number): unknown[] => {
+    const known = chunks.get(chunk)
+    if (known !== undefined) return known
+    const answers = CORPUS.slice(chunk * CHUNK, (chunk + 1) * CHUNK).map(({ input }) => {
       const t = TEMPLATES[input.destination.host === "api.github.com" ? "github-pat" : "stripe"]!
       const anchor = { ...input, body: input.body ?? null, contentType: input.contentType ?? null, contentEncoding: input.contentEncoding ?? null, item: "x-key", itemId: "itm_x0000001", asker: { device: "dev_x", workload: null }, policy: t.policy as Policy, binding: t.binding as Binding, secretPrefixes: [] }
       const made = ruleTermsFrom(anchor, { path: input.destination.path, ttlSeconds: RULE_DEFAULT_DURATION })
       const windows = CATALOGUE_CORPUS_WINDOWS.filter((s) => s.host === input.destination.host).map((s) => policyWideningEligibility(input, s, { hosts: [s.host] }).reason)
       return [classifyPolicyRequest(input), evaluatePolicyFloor(input), made.ok ? "ok" : made.reason, windows]
     })
+    chunks.set(chunk, answers)
+    return answers
+  }
+  const CHUNKS = Array.from({ length: Math.ceil(CORPUS.length / CHUNK) }, (_, i) => i)
+
+  test.each(CHUNKS)("answer requests in chunk %d of the corpus", (chunk) => {
+    expect(answersOf(chunk).length).toBe(Math.min(CHUNK, CORPUS.length - chunk * CHUNK))
+  })
+
+  test("give every request the answers mehen-policy-safety/v4 gave", async () => {
+    const answers = CHUNKS.flatMap((chunk) => answersOf(chunk))
     const scopes = CATALOGUE_CORPUS_SCOPES.map((s) => policyScopeEligibility(s, { hosts: [s.host] }))
     expect(answers).toHaveLength(6048)
     // The digest of the same answers computed at ad1313f7, before the move.

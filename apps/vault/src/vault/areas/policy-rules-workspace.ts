@@ -158,7 +158,9 @@ function ownerRef(state: AccessState, device: string): OwnerRef {
 
 // What the relay held, as it would forward it, kept so a rule can be built
 // from the bytes the human saw rather than from anything a caller sends later.
-export type HeldRequest = { destination: Destination; url: string; body: Uint8Array | null; contentType: string | null; contentEncoding: string | null }
+// headerNames: the forwarded headers' names, on a request the relay holds
+// now, for a mandate (mandateHeadersNameOperation); absent on stored bytes.
+export type HeldRequest = { destination: Destination; url: string; body: Uint8Array | null; contentType: string | null; contentEncoding: string | null; headerNames?: readonly string[] }
 
 // The bytes are kept only when the request could become a rule at its own
 // path, or start a task grant; for one that can do neither, only why it

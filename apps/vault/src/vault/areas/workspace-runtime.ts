@@ -11,6 +11,7 @@ import { can, classify, stepUpSatisfies } from "../access.ts"
 import type { AccessAction, AccessDecision, AccessMember, AccessPrincipal, AccessState, AccessTarget } from "../access.ts"
 import type { AccountInvocationAuth, DeviceAuth, PlatformInvocationAuth, SystemAuth, VaultContext } from "../core.ts"
 import { one, randomId } from "../core.ts"
+import { lapseMandates } from "./mandates-lapse.ts"
 import type { ExposureFact } from "../services.ts"
 
 export type WorkspaceRuntimeAuth = AccountInvocationAuth | DeviceAuth | PlatformInvocationAuth | Pick<SystemAuth, "kind" | "actor">
@@ -549,6 +550,9 @@ export function installIdentity(ctx: VaultContext, input: IdentityInstall): { me
     ctx.sql.exec("UPDATE members SET gate_generation=gate_generation+1,revision=revision+1 WHERE id=?", member.id)
     ctx.sql.exec("DELETE FROM workspace_identity_checks WHERE member=?", member.id)
     member.gate_generation++
+    // Their mandates stop covering with the generation; the lapse and its
+    // notice say so.
+    lapseMandates(ctx, { member: member.id }, "identity_invalidated")
   } else {
     if (sec.pending || check.identityRuleRev !== revision || check.gateGeneration !== member.gate_generation || check.checkSequence <= member.check_sequence || Date.parse(check.succeededAt) > ctx.now() || Date.parse(check.expiresAt) <= ctx.now() || Date.parse(check.expiresAt) <= Date.parse(check.succeededAt)) throw new VaultError("identity_required", "This identity check is no longer current.")
     if (member.status === "unconfirmed") {

@@ -3,7 +3,7 @@
 
 import type { BindingInput, PendingKind, PolicyInput, RequestedBy } from "@mehen/protocol/api"
 import { ORIGIN_LIST_MAX } from "@mehen/protocol/fill"
-import type { MandateClass, MandateSchedule, MandateState } from "@mehen/protocol/mandate-terms"
+import type { MandateCandidateNever, MandateClass, MandateSchedule, MandateState } from "@mehen/protocol/mandate-terms"
 import { type Mode, MODES } from "@mehen/protocol/kinds"
 import type { PolicyRuleRefusal } from "@mehen/protocol/policy-mode"
 import { type PolicySummary, type PolicySummaryOptions, describeRuleMatchers, summarisePolicy } from "@mehen/protocol/policy-summary"
@@ -797,6 +797,22 @@ const FILL_REFUSAL_WORDS: Readonly<Record<string, string>> = {
   totp_unreadable: "its one-time code secret cannot be read",
 }
 
+// Why a mandate lapsed, by its cause (areas/mandates-lapse.ts); a row with
+// none, or one this page does not know, says only that standing changed.
+const MANDATE_LAPSE_CAUSE_WORDS: Readonly<Record<string, string>> = {
+  role: "as their role changed",
+  suspend: "as they were suspended",
+  remove: "as they were removed from the workspace",
+  leave: "as they left the workspace",
+  security: "as their account's security changed",
+  identity_rule: "as an identity rule changed",
+  identity_invalidated: "as their identity provider withdrew their check",
+  rescope: "as the machine was given wider access",
+  share: "as a project share no longer lets them manage a credential it covers",
+  team: "as a team change took away their management of a credential it covers",
+  rehome: "as a credential it covers moved to a home they do not manage",
+}
+
 // The field a fill typed, in words: "the password", "the one-time code".
 function fillFieldWords(field: string | null): string {
   if (field === null) return "a value"
@@ -1071,6 +1087,7 @@ export function auditLine(event: AuditEventInput, ctx: AuditActorContext): Audit
     case "mandate.resume":
     case "mandate.stop":
     case "mandate.expire":
+    case "mandate.lapse":
     case "mandate.trip": {
       const id = str(d, "device"), name = id !== null ? (ctx.devices.get(id) ?? null) : null
       const machine = name !== null ? [named(name)] : [plain("a machine")]
@@ -1079,7 +1096,8 @@ export function auditLine(event: AuditEventInput, ctx: AuditActorContext): Audit
       const pieces = event.action === "mandate.sign" ? [plain(" let "), ...machine, plain(` ${classes.length > 0 ? mandateClassWords(classes) : "carry on"} without asking${days !== null ? ` for ${days === 1 ? "1 day" : `${days} days`}` : ""}`)]
         : event.action === "mandate.pause" ? [plain(" paused what "), ...machine, plain(" may do without asking")]
         : event.action === "mandate.resume" ? [plain(" let "), ...machine, plain(" carry on without asking again")]
-        : event.action === "mandate.stop" ? [plain(" stopped what "), ...machine, plain(str(d, "reason") === "replaced" ? " may do without asking, signing new terms for it" : " may do without asking")]
+        : event.action === "mandate.stop" ? [plain(" stopped what "), ...machine, plain(str(d, "reason") === "replaced" ? " may do without asking, signing new terms for it" : str(d, "reason") === "revoked" ? " may do without asking, as it was revoked" : " may do without asking")]
+        : event.action === "mandate.lapse" ? [plain(" stopped letting "), ...machine, plain(` through without asking until its signer resumes it, ${MANDATE_LAPSE_CAUSE_WORDS[str(d, "cause") ?? ""] ?? "as their standing changed"}`)]
         : event.action === "mandate.expire" ? [plain(" ended what "), ...machine, plain(" may do without asking, as its time ran out")]
         : [plain(" stopped letting "), ...machine, plain(" through without asking after too many requests in a minute")]
       return line(pieces, target !== null ? { href: `/mandates/${encodeURIComponent(target)}`, label: "Open the mandate" } : null)
@@ -1484,6 +1502,8 @@ export const MANDATE_STATE_WORDS: Readonly<Record<MandateState, string>> = {
   expired: "Its time ran out. Sign a new one to let this machine carry on again.",
 }
 export const MANDATE_REPLACED_WORDS = "A newer mandate for this machine replaced it."
+// A mandate whose machine was revoked, and the sign page for that machine.
+export const MANDATE_REVOKED_WORDS = "This machine was revoked, so its mandate ended for good and it cannot have another. A machine enrolled again can."
 // A live mandate whose signer no longer stands where they signed: it covers
 // nothing until they resume it with their passkey.
 export function mandateLapsedWords(signer: string, yours: boolean): string {
@@ -1593,6 +1613,11 @@ export const MANDATE_CLASSES_LABEL = "What it may do"
 export const MANDATE_ITEMS_LABEL = "With which credentials"
 export const MANDATE_LISTED_ITEMS = "Only the ones ticked"
 export const MANDATE_NO_CANDIDATES = "This machine can use no credential whose home you manage yet. You may still choose every one it can use later."
+// A credential the sign page shows unticked: a mandate never covers it.
+export const MANDATE_NEVER_CANDIDATE_WORDS: Readonly<Record<MandateCandidateNever, string>> = {
+  "live-key": "Mehen never lets requests on a live key through without asking.",
+  "wildcard-host": "Its binding names no host exactly, and a mandate covers only hosts named exactly.",
+}
 export const MANDATE_CAPS_LABEL = "At most a day"
 export function mandateCapHint(max: number): string {
   return `Up to ${max.toLocaleString("en-GB")}.`

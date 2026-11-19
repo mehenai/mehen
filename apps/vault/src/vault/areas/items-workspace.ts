@@ -18,6 +18,7 @@ import { devicePolicyState } from "./devices.ts"
 import { PostureTerms, forgetPosture, machinePosture, personPosture, postureAction, resetPostureOnRehome } from "./postures-workspace.ts"
 import { assertPushableChange, itemPushable, pushesOn } from "./push-allowance.ts"
 import { latestPushes } from "./push-records.ts"
+import { lapseMandatesOnRehome } from "./mandates-workspace.ts"
 import { accessState, eligibilityState, authorise, managedSetting, nameMiss, recordExposure, registerAccessStateProvider, registerExposureProvider, registerOffboardingHook, requireStepUp, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 
 export type CheckedCredential = ItemRecord & {
@@ -586,6 +587,7 @@ export const workspaceItemOps = {
         requireStepUp(ctx, assertItemRight(ctx, invocation, { type: "credential.rehome" }, { credential: item.id, destinationHome: home }), { type: "item.rehome", item: item.id, before: item.home, after: home, dependencyRevision: item.dependencyRevision }, invocation)
         if(p.kind!=="member")throw new VaultError("forbidden","Only a person can rehome a credential.")
         rehomeCredentialDependencies(ctx, item, home)
+        lapseMandatesOnRehome(ctx, item, home)
         onCredentialRemoved(ctx,item,"rehomed",p.memberId)
         resetPostureOnRehome(ctx, p, item)
         ctx.sql.exec("UPDATE items SET home_kind=?,home_id=?,config_rev=config_rev+1,dependency_revision=dependency_revision+1 WHERE id=?", home.kind, home.kind === "project" ? home.project : home.kind === "member" ? home.member : null, item.id)

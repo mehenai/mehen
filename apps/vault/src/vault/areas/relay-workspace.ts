@@ -23,7 +23,7 @@ import { assertAreaGrantCurrent, assertRuleCurrent, coveringAreaGrant, coveringR
 import { digestOf, parseOpInput } from "./approvals.ts"
 import { assertPostureCurrent, countPostureAsk, coveringPosture, recordPostureUse, type PostureUse } from "./postures-workspace.ts"
 import { assertDialCurrent, coveringDial, dialRefusal, recordDialUse, approvalDial, type DialUse } from "./approval-dial-workspace.ts"
-import { assertMandateCurrent, coveringMandate, mandateCoverHint, newMandateReservation, recordMandateCappedAsk, recordMandateCoverAsk, recordMandateUse } from "./mandates-workspace.ts"
+import { addMandatePlanned, assertMandateCurrent, coveringMandate, mandateCoverHint, newMandatePlanned, newMandateReservation, type MandatePlanned, recordMandateCappedAsk, recordMandateCoverAsk, recordMandateUse } from "./mandates-workspace.ts"
 import type { PolicyFloorView } from "@mehen/protocol/policy-mode"
 import { POLICY_FLOOR, classifyPolicyRequest, evaluatePolicyFloor, policyPathFloorReasons } from "@mehen/protocol/policy-safety"
 
@@ -53,7 +53,9 @@ export function authoriseWorkspaceRelay(ctx: VaultContext, principal: AccessPrin
 // later identical request spends), and whether it reached a member-private
 // credential, whose rows go to that member's private audit.
 // cover: on an ask, whether a mandate could let it through (mandateCoverHint).
-type RelayPlan = { bundle: string; asked: WorkspaceApprovalRow | null; cover: MandateCoverHint | null; granted: string | null; private: boolean }
+// planned: what the bundle's requests before this one would debit of the
+// machine's mandate, this one's added once it is covered.
+type RelayPlan = { bundle: string; asked: WorkspaceApprovalRow | null; cover: MandateCoverHint | null; granted: string | null; private: boolean; planned: MandatePlanned }
 
 async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, input: unknown, invocation: WorkspaceInvocationContext, plan: RelayPlan | null): Promise<RelayMaterial> {
   if (principal.kind !== "device" || invocation.auth.kind !== "device")
@@ -162,7 +164,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
           dialed.set(credential.slug, dialUse)
           return true
         }
-        if (coveringMandate(ctx, principal, credential, held, reservation, { plan: plan !== null, shape: heldRequestShape(credential.id, held) })) return true
+        if (coveringMandate(ctx, principal, credential, held, reservation, { plan: plan !== null, shape: heldRequestShape(credential.id, held), ...(plan ? { planned: plan.planned } : {}) })) return true
       }
       // Only a cap kept the mandate from covering it: the ask says which.
       const capped = ruleable ? reservation.capped : null
@@ -258,6 +260,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
   // Mehen-Rule names a task grant as it names a rule, but only to a mehen
   // that reads grants: to an older one or one of unknown version a grant
   // does not exist, so the answer is as if nothing standing allowed it.
+  if (plan && !plan.asked) addMandatePlanned(plan.planned, reservation)
   const allowedBy = [...ruled, ...(readsGrants(principal, invocation) ? granted.map((g) => g.id) : [])]
   const postures = [...new Set([...postured.values()].map(({ use }) => use.level))]
   return { ...material, workspaceAudit: auditContext, ...(allowedBy.length ? { rules: allowedBy } : {}), ...(postures.length ? { postures } : {}), ...(reservation.mandate !== null ? { mandate: reservation.mandate } : {}) }
@@ -290,8 +293,9 @@ async function createApprovalBundle(ctx: VaultContext, principal: AccessPrincipa
   const results: ApprovalBundleCreated["results"] = []
   // The workspace's row counts only the requests its audit already shows.
   const shown: ApprovalBundleCreated["results"] = []
+  const planned = newMandatePlanned()
   for (const [index, request] of input.requests.entries()) {
-    const plan: RelayPlan = { bundle, asked: null, cover: null, granted: null, private: false }
+    const plan: RelayPlan = { bundle, asked: null, cover: null, granted: null, private: false, planned }
     let result: ApprovalBundleCreated["results"][number]
     try {
       await workspaceRelay(ctx, principal, request, invocation, plan)

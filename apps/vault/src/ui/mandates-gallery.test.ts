@@ -15,7 +15,7 @@ import type { Viewer } from "./workspace-rights.ts"
 import { shellGallery } from "./shell-gallery.ts"
 import { workspaceAsksGallery } from "./workspace-asks-gallery.ts"
 import { HELD_WORDS } from "./workspace-rights.ts"
-import { MANDATE_ALL_CREDENTIALS, MANDATE_ALL_LATER_WORDS, MANDATE_CANDIDATES_UNREAD_WORDS, mandateDayWords, MANDATE_HIDDEN_CREDENTIAL, MANDATE_PROPOSAL_SUPERSEDED_WORDS, MANDATE_REVIEWED_WORDS, MANDATE_STATE_WORDS, MANDATE_UNREVIEWED_WORDS, MANDATE_WAITING_TITLE, mandateLapsedWords } from "./wording.ts"
+import { MANDATE_ALL_CREDENTIALS, MANDATE_ALL_LATER_WORDS, MANDATE_CANDIDATES_UNREAD_WORDS, mandateDayWords, MANDATE_HIDDEN_CREDENTIAL, MANDATE_NEVER_CANDIDATE_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, MANDATE_REVIEWED_WORDS, MANDATE_REVOKED_WORDS, MANDATE_STATE_WORDS, MANDATE_UNREVIEWED_WORDS, MANDATE_WAITING_TITLE, mandateLapsedWords } from "./wording.ts"
 
 const GALLERY_SCRIPT = Object.values(import.meta.glob<string>("../../scripts/ui-gallery.ts", { query: "?raw", import: "default", eager: true }))[0] ?? ""
 const NOW = Date.parse("2026-10-27T18:30:00Z")
@@ -85,6 +85,20 @@ describe("the mandate gallery", () => {
     expect(mandateControls({ ...GALLERY_MANDATE, state: "expired", expiresAt: at(-30 * DAY) }, member, NOW).renew).toBe(true)
     expect(mandateControls({ ...GALLERY_MANDATE, state: "stopped", expiresAt: at(DAY) }, member, NOW).renew).toBe(true)
     expect(mandateControls({ ...GALLERY_MANDATE, state: "stopped", expiresAt: at(DAY) }, held, NOW).renew).toBe(false)
+    // A revoked machine's mandate ended for good: nothing to sign again.
+    expect(mandateControls({ ...GALLERY_MANDATE, state: "stopped", endedReason: "revoked", expiresAt: at(DAY) }, member, NOW)).toEqual({ pause: false, stop: false, resume: false, renew: false })
+  })
+
+  it("says a revoked machine's mandate ended for good, and offers its owner no form for it", () => {
+    const viewer = { role: "member" as const, member: "mem_tom01" }
+    const revoked = { ...GALLERY_MANDATE, state: "stopped" as const, endedReason: "revoked" as const }
+    const page = renderDocument(mandatePage(galleryShell(viewer), { viewer, mandate: revoked, receipts: null, now: NOW })).value
+    expect(page).toContain(escapeHtml(MANDATE_REVOKED_WORDS))
+    expect(actions(page)).toEqual([])
+    const sign = renderDocument(mandateSignPage(peopleShell("member", { member: viewer.member }), { viewer, device: { ...PEOPLE_DEVICE, revoked: true }, candidates: { items: [] }, start: mandateSignDefaults(PEOPLE_DEVICE.name), proposal: null, renews: null, replaces: null, now: NOW })).value
+    expect(sign).toContain(escapeHtml(MANDATE_REVOKED_WORDS))
+    expect(sign).not.toContain('data-form="mandate-sign"')
+    expect(sign).not.toContain("Only Tom Barker can")
   })
 
   it("says what each state means, and that a lapsed one covers nothing until its signer resumes it", () => {
@@ -146,6 +160,18 @@ describe("the mandate gallery", () => {
     expect(page).toContain('data-action="mandate-sign" disabled')
     expect(shown("ws-mandate-sign-not-owner")).not.toContain('data-form="mandate-sign"')
     expect(shown("ws-mandate-sign-renew")).toContain('data-region="mandate-replaces"')
+  })
+
+  it("offers a credential no mandate covers unticked, and never tickable, with the reason", () => {
+    const page = shown("ws-mandate-sign")
+    expect(page).toContain(`<input type="checkbox" data-input="mandate-item" value="itm_stripelive00001" data-slug="stripe-live" data-never="live-key" disabled><span><code>stripe-live</code> <span class="small muted" data-region="mandate-never">${escapeHtml(MANDATE_NEVER_CANDIDATE_WORDS["live-key"])}</span>`)
+    // Named by the terms it starts from, it is still unticked, and the
+    // summary leaves it out.
+    const named = renderDocument(mandateSignPage(peopleShell("member", { member: "mem_tom01" }), { viewer: { role: "member", member: "mem_tom01" }, device: PEOPLE_DEVICE, candidates: { items: [{ id: "itm_githubtom0000001", slug: "github-tom", never: null }, { id: "itm_stripelive00001", slug: "stripe-live", never: "live-key" }] }, start: { ...mandateSignDefaults(PEOPLE_DEVICE.name), items: ["itm_githubtom0000001", "itm_stripelive00001"] }, proposal: null, renews: null, replaces: null, now: NOW })).value
+    expect([...named.matchAll(/data-input="mandate-item" value="(\w+)"[^>]*checked/g)].map((m) => m[1])).toEqual(["itm_githubtom0000001"])
+    const summary = named.slice(named.indexOf('data-region="mandate-summary"'))
+    expect(summary).toContain("github-tom")
+    expect(summary).not.toContain("stripe-live")
   })
 
   it("tells the machine's owner why there is no form, never that someone else must sign", () => {

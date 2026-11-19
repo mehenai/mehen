@@ -282,6 +282,12 @@ test("an ended mandate links its page to sign it again; ls points at the live on
   expect(json(active)).not.toHaveProperty("next")
 })
 
+test("a mandate its machine's revoking ended says so, with no step to sign it again", async () => {
+  vault.overrides.set("GET /v1/mandates/mdt_live", () => Response.json(mandateView({ state: "stopped", endedReason: "revoked" })))
+  expect((await runJv(["mandate", "show", "mdt_live"], env)).stdout).toContain("Ended for good: this machine was revoked.\n")
+  expect(json(await runJv(["mandate", "show", "mdt_live", "--json"], env))).not.toHaveProperty("next")
+})
+
 test("uses follows the cursor to the end, or stops at the first receipt older than --since", async () => {
   const now = Date.now()
   const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString()

@@ -98,7 +98,7 @@ export const accessArea: Area = {
         requireOperationIdentity(ctx, decision.principal.memberId, action, invocation.auth.operationCheck)
         const revision = setting(ctx, "identity_rule_rev", 0) + 1
         const previous = setting<import("@mehen/protocol").IdentityRule>(ctx, "identity_rule", null)
-        for (const m of memberRows(ctx)) if (previous?.roles.includes(m.role) || input.rule?.roles.includes(m.role)) lapseMandates(ctx, { member: m.id })
+        for (const m of memberRows(ctx)) if (previous?.roles.includes(m.role) || input.rule?.roles.includes(m.role)) lapseMandates(ctx, { member: m.id }, "identity_rule")
         setSetting(ctx, "identity_rule", input.rule)
         setSetting(ctx, "identity_rule_rev", revision)
         ctx.sql.exec("UPDATE members SET gate_generation=gate_generation+1,revision=revision+1")

@@ -21,6 +21,7 @@ import * as workspaceRuntime from "./workspace-runtime.ts"
 import type { WorkspaceInvocationContext } from "./workspace-runtime.ts"
 import { auditPrivateEvent } from "../audit.ts"
 import { managedDefaultsRevision } from "../managed-platform.ts"
+import { lapseMandatesOnExpiredShares, lapseMandatesOnLostManagement, scheduleMandateSweep } from "./mandates-workspace.ts"
 
 export type CheckedCredential = { id: string; slug: string; home: CredentialHome; version?: number; configRevision?: number }
 export type ProtectedSnapshot = {
@@ -393,7 +394,14 @@ function workspaceProjectOperations(runtime: ProjectRuntime): Record<string, Pro
         const oldTerms = old ? { level: old.level, protected: old.protected, expiresAt: old.expiresAt } : null
         if (canonicalJson(oldTerms) !== canonicalJson(input.before)) throw new VaultError("conflict", "The expected state changed.")
         runtime.requireStepUp(ctx, decision, { type: "project.share", ...input }, invocation)
+        // A manage share that expired before the sweep came to it lapses
+        // first, so granting it again does not restore cover.
+        lapseMandatesOnExpiredShares(ctx)
         runtime.setProjectShare(ctx, input.after ? { id: old?.id ?? randomId("shr"), project: input.project, subject: input.subject, ...input.after } : null, old)
+        // Management of the project's credentials' home taken away lapses
+        // the mandates its holders signed, for good.
+        lapseMandatesOnLostManagement(ctx, state, runtime.accessState(ctx), "share")
+        scheduleMandateSweep(ctx)
         runtime.bumpAccessRevision(ctx)
         staleWorkspaceConsent(ctx, runtime.accessState(ctx))
         ctx.audit({ actor: actor(principal), action: input.after ? "project.share" : "project.unshare", target: input.project, detail: { subject: input.subject, before: input.before, after: input.after } })

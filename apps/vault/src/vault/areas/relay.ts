@@ -722,7 +722,7 @@ export async function authoriseRelay(ctx: VaultContext, principal: DevicePrincip
         constraints: { ...DEFAULT_APPROVAL_CONSTRAINTS },
       }
       const presentation = await presentRequest(item, dest, url, body, contentType, forwarded)
-      if (hooks?.approve(item, subject, presentation, { destination: dest, url: url.href, body, contentType, contentEncoding, policyApprove: permit.decision === "approve", protectedUse })) continue
+      if (hooks?.approve(item, subject, presentation, { destination: dest, url: url.href, body, contentType, contentEncoding, headerNames: forwarded.map(([name]) => name), policyApprove: permit.decision === "approve", protectedUse })) continue
       try {
         await relayServices.reviewRequest(ctx, principal, subject, presentation)
       } catch (error) {
