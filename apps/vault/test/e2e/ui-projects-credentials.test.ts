@@ -264,6 +264,11 @@ describe("workspace project and credential pages through real dispatch", () => {
     const people = (await page(f, `/w/${WS}/projects/${f.platform.id}`, f.alex)).text
     expect(people).toContain(`Tom (${first.member})`)
     expect(people).toContain(`Tom (${second.member})`)
+    // A share request's link (?share=) opens the form with that Tom chosen.
+    const asked = (await page(f, `/w/${WS}/projects/${f.platform.id}?share=${second.member}`, f.alex)).text
+    expect(asked).toContain('data-region="share-fold" open>')
+    expect(asked).toMatch(new RegExp(`<option value="${second.member}"[^>]* selected>`))
+    expect(people).not.toContain(" selected>")
     const stale = shareChange(f.platform.id, { kind: "member", member: second.member! }, null, { level: "use", protected: false, expiresAt: null })
     // The live share is edit: the stale before-state is refused at
     // preparation, before any passkey is asked, and nothing changes.

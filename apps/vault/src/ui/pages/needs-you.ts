@@ -14,7 +14,7 @@ import { type Html, html, isVaultPath } from "../html.ts"
 import { inboxRow, inboxRowOf } from "../inbox-row.ts"
 import type { PageInput } from "../layout.ts"
 import { type AccountShell, workspaceHref } from "../shell.ts"
-import { mandateEndingWords, mandateLapsedNoticeWords, mandateSignedWords, mandateTrippedWords } from "../wording.ts"
+import { mandateEndingWords, mandateLapsedNoticeWords, mandateSignedWords, mandateTrippedWords, shareRequestedWords } from "../wording.ts"
 import { LOAD_FAILED_SENTENCE, LOAD_FAILED_TITLE, NEEDS_YOU_PATH, RETRYING_WORDS, SESSION_ENDED_WORDS, emptyWords, inboxGroups, needsYouTitle } from "../client/pages/needs-you-logic.ts"
 
 function groupHead(w: InboxWorkspace, rows: number): Html {
@@ -81,6 +81,8 @@ function noticeWords(n: WorkspaceNotice): Html {
       return html`${cardText(mandateEndingWords(p.machine))} ${timeTag(p.expiresAt)}`
     case "mandate_lapsed":
       return html`${cardText(mandateLapsedNoticeWords(p.machine))} ${timeTag(p.expiresAt)}`
+    case "project_share_requested":
+      return html`${cardText(shareRequestedWords(p.machine, p.member.name, p.project.slug))}`
     case "backup_recipient":
       return html`${p.change === "added" ? "A backup key was added" : p.change === "active" ? "A backup key can now receive exports" : "A backup key was removed"}: ${cardText(p.recipient.label)} (<code>${p.recipient.fingerprint}</code>), registered by ${cardText(p.name)}`
   }
@@ -98,7 +100,9 @@ export function noticeRows(notices: readonly WorkspaceNotice[], origin: string, 
   return html`<section class="card" data-region="needs-notices"><div class="card-head"><h2>Notices</h2></div><ul class="rows compact">${notices.map((n) => {
     const href = noticeHref(n.url, origin)
     const main = html`<span class="row-title">${noticeWords(n)}</span><span class="row-sub">${showWorkspace ? html`${cardText(n.payload.workspace.name)} · ` : ""}${timeTag(n.payload.at)}</span>`
-    return html`<li class="row">${href !== null ? html`<a class="row-main" href="${href}">${main}</a>` : html`<span class="row-main">${main}</span>`}</li>`
+    // A share request's one action: the project's Shared with form, the member chosen.
+    const action = n.payload.kind === "project_share_requested" && href !== null ? html`<span class="row-side"><a class="btn primary sm" href="${href}" data-action="share-request">Share</a></span>` : ""
+    return html`<li class="row">${href !== null ? html`<a class="row-main" href="${href}">${main}</a>` : html`<span class="row-main">${main}</span>`}${action}</li>`
   })}</ul></section>`
 }
 

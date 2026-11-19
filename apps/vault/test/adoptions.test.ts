@@ -80,6 +80,18 @@ describe("adoptions", () => {
     })
   })
 
+  it("create: a machine at its 20 open asks is refused with the link where the person decides them, and no batch opens", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async ctx => {
+      const p = devicePrincipal("dev_member"), i = await deviceInvocation(ctx, "dev_member")
+      for (let n = 0; n < 20; n++) createWorkspaceIntake(ctx, p, { kind: "api-key", slug: `asked-${n}`, reason: "test", binding: { hosts: ["api.example.com"] }, home: "project", project: "prj_a" }, i)
+      expect(openAskCount(ctx, "dev_member", ctx.now())).toBe(20)
+      // No approval of its own is open, so the link is the workspace's home.
+      expect(await refused(start(ctx, "dev_member"))).toEqual({ error: "rate_limited", message: "This machine already has 20 open asks.", next: { url: "https://vault.test/w/work/", say: "Ask the person to decide this machine's open asks at the link, then ask for the rest." } })
+      expect(ctx.sql.exec("SELECT id FROM adoption_batches").toArray()).toEqual([])
+    })
+  })
+
   it("upload: per item refusals, never echoing a value", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async ctx => {

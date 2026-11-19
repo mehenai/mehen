@@ -154,7 +154,7 @@ Never guess around a refusal. Do not retry it with a different host, a different
 
 **What it means.** The project in `mehen.toml` exists but is not shared with this machine's owner, or no longer is.
 
-**What you do.** Ask an owner or a project manager to share the project with this machine's owner.
+**What you do.** Ask an owner or a project manager to share the project with this machine's owner. For a member's machine, `next.url` is the project's page (`/w/<slug>/projects/<id>`); pass it on. The people who may share the project with that member are told too (for a guest, only owners and admins): a share request in their Needs you, once a day however often you retry, whose Share button opens the project's Shared with form with that member already chosen.
 
 ### `intake_required`
 
@@ -234,7 +234,7 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 **What it means.** Too many requests; also this machine's 20 open asks, too many unavailable names tried in an hour, or an eleventh mandate proposal in a UTC day ("This machine has proposed 10 mandates today; try again tomorrow.").
 
-**What you do.** Slow down, settle an open ask, and retry after `retryAfter` seconds when given.
+**What you do.** Slow down, settle an open ask, and retry after `retryAfter` seconds when given. At the 20 open asks, `next.url` is where the person decides them: the Review together page of this machine's oldest open ask when it shares a group or bundle with others, else that ask's own page (always its own page while batch approvals are switched off), else the workspace's home (`/w/<slug>/`), whose Needs you card lists them. Give the person that link, wait for them to decide, then ask for the rest. In a managed workspace there is no link: its platform decides the asks, so ask for the rest once some are settled. The cap itself does not move.
 
 ### `upstream_failed`
 

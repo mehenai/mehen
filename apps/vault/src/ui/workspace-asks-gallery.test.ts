@@ -965,10 +965,18 @@ describe("Review together", () => {
     expect(row(page, "apr_settled10")).toContain('<span class="pill ok dot">approved</span>')
   })
 
-  it("has one code tick in the bar counting the ticked rows, Deny ticked, and Approve off until the script checks", () => {
+  it("has the group code tick in the bar, the separate-codes tick beside it, Deny ticked, and Approve off until the script checks", () => {
     const page = rendered("ws-review")
+    expect(page.match(/data-input="group-code-checked"/g)?.length).toBe(1)
+    expect(page).toContain("The agent showed me the code K7QM3P")
     expect(page.match(/data-input="codes-checked"/g)?.length).toBe(1)
-    expect(page).toContain("I checked the codes against the agent&#39;s message (2 ticked)")
+    expect(page).toContain("The agent showed separate codes, and I checked them against the rows (2 ticked)")
+    expect(page.indexOf('data-input="group-code-checked"')).toBeLessThan(page.indexOf('data-input="codes-checked"'))
+    expect(page).toContain('data-region="review-changed" role="status" aria-live="polite" hidden')
+    // A group made before group codes offers only the separate-codes tick.
+    const separate = rendered("ws-review-separate-codes")
+    expect(separate).not.toContain('data-input="group-code-checked"')
+    expect(separate.match(/data-input="codes-checked"/g)?.length).toBe(1)
     expect(page).toContain('data-action="deny-ticked"')
     expect(page).toMatch(/data-action="approve-ticked" disabled>.*Approve 2 with passkey</)
     expect(page).toContain("To shorten a grant or allow it from now on, open its own page.")

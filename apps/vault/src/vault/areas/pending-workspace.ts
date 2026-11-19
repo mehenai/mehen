@@ -8,7 +8,7 @@ import { one } from "../core.ts"
 import { accessState, digest, eligibilityState, authorise, inviteCreatorEligible, memberRows, noticesFor, noticeScan, principalOf, readStoredEnrol, workspaceRef, EnrolVisibilitySchema, InboxEnrolCandidateSchema, type EnrolVisibility, type InboxEnrolCandidate, type PendingEnrol, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 import type { AccessMember, AccessState } from "../access.ts"
 import { enrolDecisions } from "./workspace-devices.ts"
-import { batchesHere, deviceSeesAsk, storedApprovalProjection, workspaceApproval, workspaceApprovalStatus, type WorkspaceApprovalRow } from "./approvals-workspace.ts"
+import { batchesHere, deviceSeesAsk, reviewGroupCode, storedApprovalProjection, workspaceApproval, workspaceApprovalStatus, type WorkspaceApprovalRow } from "./approvals-workspace.ts"
 import { askingWorkload } from "./workloads.ts"
 import type { ApiError, PendingGroup } from "@mehen/protocol/api"
 import { compareVersions } from "@mehen/protocol/version"
@@ -127,7 +127,7 @@ function machinePendingGroups(ctx: VaultContext, invocation: WorkspaceInvocation
     const group = reviewGroupOf(approvals.get(ask.detail.id))
     if (group !== null) groups.set(group, [...(groups.get(group) ?? []), ask.detail.id])
   }
-  return [...groups].filter(([, ids]) => ids.length >= 2).map(([id, ids]) => ({ id, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/g/${id}`, approvals: ids, bundle: false }))
+  return [...groups].filter(([, ids]) => ids.length >= 2).map(([id, ids]) => { const code = reviewGroupCode(ctx, id); return { id, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/g/${id}`, approvals: ids, bundle: false, ...(code !== null ? { code } : {}) } })
 }
 // What approval_required adds for a machine's new ask with batch approvals
 // on: its review group, the group's page and how many of the group's asks
@@ -141,7 +141,8 @@ export function askGroupExtra(ctx: VaultContext, principal: Extract<AccessPrinci
   const state = eligibilityState(ctx, invocation)
   const open = ctx.sql.exec<{ id: string }>("SELECT id FROM approvals WHERE review_group=? AND bundle IS NULL AND status='pending' AND policy_status IS NULL AND expires_at>?", group, ctx.now()).toArray()
     .filter(({ id }) => { const stored = workspaceApproval(ctx, id); return stored !== null && machineListsApproval(ctx, state, principal, stored) }).length
-  return { group: { id: group, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/g/${group}`, open } }
+  const code = reviewGroupCode(ctx, group)
+  return { group: { id: group, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/g/${group}`, open, ...(code !== null ? { code } : {}) } }
 }
 // The inbox rows of the open asks: with batch approvals on here, two or more
 // asks of one bundle, or else of one review group, that this caller may
