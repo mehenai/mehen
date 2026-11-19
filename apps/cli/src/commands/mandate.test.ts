@@ -16,7 +16,10 @@ beforeEach(async () => {
   await vault.enrolSoftware(dir.path)
   vault.seen.length = 0
   vault.overrides.clear()
+  vault.overrides.set("GET /v1/mandates/asked", () => Response.json(ASKED))
 })
+// What this machine asked for lately, as the vault says.
+const ASKED = { items: ["github-work", "linear-work"], classes: ["change", "send"] }
 afterEach(async () => dir.remove())
 
 const json = (result: JvResult) => JSON.parse(result.stdout) as Record<string, unknown>
@@ -25,14 +28,15 @@ const proposalsSent = () => vault.seen.filter((s) => s.path === "/v1/mandates/pr
 const propose = (...extra: string[]) => runJv(["mandate", "propose", "--note", "Nightly triage", ...extra], env)
 const created = () => vault.overrides.set("POST /v1/mandates/proposals", () => Response.json(mandateCreated(vault.url), { status: 201 }))
 
-test("propose with only a note asks for the protocol's defaults, hands over the sign page and exits 0; nothing goes in the ask ledger", async () => {
+test("propose with only a note asks for what this machine asked for, at the low defaults, hands over the sign page and exits 0; nothing goes in the ask ledger", async () => {
   created()
   const result = await propose("--json")
   expect(result.code).toBe(EXIT.ok)
-  expect(proposalsSent()).toEqual([{ terms: { items: "all", classes: ["change", "delete", "read", "send"], caps: { read: 5000, change: 2000, send: 50, delete: 20 }, ttlDays: 90, schedule: null, note: "Nightly triage" }, reason: "Nightly triage" }])
+  expect(vault.seen.some((s) => s.method === "GET" && s.path === "/v1/mandates/asked")).toBe(true)
+  expect(proposalsSent()).toEqual([{ terms: { items: ["github-work", "linear-work"], classes: ["change", "read", "send"], caps: { read: 500, change: 100, send: 10, delete: 0 }, ttlDays: 30, schedule: null, note: "Nightly triage" }, reason: "Nightly triage" }])
   const url = `${vault.url}/w/mock-space/sign-mandate?proposal=mdp_new`
   expect(json(result)).toMatchObject({ proposal: "mdp_new", url, warning: null, ask: { kind: "mandate", id: "mdp_new", url, title: "Trust this machine", wait: null }, next: { url, command: "mehen mandate ls" } })
-  expect((json(result).ask as { what: string }).what).toBe("Let test-machine read, change, send and delete with every credential it can use without asking you, for 90 days, at most 5000 reads, 2000 changes, 50 sends and 20 deletes a day: Nightly triage")
+  expect((json(result).ask as { what: string }).what).toBe("Let test-machine read, change and send with github-work and linear-work without asking you, for 30 days, at most 500 reads, 100 changes and 10 sends a day: Nightly triage")
   expect(await readLedger(vault.slotDir(dir.path), vault.ledgerScope())).toEqual([])
   const human = await propose()
   expect(human.code).toBe(EXIT.ok)
@@ -99,10 +103,81 @@ test("propose sends sorted slugs, read with the classes named, their caps, the d
   const result = await propose("--items", "linear-work,github-work,linear-work", "--classes", "send", "--caps", "send=20", "--days", "7", "--schedule", "Europe/Paris mon-fri 08:00-19:00; sat,sun 22:00-02:00", "--reason", "Tickets keep coming", "--json")
   expect(result.code).toBe(EXIT.ok)
   expect(proposalsSent()[0]).toEqual({
-    terms: { items: ["github-work", "linear-work"], classes: ["read", "send"], caps: { read: 5000, change: 0, send: 20, delete: 0 }, ttlDays: 7, schedule: { tz: "Europe/Paris", windows: [{ days: [1, 2, 3, 4, 5], from: "08:00", to: "19:00" }, { days: [0, 6], from: "22:00", to: "02:00" }] }, note: "Nightly triage" },
+    terms: { items: ["github-work", "linear-work"], classes: ["read", "send"], caps: { read: 500, change: 0, send: 20, delete: 0 }, ttlDays: 7, schedule: { tz: "Europe/Paris", windows: [{ days: [1, 2, 3, 4, 5], from: "08:00", to: "19:00" }, { days: [0, 6], from: "22:00", to: "02:00" }] }, note: "Nightly triage" },
     reason: "Tickets keep coming",
   })
-  expect((json(result).ask as { what: string }).what).toBe("Let test-machine read and send with github-work and linear-work without asking you, for 7 days, at most 5000 reads and 20 sends a day, only Europe/Paris mon-fri 08:00-19:00; sat,sun 22:00-02:00: Nightly triage")
+  expect((json(result).ask as { what: string }).what).toBe("Let test-machine read and send with github-work and linear-work without asking you, for 7 days, at most 500 reads and 20 sends a day, only Europe/Paris mon-fri 08:00-19:00; sat,sun 22:00-02:00: Nightly triage")
+})
+
+test("propose with both --items and --classes asks the vault for nothing but the proposal", async () => {
+  created()
+  expect((await propose("--items", "github-work", "--classes", "change", "--json")).code).toBe(EXIT.ok)
+  expect(vault.seen.some((s) => s.path === "/v1/mandates/asked")).toBe(false)
+  expect(proposalsSent()[0]).toMatchObject({ terms: { items: ["github-work"], classes: ["change", "read"], caps: { read: 500, change: 100, send: 0, delete: 0 }, ttlDays: 30 } })
+})
+
+test("refusal/propose with nothing asked for in 30 days proposes nothing, and says to ask as usual", async () => {
+  created()
+  vault.overrides.set("GET /v1/mandates/asked", () => Response.json({ items: [], classes: [] }))
+  const result = await propose("--json")
+  expect(result.code).toBe(EXIT_FOR_ERROR.forbidden)
+  expect(json(result)).toMatchObject({ error: "forbidden", mandateRefused: "item_unasked", next: { say: expect.stringContaining("Ask for each request as usual") } })
+  expect(proposalsSent()).toEqual([])
+})
+
+test("refusal/propose with more than 200 credentials asked for, and no --items, sends nothing and says to choose at most 200", async () => {
+  created()
+  vault.overrides.set("GET /v1/mandates/asked", () => Response.json({ items: Array.from({ length: 201 }, (_, i) => `key-${String(i).padStart(3, "0")}`), classes: ["change"] }))
+  const result = await propose("--json")
+  expect(result.code).toBe(EXIT.usage)
+  expect(json(result)).toMatchObject({ error: "usage", message: "This machine asked for 201 credentials in the last 30 days, and a mandate names at most 200: choose at most 200 with --items." })
+  expect(proposalsSent()).toEqual([])
+  expect((await propose("--items", "key-000", "--classes", "change", "--json")).code).toBe(EXIT.ok)
+})
+
+test("refusal/a length or cap out of range recommends only what a machine may propose", async () => {
+  for (const [args, words] of [[["--days", "2"], "--days takes 1, 7 or 30."], [["--days", "999"], "--days takes 1, 7 or 30."], [["--caps", "send=0"], "--caps send takes a whole number from 1 to 10 requests a day."], [["--items", "github-work", "--classes", "change", "--caps", "change=0"], "--caps change takes a whole number from 1 to 100 requests a day."]] as const) {
+    const result = await propose(...args, "--json")
+    expect(result.code, args.join(" ")).toBe(EXIT.usage)
+    expect(String(json(result).message), args.join(" ")).toBe(words)
+  }
+})
+
+test("refusal/--caps in the wrong shape names an example a machine may propose", async () => {
+  const result = await propose("--caps", "send:5", "--json")
+  expect(result.code).toBe(EXIT.usage)
+  expect(String(json(result).message)).toContain("send=5,delete=2")
+  expect(String(json(result).message)).not.toContain("send=50")
+})
+
+test("refusal/propose against a vault that does not say what was asked for needs --items and --classes, and sends nothing", async () => {
+  created()
+  vault.overrides.set("GET /v1/mandates/asked", () => vaultError("not_found", "No such route."))
+  const result = await propose("--json")
+  expect(result.code).toBe(EXIT.usage)
+  expect(String(json(result).message)).toContain("name --items and --classes")
+  expect(proposalsSent()).toEqual([])
+})
+
+test("refusal/a proposal the vault refuses for naming more than was asked carries mandateRefused and its next step", async () => {
+  const next = { command: "mehen mandate propose --items github-work --classes change --note <why>", say: "Propose again without the kinds this machine did not ask for; the person signing can add them." }
+  vault.overrides.set("POST /v1/mandates/proposals", () => vaultError("forbidden", "This machine has not asked to delete: drop delete from the proposal.", { mandateRefused: "class_unasked", next }))
+  const result = await propose("--items", "github-work", "--classes", "change,delete", "--json")
+  expect(result.code).toBe(EXIT_FOR_ERROR.forbidden)
+  expect(json(result)).toMatchObject({ error: "forbidden", mandateRefused: "class_unasked", next })
+  const human = await propose("--items", "github-work", "--classes", "change,delete")
+  expect(human.stderr).toContain("drop delete from the proposal")
+  expect(human.stderr).toContain(next.command)
+})
+
+test("refusal/a proposal the vault refuses as too long or too high carries mandateRefused and the allowed terms", async () => {
+  const next = { command: "mehen mandate propose --items github-work --classes change,read --days 30 --caps change=100,read=500 --note <why>", say: "Propose again for 30 days or fewer; the person signing can make it longer." }
+  for (const [refused, args] of [["term_too_long", ["--days", "90"]], ["caps_too_high", ["--caps", "change=2000"]]] as const) {
+    vault.overrides.set("POST /v1/mandates/proposals", () => vaultError("forbidden", "A machine can propose less.", { mandateRefused: refused, next }))
+    const result = await propose("--items", "github-work", "--classes", "change", ...args, "--json")
+    expect(result.code).toBe(EXIT_FOR_ERROR.forbidden)
+    expect(json(result)).toMatchObject({ error: "forbidden", mandateRefused: refused, next })
+  }
 })
 
 describe("refusal/propose terms the protocol would refuse, and a machine signing, resuming or stopping, never reach the vault", () => {

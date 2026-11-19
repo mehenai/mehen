@@ -23,17 +23,17 @@ Mandates are switched on workspace by workspace, and never in a managed workspac
 Say `build-box` is a server you enrolled as your own machine, running an agent that triages the support inbox each night and files issues.
 
 1. **Let it ask first.** Run the work once with no mandate. Each held request comes to you as an ask; approve or deny them as usual. An ask a mandate could cover carries `mandateCover` with state `none` to the agent, and its page offers you "Let build-box carry on with requests like this".
-2. **The agent proposes.** The third time the same kind of ask carries `mandateCover` with state `none` or `unticked`, an agent following the Mehen skill proposes a mandate with the kinds the hint names:
+2. **The agent proposes.** The third time the same kind of ask carries `mandateCover` with state `none` or `unticked`, an agent following the Mehen skill proposes a mandate with the kinds the hint names. The vault holds it to that: a machine's proposal may name only the credentials and kinds it asked for in the last 30 days, never every credential, for at most 30 days and at most 500 reads, 100 changes, 10 sends and 5 deletes a day, and by default it names exactly those. You can still tick more, and choose longer and higher, on the sign page:
 
    ```sh
-   mehen mandate propose --note "Nightly triage of the support inbox" --items gmail-support,linear-work --classes read,change,send --caps send=20 --days 30 --schedule "Europe/Paris daily 01:00-05:00" --json
+   mehen mandate propose --note "Nightly triage of the support inbox" --items gmail-support,linear-work --classes read,change,send --caps send=10 --days 30 --schedule "Europe/Paris daily 01:00-05:00" --json
    ```
 
    It prints an ask titled "Trust this machine" and exits 0. Nothing is covered yet. Proposing the same terms again hands back the same link.
 3. **You review and sign.** Open the link, or **Waiting for you** on the mandates page. The sign page starts on the proposed terms and you may change any of them. Untick what it does not need: if triage never deletes, leave delete off. Keep the caps near what a night's work takes, so a runaway agent hits a cap before it does much. Before your passkey, the page says in plain words what you are signing. Signing always asks for your passkey.
 4. **Read what went through.** The mandate's page lists every request it let through, newest first, under **Went through on trust**, with today's counts against the caps. The agent can read the same with `mehen mandate uses <mdt_id> --since 12h`.
 
-Without a proposal, open the machine's page and press **Trust this machine**. The sign page then starts with all four kinds ticked at their default caps, 90 days and no credential ticked, so you choose each credential yourself.
+Without a proposal, open the machine's page and press **Trust this machine**. The sign page then starts on the narrowest terms, whatever its address says: read alone ticked, no credential ticked and 30 days, so you choose each credential, each other kind and a longer term yourself.
 
 ## Your own agent, while you watch
 
@@ -42,7 +42,7 @@ Say you work alongside an agent on your laptop all day and approve most of what 
 - **Keep it short.** 1 or 7 days, and renew it when it ends. Three days before the end, you are told, and the mandate's page offers **Renew**.
 - **Limit the hours.** A schedule such as `Europe/London mon-fri 09:00-18:00` means nothing goes through on trust in the evening or at the weekend, when you are not watching. Outside those hours, its requests ask as usual.
 - **Pause when you step away.** **Pause** on the mandate's page or the machine's page stops it at once, with no passkey, and so does `mehen mandate pause` on the machine. You resume it from the same page; when you or the machine paused it and nothing about your access has changed, resuming needs no passkey.
-- **Several machines:** on the mandate's page, **Sign the same for** opens the sign page for another of your machines on the same terms. Each machine gets its own signature. **Pause all** on the mandates page pauses every active mandate you may pause at once.
+- **Several machines:** on the mandate's page, **Sign the same for** opens the sign page for another of your machines on the narrowest terms, with this mandate's terms behind **Use these terms** (only the credentials that machine reaches and whose homes you manage carry over). Each machine gets its own signature. **Pause all** on the mandates page pauses every active mandate you may pause at once.
 
 ## What it still asks for
 

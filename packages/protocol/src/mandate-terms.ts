@@ -29,6 +29,21 @@ export const MANDATE_RATE_LIMIT = 120
 export const MANDATE_RATE_WINDOW_MS = 60_000
 export const MANDATE_PROPOSAL_TTL_MS = 7 * 86_400_000
 export const MANDATE_RECEIPT_KEEP_MS = 30 * 86_400_000
+// A machine may propose a mandate only for the credentials and classes it
+// asked for (a held request a mandate could cover) or used under its own
+// mandate in this window; read is always allowed. A person widens terms on
+// the sign page.
+export const MANDATE_ASKED_WINDOW_MS = 30 * 86_400_000
+// What mehen mandate propose and vault_mandate propose by default, and the
+// most a machine may propose: the person signing may raise them.
+export const MANDATE_PROPOSAL_DEFAULT_TTL_DAYS: MandateTtlDays = 30
+export const MANDATE_PROPOSAL_CAP_DEFAULTS: Readonly<MandateCaps> = { read: 500, change: 100, send: 10, delete: 5 }
+// Why the vault refused a machine's proposal (forbidden, mandateRefused):
+// it named every credential, a credential or a class it did not ask for,
+// more days than MANDATE_PROPOSAL_DEFAULT_TTL_DAYS or a cap above
+// MANDATE_PROPOSAL_CAP_DEFAULTS.
+export const MANDATE_PROPOSAL_REFUSALS = ["items_all", "item_unasked", "class_unasked", "term_too_long", "caps_too_high"] as const
+export type MandateProposalRefusal = (typeof MANDATE_PROPOSAL_REFUSALS)[number]
 export const MANDATE_MAX_ITEMS = 200
 export const MANDATE_NOTE_MAX = 200
 export const MANDATE_MAX_WINDOWS = 7
@@ -73,6 +88,24 @@ export const MandateScheduleSchema = z.strictObject({
   windows: z.array(MandateWindowSchema).min(1).max(MANDATE_MAX_WINDOWS),
 })
 export type MandateSchedule = z.infer<typeof MandateScheduleSchema>
+// A schedule as mehen mandate propose --schedule takes it:
+// "Europe/Paris mon-fri 08:00-19:00; sat 10:00-14:00".
+const SCHEDULE_DAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const
+const SCHEDULE_WEEK = [1, 2, 3, 4, 5, 6, 0] as const
+function scheduleDaysText(days: readonly number[]): string {
+  if (days.length === 7) return "daily"
+  const runs: number[][] = []
+  for (const day of SCHEDULE_WEEK) {
+    if (!days.includes(day)) continue
+    const last = runs.at(-1)
+    if (last && SCHEDULE_WEEK.indexOf(last.at(-1) as (typeof SCHEDULE_WEEK)[number]) === SCHEDULE_WEEK.indexOf(day) - 1) last.push(day)
+    else runs.push([day])
+  }
+  return runs.map((run) => (run.length >= 3 ? `${SCHEDULE_DAY_NAMES[run[0] as number]}-${SCHEDULE_DAY_NAMES[run.at(-1) as number]}` : run.map((d) => SCHEDULE_DAY_NAMES[d]).join(","))).join(",")
+}
+export function mandateScheduleText(schedule: MandateSchedule): string {
+  return `${schedule.tz} ${schedule.windows.map((w) => `${scheduleDaysText(w.days)} ${w.from}-${w.to}`).join("; ")}`
+}
 
 const CapSchema = z.number().int().min(0).max(Math.max(...Object.values(MANDATE_CAP_MAX)))
 const MandateCapsSchema = z.strictObject({ read: CapSchema, change: CapSchema, send: CapSchema, delete: CapSchema })
@@ -204,6 +237,10 @@ export type MandateCappedAsk = { mandate: string; capped: { class: MandateClass;
 // machine's live mandate paused or tripped (mandate names it), or "sign"
 // for anything else, a mandate to sign covering these classes.
 export type MandateCoverAsk = { device: { id: string; name: string }; classes: MandateClass[]; state: "sign" | "paused" | "tripped"; mandate: string | null }
+// GET /v1/mandates/asked: what this machine may propose a mandate for, the
+// credentials by slug and the classes besides read it asked for or used in
+// the last MANDATE_ASKED_WINDOW_MS, sorted.
+export type MandateAsked = { items: string[]; classes: MandateClass[] }
 // mandate: for a signed one, the mandate signed from it; for an expired
 // one, the mandate signed for its machine since that closed it, if any.
 export type MandateProposalView = {
@@ -221,6 +258,11 @@ export type MandateProposalView = {
   mandate: string | null
   createdAt: string
   expiresAt: string
+  // A proposal from before the vault kept which credential each slug meant:
+  // the slugs it named, as text, never resolved to a credential now.
+  unbound?: string[]
+  // Why the vault closed it: "unbound", closed on upgrade for that reason.
+  closedReason?: "unbound"
 }
 
 // The before= cursor of a receipts page: the last receipt's time and id.

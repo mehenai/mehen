@@ -3,7 +3,7 @@
 // reads through the workspace's own /api/w routes with the visitor's
 // cookie, so it shows exactly the vault's projection for this reader.
 
-import { MANDATE_CLASSES, type MandateCandidates, type MandateList, type MandateProposalView, type MandateReceiptsPage, type MandateView } from "@mehen/protocol/mandate-terms"
+import { type MandateCandidates, type MandateList, type MandateProposalView, type MandateReceiptsPage, type MandateView } from "@mehen/protocol/mandate-terms"
 import type { WorkspaceDeviceView } from "@mehen/protocol/workspace"
 import { pageResponse } from "../ui/layout.ts"
 import { workspaceApiGet } from "../ui/load.ts"
@@ -43,17 +43,11 @@ async function otherMachines(rc: RequestContext, page: WorkspacePageContext, mem
   return devices.value.devices.filter((d) => d.device !== except && !d.revoked && d.owner.kind === "member" && d.owner.member === member).map((d) => ({ id: d.device, name: d.name }))
 }
 
-// From an ask (?classes=change,send): those classes ticked, read always.
-function askedStart(start: MandateSignStart, asked: string | null): MandateSignStart {
-  if (asked === null) return start
-  const named = new Set(asked.split(","))
-  return { ...start, classes: MANDATE_CLASSES.filter((c) => c === "read" || named.has(c)) }
-}
-
-// /w/:ws/sign-mandate?device=, ?proposal= or ?renew=, ?items=all to open on
-// every credential, ?classes= to open on those classes and ?from= on
-// another mandate's terms. The machine comes from the proposal or the
-// mandate renewed when one is named.
+// /w/:ws/sign-mandate?device=, ?proposal= or ?renew=, and ?from= on another
+// mandate's terms. The machine comes from the proposal or the mandate
+// renewed when one is named. No address widens the terms: a proposal opens
+// on its own, and a page without one on the narrowest, where choosing every
+// credential or another kind is the person's own act.
 async function signPage(rc: RequestContext, page: WorkspacePageContext): Promise<Response> {
   const q = rc.url.searchParams
   const proposalId = q.get("proposal"), renewId = q.get("renew"), fromId = q.get("from")
@@ -74,7 +68,7 @@ async function signPage(rc: RequestContext, page: WorkspacePageContext): Promise
     device = renews.device.id
   }
   if (device === null || !DEVICE_ID.test(device)) return noSuch(page, "machine")
-  // ?from=: another machine's mandate, whose terms this one starts on.
+  // ?from=: another machine's mandate, whose terms are offered as a source.
   let from: MandateView | null = null
   if (proposal === null && renews === null && fromId !== null) {
     if (!MANDATE_ID.test(fromId)) return noSuch(page, "mandate")
@@ -90,12 +84,17 @@ async function signPage(rc: RequestContext, page: WorkspacePageContext): Promise
   if (!machine.ok) return refused(page.shell, machine)
   if (!candidates.ok && candidates.error.error === "frozen") return refused(page.shell, candidates)
   const named = candidates.ok ? candidates.value : null
-  const start = proposal !== null ? proposalStart(proposal) : renews !== null ? renewStart(renews, named) : from !== null ? renewStart(from, named) : askedStart(mandateSignDefaults(machine.value.name), q.get("classes"))
+  // A mandate renewed or copied only names a source: its terms wait behind
+  // Use these terms, and the form opens narrow. So does a proposal that is
+  // not open and bound (mandateSignPage).
+  const start = proposal !== null ? proposalStart(proposal) : mandateSignDefaults(machine.value.name)
+  const sourced = renews ?? from
+  const source = proposal === null && sourced !== null ? { kind: renews !== null ? "renew" as const : "from" as const, mandate: sourced, start: renewStart(sourced, named) } : null
   const replaces = liveMandateOf(list.ok ? list.value : null, device)
   return pageResponse(mandateSignPage(page.shell, {
     viewer: viewerOf(page), device: machine.value, candidates: named,
-    start: q.get("items") === "all" ? { ...start, items: "all" } : start,
-    proposal, renews, replaces, now: Date.now(),
+    start,
+    proposal, renews, source, replaces, now: Date.now(),
   }))
 }
 

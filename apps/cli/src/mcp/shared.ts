@@ -176,6 +176,9 @@ type Tool<S extends z.ZodType> = {
   title: string
   description: string
   input: S
+  // What tools/list advertises when narrower than what input parses: the
+  // vault then answers a wider value with its own structured refusal.
+  advertised?: z.ZodType
   output?: Record<string, unknown>
   annotations: ToolAnnotations
   call(args: z.infer<S>, deps: ToolDeps, call: ToolCall): Promise<ToolOutput>

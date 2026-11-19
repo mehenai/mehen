@@ -8,6 +8,7 @@ import type { AccessAction, AccessPrincipal, AccessState, AccessTarget } from ".
 import { can } from "../access.ts"
 import { blob, one, rows, randomId, type VaultContext, type Area } from "../core.ts"
 import {onCredentialRemoved} from "./projects-workspace.ts"
+import { closeProposalsNaming } from "./mandates-workspace.ts"
 import { compatibleClientHome } from "./oauth-workspace.ts"
 import { auditPrivateEvent } from "../audit.ts"
 import { FILL_MANAGED_REFUSAL, refuseBrowserChangeUnlessOn, refuseFillUnlessOn } from "../fill-unavailable.ts"
@@ -336,6 +337,7 @@ export const offboardCredentials:OffboardingHook=(ctx,snapshot)=>{
   if(item.home.kind!=="member"||item.home.member!==snapshot.member)throw new VaultError("conflict","The credential home changed during removal.")
   onCredentialRemoved(Object.assign(Object.create(ctx),{audit(){ /* member.remove is the sole removal event. */ }}),item,"offboarded",snapshot.by)
   invalidateCredentialDependencies(ctx,id)
+  closeProposalsNaming(ctx,id)
   ctx.sql.exec("DELETE FROM item_secret_history WHERE item=?",id)
   ctx.sql.exec("DELETE FROM item_secrets WHERE item=?",id)
   ctx.sql.exec("DELETE FROM items WHERE id=?",id)
@@ -570,6 +572,7 @@ export const workspaceItemOps = {
         if(p.kind!=="member")throw new VaultError("forbidden","Only a person can delete a credential.")
         onCredentialRemoved(ctx,item,"deleted",p.memberId)
         invalidateCredentialDependencies(ctx, item.id)
+        closeProposalsNaming(ctx, item.id)
         ctx.sql.exec("DELETE FROM item_secret_history WHERE item=?", item.id)
         ctx.sql.exec("DELETE FROM item_secrets WHERE item=?", item.id)
         ctx.sql.exec("DELETE FROM items WHERE id=?", item.id)
