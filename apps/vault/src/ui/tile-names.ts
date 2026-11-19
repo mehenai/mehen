@@ -10,8 +10,9 @@ import type { BrandSlug, IconName } from "./icons.ts"
 // Microsoft ids have no mark with a clear licence (Simple Icons withdrew
 // them), and Fathom (the meeting recorder), HeyGen, Groq, Postmark,
 // Firecrawl, Browserbase, Together AI and SerpApi are not in Simple Icons
-// (its "Fathom" is the analytics company), so they fall back to a letter
-// tile. Fly.io has no mark here yet and falls back the same way.
+// (its "Fathom" is the analytics company, and its "X" is the social network,
+// not xAI), so they and xAI fall back to a letter tile. Fly.io has no mark
+// here yet and falls back the same way.
 const BRAND_FOR: Record<string, BrandSlug> = {
   openai: "openai",
   anthropic: "anthropic",
@@ -48,6 +49,15 @@ const BRAND_FOR: Record<string, BrandSlug> = {
   "brave-search": "brave",
   semrush: "semrush",
   elevenlabs: "elevenlabs",
+  huggingface: "huggingface",
+  replicate: "replicate",
+  deepseek: "deepseek",
+  supabase: "supabase",
+  digitalocean: "digitalocean",
+  railway: "railway",
+  render: "render",
+  upstash: "upstash",
+  planetscale: "planetscale",
 }
 
 export function brandFor(templateOrProvider: string): BrandSlug | null {
@@ -90,6 +100,15 @@ const BRAND_TITLES: Record<BrandSlug, string> = {
   semrush: "Semrush",
   intercom: "Intercom",
   loops: "Loops",
+  huggingface: "Hugging Face",
+  replicate: "Replicate",
+  deepseek: "DeepSeek",
+  supabase: "Supabase",
+  digitalocean: "DigitalOcean",
+  railway: "Railway",
+  render: "Render",
+  upstash: "Upstash",
+  planetscale: "PlanetScale",
 }
 
 export function brandTitle(slug: BrandSlug): string {
