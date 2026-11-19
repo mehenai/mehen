@@ -4,7 +4,8 @@
 // digest first; a row that does not match is unticked for good and decided
 // on its own page. Approve stays off until a code tick is ticked and every
 // row it would approve matched. Asks that join while the page is open clear
-// the code ticks, so they are ticked again after the new rows are seen. The group
+// the code ticks, so they are ticked again after the new rows are seen, and
+// a group that reopened on a new code draws the page again. The group
 // is polled every 20 s while the tab is visible, with If-None-Match; a
 // changed group redraws from the page as the server draws it: rows that
 // left pending grey out and untick, new rows arrive marked New and never
@@ -63,6 +64,9 @@ export function initWorkspaceReview(raw: Boot, maybe: ShellState | null): void {
   const codesChecked = () => codeTicks.some((tick) => tick.checked)
   const codesLabel = find('[data-region="codes-label"]')
   const changedNote = find('[data-region="review-changed"]')
+  // The group code the page was drawn with; null for a group made before codes.
+  const groupCode = (from: Document = document) => find<HTMLElement>('[data-region="group-code-tick"]', from)?.dataset.code ?? null
+  const shownCode = groupCode()
   const approveLabel = find('[data-region="approve-label"]')
   const outcome = find('[data-region="review-outcome"]')
   const list = () => [...rows.values()]
@@ -112,6 +116,14 @@ export function initWorkspaceReview(raw: Boot, maybe: ShellState | null): void {
     const doc = new DOMParser().parseFromString(await response.text(), "text/html")
     const next = bootOf(doc)
     if (next === null || next.group !== boot.group) return
+    // The group closed and opened again on a new code: the code this page
+    // shows is no longer the one the agent was given. Nothing is decided
+    // under it; the page is drawn again with the new one.
+    if (groupCode(doc) !== shownCode) {
+      for (const tick of codeTicks) tick.checked = false
+      g.refresh()
+      return location.reload()
+    }
     if (reviewReloadsForArrivals(find('[data-region="review-section"]') !== null, next.rows)) return location.reload()
     const fresh = new Map(next.rows.map((r) => [r.approval, r]))
     const changed = reviewRedraw(list(), next.rows)

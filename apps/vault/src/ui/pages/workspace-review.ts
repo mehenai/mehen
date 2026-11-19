@@ -200,7 +200,7 @@ export function workspaceReviewPage(shell: WorkspaceShell, data: ReviewPageData)
   const outcome = html`<div data-region="review-outcome" role="status" aria-live="polite" hidden></div><p class="notice warn" data-region="review-changed" role="status" aria-live="polite" hidden></p>`
   const bar = open.length > 0
   const separate = html`<label class="tick" data-region="codes-tick"><input type="checkbox" form="decide" data-input="codes-checked"><span data-region="codes-label">${reviewCodesWords(ticked.length)}</span></label>`
-  const codes = view.code !== null ? html`<label class="tick" data-region="group-code-tick"><input type="checkbox" form="decide" data-input="group-code-checked"><span>${reviewGroupCodeWords(view.code)}</span></label> ${separate}` : separate
+  const codes = view.code !== null ? html`<label class="tick" data-region="group-code-tick" data-code="${view.code}"><input type="checkbox" form="decide" data-input="group-code-checked"><span>${reviewGroupCodeWords(view.code)}</span></label> ${separate}` : separate
   const denyOnly = ticked.filter((r) => approvalGroupSection(r) === "deny-only").length
   return {
     title: `${REVIEW_TITLE}: ${m.name}`,

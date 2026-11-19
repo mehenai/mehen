@@ -61,6 +61,18 @@ describe("account web and native app sessions",() => {
     await signin()
     expect(await windows()).toHaveLength(1)
   })
+  it("a browser passkey sign-in while a security change is pending opens no window, and one after it settles does",async () => {
+    f.env = { ...f.env,STEPUP_GRACE: "on" }
+    const windows = () => f.env.DB.prepare("SELECT context FROM challenges WHERE kind='stepup-grace'").all().then(r => r.results)
+    const id = await reserveAccountSecurity(f.env,f.account,{ effect: { kind: "sessions.end" },revokedSessionIds: [],removedFactorIds: [] })
+    expect(await f.env.DB.prepare("SELECT security_transition,restricted_until FROM accounts WHERE id=?").bind(f.account).first()).toEqual({ security_transition: id,restricted_until: null })
+    const pending = await signin()
+    expect(pending.account).toBe(f.account)
+    expect(await windows()).toEqual([])
+    await retryAccountSecurity(f.env,id,successfulDirectoryClient())
+    const settled = await signin()
+    expect(await windows()).toEqual([{ context: settled.session.id }])
+  })
   it("removed-factor signin refuses during pending while older-factor sessions survive cancel",async () => {
     const now = Date.now(),notice = "ntc_cancel"
     await insertAccountPasskey(f.env,f.account,{ credentialId: "recovered",publicKey: new Uint8Array([2]),counter: 0,transports: [],aaguid: null,deviceType: null,backedUp: null },now,"recovery","pk_recovered").run()

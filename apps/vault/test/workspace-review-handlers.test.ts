@@ -81,4 +81,50 @@ describe("Review together's code tick", () => {
     tick.click()
     expect(note.hidden).toBe(true)
   })
+
+  // The poll finds the group changed and the server's page is `next`.
+  async function polledTo(first: string, next: string) {
+    let changed = false
+    browser = installPage(first, (path) => {
+      if (path.includes("/approvals/groups/")) return changed ? { status: 200, body: {} } : { status: 404, body: {} }
+      if (path === PATH) return { status: 200, body: next }
+      return { status: 404, body: {} }
+    }, `https://vault.test${PATH}`)
+    initWorkspaceReview(bootOf(first) as never, shell())
+    await settle()
+    const tick = $('[data-input="group-code-checked"]')
+    tick.click()
+    expect(tick.checked).toBe(true)
+    changed = true
+    Object.assign(browser.document, { visibilityState: "visible" })
+    browser.document.dispatchEvent(new MiniEvent("visibilitychange"))
+    await settle(60)
+    expect(browser.calls.map((c) => c.path)).toContain(PATH)
+    return tick
+  }
+
+  it("draws the page again, the code untick and Approve off, when the group's code changed with its rows", async () => {
+    const tick = await polledTo(drawn(BEFORE), drawn({ ...AFTER, code: "M3R8TW" }))
+    expect(browser!.reloaded).toBe(1)
+    expect(tick.checked).toBe(false)
+    expect($('[data-action="approve-ticked"]').disabled).toBe(true)
+    // The old page is never extended with the new code's rows.
+    expect(browser!.document.querySelector('[data-approval="apr_kvnew0011"]')).toBeNull()
+    expect($('[data-region="group-code-tick"]').textContent).toContain("K7QM3P")
+  })
+
+  it("draws the page again when the group closed and reopened on a new code: every shown ask settled, a new one waiting", async () => {
+    const settled = BEFORE.rows.map((r) => r.view === "detail" ? { ...r, approval: { ...r.approval, status: "expired" as const } } : r)
+    const tick = await polledTo(drawn(BEFORE), drawn({ ...BEFORE, code: "M3R8TW", rows: [...settled, arrival] }))
+    expect(browser!.reloaded).toBe(1)
+    expect(tick.checked).toBe(false)
+    expect($('[data-action="approve-ticked"]').disabled).toBe(true)
+    expect(browser!.document.querySelector('[data-approval="apr_kvnew0011"]')).toBeNull()
+  })
+
+  it("keeps the page, with no reload, when an ask joins under the same code", async () => {
+    await polledTo(drawn(BEFORE), drawn(AFTER))
+    expect(browser!.reloaded).toBe(0)
+    expect(browser!.document.querySelector('[data-approval="apr_kvnew0011"]')).not.toBeNull()
+  })
 })
