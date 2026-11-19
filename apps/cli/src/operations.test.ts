@@ -266,6 +266,23 @@ test("credentialRejectedHint leaves a managed or custom-provider connection to t
   for (const head of [revoked, narrow]) for (const item of [managed, custom]) expect(credentialRejectedHint(head, item)).not.toContain("mehen connect")
 })
 
+// RFC 6750: only a Bearer challenge whose error parameter is exactly
+// insufficient_scope, its parameters read with quoted strings.
+test("insufficientScope reads the Bearer challenge's error and scope parameters, nothing else", async () => {
+  const { insufficientScope } = await import("./operations.ts")
+  const of = (challenge: string, status = 403) => insufficientScope({ status, headers: { "www-authenticate": challenge } })
+  expect(of('Bearer error="insufficient_scope", scope="gmail.send gmail.modify"')).toEqual(["gmail.send", "gmail.modify"])
+  expect(of("Bearer error=insufficient_scope")).toEqual([])
+  expect(of('Bearer realm="a, b=\\"c\\"", error="insufficient_scope", scope="x"')).toEqual(["x"])
+  expect(of('Basic realm="api", Bearer error="insufficient_scope", scope="y"')).toEqual(["y"])
+  // The phrase only inside a description, a suffixed value, another scheme or another status: none.
+  expect(of('Bearer error="invalid_token", error_description="insufficient_scope for this call"')).toBeNull()
+  expect(of('Bearer error="insufficient_scope_extra"')).toBeNull()
+  expect(of('Bearer error="insufficient_scopes"')).toBeNull()
+  expect(of('Basic error="insufficient_scope"')).toBeNull()
+  expect(of('Bearer error="insufficient_scope"', 401)).toBeNull()
+})
+
 test("policy operations export the real producer implementations", async () => {
   const operations = await import("./operations.ts")
   const policy = await import("./policy-operations.ts")

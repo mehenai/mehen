@@ -59,6 +59,15 @@ type Connection = {
 }
 
 export const workspaceOAuthMigration = `CREATE TABLE workspace_oauth_connections(item TEXT PRIMARY KEY,client TEXT NOT NULL,member TEXT NOT NULL,intent TEXT NOT NULL,payload TEXT NOT NULL,expires_at INTEGER);`
+// A provider's rejection of an OAuth client, kept on the client at the
+// revision it was rejected at, so it holds whichever of its connections
+// found it, and whether or not that one still exists. Cleared only when the
+// client's secret is replaced or restored, or the client is removed.
+export const workspaceOAuthClientRejectionMigration = "CREATE TABLE workspace_oauth_client_rejections(client TEXT PRIMARY KEY,client_revision INTEGER NOT NULL,at INTEGER NOT NULL);"
+// After a client's secret is replaced or restored, or the client removed.
+export function forgetClientRejection(ctx: VaultContext, client: string): void {
+  ctx.sql.exec("DELETE FROM workspace_oauth_client_rejections WHERE client=?", client)
+}
 
 function providerOf(id: string): OAuthProviderTemplate { const p = getOAuthProvider(id); if (!p)
   throw new VaultError("bad_request", "Unknown OAuth provider."); return p; }
@@ -377,9 +386,6 @@ type ConnectionBasis = {
     id: string
     startedAt: number
   }
-  // The provider rejected the OAuth client at this revision: the
-  // connection waits for the client without sending its token again.
-  clientRejected?: { clientRevision: number; at: number }
   // Why it must be reconnected, from the moment it had to be.
   lost?: { reason: string; at: number }
 }
@@ -432,13 +438,13 @@ function lost(reason: string): never { throw new ConnectionLost(reason) }
 // Whether the provider has rejected this client at its current revision,
 // as any of its connections found: all of them wait for it.
 function clientRejectedNow(ctx: VaultContext, client: { id: string; configRev: number }): boolean {
-  return one(ctx.sql.exec("SELECT 1 FROM workspace_oauth_connections WHERE client=? AND json_extract(payload,'$.clientRejected.clientRevision')=?", client.id, client.configRev)) !== null
+  return one(ctx.sql.exec("SELECT 1 FROM workspace_oauth_client_rejections WHERE client=? AND client_revision=?", client.id, client.configRev)) !== null
 }
 
 // Every connection waiting for a client the provider rejected at its
 // current revision, by connection item id, with that client's item id.
 export function connectionsPausedByClient(ctx: VaultContext): Map<string, string> {
-  return new Map(ctx.sql.exec<{ item: string; client: string }>("SELECT c.item AS item,c.client AS client FROM workspace_oauth_connections c JOIN items i ON i.id=c.client WHERE c.client IN (SELECT client FROM workspace_oauth_connections WHERE json_extract(payload,'$.clientRejected.clientRevision')=i.config_rev)").toArray().map((r) => [r.item, r.client]))
+  return new Map(ctx.sql.exec<{ item: string; client: string }>("SELECT c.item AS item,c.client AS client FROM workspace_oauth_connections c JOIN items i ON i.id=c.client JOIN workspace_oauth_client_rejections r ON r.client=c.client AND r.client_revision=i.config_rev").toArray().map((r) => [r.item, r.client]))
 }
 
 function refreshBasis(ctx: VaultContext, item: CheckedCredential) {
@@ -554,8 +560,9 @@ async function refreshOrAccessToken(ctx: VaultContext, item: CheckedCredential):
   if (tokens.kind === "oauth_error" && exchange.refresh.clientErrors.includes(tokens.code)) {
     ctx.storage.transactionSync(() => {
       const latest = refreshBasis(ctx, currentValue())
-      ctx.sql.exec("UPDATE workspace_oauth_connections SET payload=? WHERE item=?", JSON.stringify({ ...latest.basis, refreshAttempt: undefined, retryAt: undefined, clientRejected: { clientRevision: latest.client.configRev, at: ctx.now() } }), item.id)
+      ctx.sql.exec("UPDATE workspace_oauth_connections SET payload=? WHERE item=?", JSON.stringify({ ...latest.basis, refreshAttempt: undefined, retryAt: undefined }), item.id)
       ctx.sql.exec("UPDATE items SET status='needs_reauth',review_reason=?,review_at=? WHERE id=? AND config_rev=?", clientRejectedReason(exchange.displayName), ctx.now(), latest.client.id, latest.client.configRev)
+      ctx.sql.exec("INSERT INTO workspace_oauth_client_rejections(client,client_revision,at) VALUES (?,?,?) ON CONFLICT(client) DO UPDATE SET client_revision=excluded.client_revision,at=excluded.at", latest.client.id, latest.client.configRev, ctx.now())
     })
     throw new ClientRejected(ctx, item.slug, before.client, exchange.displayName)
   }

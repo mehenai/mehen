@@ -17,6 +17,7 @@ import {
   pathMatches,
   pathMatchWork,
   pathPatternsOverlap,
+  restrictivePathMayMeet,
   validHostPattern,
 } from "./binding.ts"
 import { BindingSchema, PolicySchema } from "./api.ts"
@@ -247,6 +248,16 @@ describe("pathPatternsOverlap", () => {
     expect(pathPatternsOverlap("/**/a", "/b/**")).toBe(true)
     // Without case, as a floor matches: it may show one it need not, never hide one.
     expect(pathPatternsOverlap("/Drive/v3/files", "/drive/**")).toBe(true)
+  })
+})
+
+describe("restrictivePathMayMeet", () => {
+  test("a restrictive pattern meets a binding path through a suffix, matrix parameters, an escape or case, as the relay reads it", () => {
+    for (const bound of ["/drive/v3/files/123/watch.json", "/drive/v3/files/123/watch;alt=json", "/drive/v3/files/123/%57atch", "/Drive/V3/files/123/WATCH"]) expect(restrictivePathMayMeet("/drive/v3/**/watch", bound), bound).toBe(true)
+    expect(restrictivePathMayMeet("/drive/v3/**/watch", "/drive/v3/files/123")).toBe(false)
+    expect(restrictivePathMayMeet("/calendar/v3/**/watch", "/drive/v3/files/123/watch.json")).toBe(false)
+    // A glob still meets what it could cover.
+    expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/**")).toBe(true)
   })
 })
 

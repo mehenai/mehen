@@ -8,7 +8,7 @@ import type { AccessAction, AccessPrincipal, AccessState, AccessTarget } from ".
 import { can } from "../access.ts"
 import { blob, one, rows, randomId, type VaultContext, type Area } from "../core.ts"
 import {onCredentialRemoved} from "./projects-workspace.ts"
-import { compatibleClientHome, isClientRejectedReason } from "./oauth-workspace.ts"
+import { compatibleClientHome, forgetClientRejection, isClientRejectedReason } from "./oauth-workspace.ts"
 import { auditPrivateEvent } from "../audit.ts"
 import { FILL_MANAGED_REFUSAL, refuseBrowserChangeUnlessOn, refuseFillUnlessOn } from "../fill-unavailable.ts"
 import { managedPolicyView } from "../managed-platform.ts"
@@ -218,8 +218,10 @@ export function storeCredential(ctx: VaultContext, prepared: PreparedCredential,
   storeSecrets(ctx, id, prepared.secrets)
   // A replaced value clears why it was flagged (a rejected OAuth client's
   // secret, a member who left), as a single-tenant replace does.
-  if (expected && action === "item.rotate")
+  if (expected && action === "item.rotate") {
     ctx.sql.exec("UPDATE items SET review_reason=NULL,review_at=NULL WHERE id=?", id)
+    forgetClientRejection(ctx, id)
+  }
   const stored = checkedCredential(ctx, input.slug) as CheckedCredential
   credentialAudit(ctx, principal, stored, action, action === "oauth.refresh" ? "maintained" : "allowed", {}, null, session)
   const member = principal.kind === "member" ? principal.memberId : credentialAccessState(ctx).devices.find((d) => d.id === principal.deviceId)?.owner
@@ -310,6 +312,7 @@ export function credentialDependencies(ctx: VaultContext, item: string) { return
 export function invalidateCredentialDependencies(ctx: VaultContext, item: string): void {
   ctx.sql.exec("UPDATE workspace_credential_requests SET status='cancelled' WHERE client_id=? OR target_id=?", item, item)
   ctx.sql.exec("DELETE FROM workspace_oauth_connections WHERE item=?", item)
+  forgetClientRejection(ctx, item)
   ctx.unschedule("oauth", `workspace-refresh:${item}`)
   for (const edge of credentialDependencies(ctx, item)) {
     if (edge.client === item) {
@@ -532,6 +535,7 @@ export const workspaceItemOps = {
         // client's reason, as a rotation does.
         if (live.review !== null && isClientRejectedReason(live.review.reason))
           ctx.sql.exec("UPDATE items SET review_reason=NULL,review_at=NULL WHERE id=?", live.id)
+        forgetClientRejection(ctx, live.id)
         // Whoever had the restored value has the new version: a member who
         // leaves still flags it for review (offboardCredentials), and one who
         // has already left flags it now, as their removal would have.

@@ -351,7 +351,10 @@ it("deletes a subject: devices revoked, every secret and item gone, the audit ke
   await platform(f.tenant, "platform.projects.create", { body: { slug: "computers", environments: [{ name: "computers" }], defaultEnv: "computers" } })
   const machine = await f.device()
   const task = await f.workload(machine)
+  // A provider's rejection of an OAuth client, kept on the client.
+  await runInDurableObject(env.TENANT_VAULT.getByName(f.tenant), (_instance: TenantVault, state) => { state.storage.sql.exec("INSERT INTO workspace_oauth_client_rejections(client,client_revision,at) VALUES ('itm_client',1,0)") })
   const removed = await platform<{ purgeAfter: number }>(f.tenant, "platform.subjects.remove", { body: {} })
+  expect(await sql(f.tenant, "SELECT * FROM workspace_oauth_client_rejections")).toEqual([])
   expect(removed).toEqual({ purgeAfter: expect.any(Number) })
   expect(removed.purgeAfter).toBeLessThanOrEqual(Date.now())
   expect(await platform(f.tenant, "platform.subjects.remove", { body: {} })).toEqual(removed)

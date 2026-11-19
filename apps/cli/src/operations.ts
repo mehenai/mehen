@@ -849,24 +849,60 @@ export type UpstreamHead = {
   headers: Record<string, string>
 }
 
-// The scopes an upstream's 403 says it needs (RFC 6750 insufficient_scope),
-// or null when it does not say the token's scope was too narrow.
+// The parameters of a WWW-Authenticate header's Bearer challenge (RFC 7235
+// auth-params, values a token or a quoted string), or null when there is
+// none. Another scheme's parameters, and text inside a quoted value, are
+// never read as the Bearer challenge's.
+function bearerParams(header: string): Map<string, string> | null {
+  const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+/
+  let rest = header, bearer: Map<string, string> | null = null, current: Map<string, string> | null = null
+  const skip = (re: RegExp) => { rest = rest.replace(re, "") }
+  while (rest.length) {
+    skip(/^[\s,]+/)
+    const name = TOKEN.exec(rest)?.[0]
+    if (!name) break
+    rest = rest.slice(name.length)
+    skip(/^\s*/)
+    if (!rest.startsWith("=")) {
+      // A new challenge's scheme, perhaps followed by a token68.
+      current = new Map()
+      if (bearer === null && name.toLowerCase() === "bearer") bearer = current
+      continue
+    }
+    rest = rest.slice(1)
+    skip(/^\s*/)
+    let value = ""
+    if (rest.startsWith('"')) {
+      let i = 1
+      for (; i < rest.length && rest[i] !== '"'; i++) value += rest[i] === "\\" && i + 1 < rest.length ? rest[++i] : rest[i]
+      rest = rest.slice(i + 1)
+    } else {
+      value = TOKEN.exec(rest)?.[0] ?? ""
+      rest = rest.slice(value.length)
+    }
+    current?.set(name.toLowerCase(), value)
+  }
+  return bearer
+}
+
+// The scopes an upstream's 403 says it needs (RFC 6750: a Bearer challenge
+// whose error is exactly insufficient_scope), or null when it does not say
+// the token's scope was too narrow.
 export function insufficientScope(head: Pick<UpstreamHead, "status" | "headers">): string[] | null {
   if (head.status !== 403) return null
-  const challenge = head.headers["www-authenticate"] ?? ""
-  if (!/error="?insufficient_scope/i.test(challenge)) return null
-  const named = /scope="([^"]*)"/i.exec(challenge)?.[1] ?? ""
-  return named.split(/\s+/).filter(Boolean)
+  const params = bearerParams(head.headers["www-authenticate"] ?? "")
+  if (params?.get("error") !== "insufficient_scope") return null
+  return (params.get("scope") ?? "").split(/\s+/).filter(Boolean)
 }
 
 // The route an agent takes when the upstream refused the credential itself:
 // a 401 (revoked or expired), or a 403 saying the scope is too narrow. A key
 // is replaced by a rotation; a connection is reconnected, with the scopes
 // the upstream named (a reconnect keeps the ones it holds).
-// Each names the credential's home (and a connection its OAuth client), as
-// a rotation or reconnect must ask for the one it has. A custom provider's
-// reconnect must name its client, so a reader who may not see it gets a
-// placeholder.
+// Each names the credential's home (and a connection its OAuth client when
+// the reader may see it), as a rotation or reconnect must ask for the one it
+// has. A connection only its platform reconnects (a managed workspace's, or
+// a custom provider's) gets no command.
 export function credentialRejectedHint(head: Pick<UpstreamHead, "status" | "headers">, item: Pick<ItemDescription, "slug" | "kind" | "provider" | "home" | "connection"> | null): string | null {
   if (item === null) return null
   const scopes = insufficientScope(head)

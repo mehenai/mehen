@@ -625,6 +625,35 @@ it("names Testing mode when Google ends a sign-in a week after it was made", asy
   })
 })
 
+// Only a grant whose age fits Testing's lifetime, and that never renewed
+// past it, is put down to Testing: an old grant that renewed an hour ago
+// and is then revoked was revoked.
+it("names a revocation, not Testing mode, for a 90-day-old grant that renewed an hour ago", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await connected(ctx)
+    const now = ctx.now(), day = 86_400_000
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=?,payload=json_set(payload,'$.connectedAt',?,'$.refreshedAt',?) WHERE item=?", now - 1, now - 90 * day, now - 3_600_000, item.id)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_grant" }, { status: 400 }))
+    await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth", message: expect.stringMatching(/^Reconnect this credential: Google revoked the sign-in/) })
+    expect(checkedCredential(ctx, item.slug)?.review?.reason).not.toContain("Testing")
+  })
+})
+
+it("puts a grant's end down to Testing only within its lifetime and only if it never renewed past it", async () => {
+  const { reauthReasonAt } = await import("../src/vault/areas/oauth.ts")
+  const { getOAuthProvider } = await import("@mehen/protocol/templates")
+  const gmail = getOAuthProvider("google-gmail")!, day = 86_400_000, now = 100 * day
+  const reason = (ageDays: number, renewedDay: number | null) => reauthReasonAt(gmail, "Gmail", { connectedAt: now - ageDays * day, refreshedAt: renewedDay === null ? null : now - ageDays * day + renewedDay * day }, now, false)
+  expect(reason(7, 6)).toContain("Testing")
+  expect(reason(8, 3)).toContain("Testing")
+  // Renewed on day 7.5: Testing would have ended it by then.
+  expect(reason(8, 7.5)).not.toContain("Testing")
+  // Older than twice the lifetime.
+  expect(reason(15, null)).not.toContain("Testing")
+  expect(reason(5, null)).not.toContain("Testing")
+})
+
 // A connection made before connectedAt was kept dates its grant from its
 // connect.
 it("names Testing mode for a connection made before its connect time was kept", async () => {
@@ -1004,10 +1033,13 @@ for (const reason of ["Gmail rejected this OAuth client (its secret is wrong, ex
       const replaced = await prepareCredential(ctx, { ...created, secretFields: { client_secret: "new-client-secret" } }, created)
       ctx.storage.transactionSync(() => storeCredential(ctx, replaced, memberPrincipal(ctx), "item.rotate"))
       ctx.sql.exec("UPDATE items SET status='needs_reauth',review_reason=?,review_at=? WHERE id=?", reason, ctx.now(), created.id)
+      ctx.sql.exec("INSERT INTO workspace_oauth_client_rejections(client,client_revision,at) SELECT id,config_rev,? FROM items WHERE id=?", ctx.now(), created.id)
       const terms = { version: checkedCredential(ctx, "google-client")!.version, previous: created.version }
       const action = WorkspaceStepUpActionSchema.parse(await workspaceItemOps["items.action"].handler(ctx, memberPrincipal(ctx), { slug: "google-client", action: "restore", ...terms }, memberInvocation(ctx)))
       await workspaceItemOps["items.restore"].handler(ctx, memberPrincipal(ctx), { slug: "google-client", ...terms }, memberInvocation(ctx, "owner", action))
       expect(checkedCredential(ctx, "google-client")).toMatchObject({ status: "active", review: reason === "checked by hand" ? { reason } : null })
+      // A restore puts a different secret back, so the provider's rejection no longer holds.
+      expect(ctx.sql.exec("SELECT * FROM workspace_oauth_client_rejections").toArray()).toEqual([])
     })
   })
 
@@ -1078,8 +1110,10 @@ it("a rejected client is told once per revision, even after the connection that 
     await expect(workspaceAccessToken(ctx, first)).rejects.toMatchObject({ code: "needs_reauth" })
     ctx.sql.exec("DELETE FROM workspace_oauth_connections WHERE item=?", first.id)
     ctx.sql.exec("DELETE FROM items WHERE id=?", first.id)
+    // The rejection is the client's own: the other connection stays paused
+    // and sends the rejected credentials nowhere.
     await expect(workspaceAccessToken(ctx, second)).rejects.toMatchObject({ code: "needs_reauth" })
-    expect(sends).toBe(2)
+    expect(sends).toBe(1)
     expect(connectionNotices(ctx).map((n) => [n.account, n.payload.kind]).sort()).toEqual([["acc_admin", "oauth_client_rejected"], ["acc_owner", "oauth_client_rejected"]])
   })
 })

@@ -32,7 +32,7 @@ import { upstreamFetch } from "../../relay/upstream.ts"
 import { type Area, type DevicePrincipal, type MemberPrincipal, type Principal, type Requester, type SystemPrincipal, type VaultContext, actorOf, blob, one, randomId } from "../core.ts"
 import type { IntakeOutcome, ItemRecord, OAuthService } from "../services.ts"
 import { checkedCredential, credentialOps } from "./items-workspace.ts"
-import { platformOAuthOps, workspaceAccessToken, workspaceOAuthMigration, workspaceOAuthOps } from "./oauth-workspace.ts"
+import { platformOAuthOps, workspaceAccessToken, workspaceOAuthClientRejectionMigration, workspaceOAuthMigration, workspaceOAuthOps } from "./oauth-workspace.ts"
 import { deviceCovers } from "./devices.ts"
 import { managedWorkWaits } from "../managed-platform.ts"
 import { MEMBER_REASON, intakes, requestedByOf, requesterOf } from "./intake.ts"
@@ -713,9 +713,14 @@ function reauthReason(ctx: VaultContext, conn: ConnectionRow, provider: OAuthPro
 // refusal cannot say whether that refresh replaced the token or the grant
 // was revoked or expired, so a time limit that was met still wins.
 export function reauthReasonAt(provider: OAuthProviderTemplate | null, displayName: string, times: { connectedAt: number | null; refreshedAt: number | null }, now: number, lostRotation: boolean): string {
+  // Testing ends a grant at its lifetime, so only a grant whose age fits it
+  // (from a day short of it to twice it, room for a run of failing days)
+  // and that never renewed past it is put down to Testing.
   const testing = provider?.lifetimes.testingModeRefreshSeconds
-  if (testing !== undefined && times.connectedAt !== null && now - times.connectedAt >= testing * 1000 - 86_400_000) {
-    const days = Math.round((now - times.connectedAt) / 86_400_000)
+  const age = times.connectedAt === null ? null : now - times.connectedAt
+  const renewedPast = times.connectedAt !== null && times.refreshedAt !== null && testing !== undefined && times.refreshedAt > times.connectedAt + testing * 1000
+  if (testing !== undefined && age !== null && age >= testing * 1000 - 86_400_000 && age <= testing * 2000 && !renewedPast) {
+    const days = Math.round(age / 86_400_000)
     return `${displayName} stopped accepting the sign-in about ${days} days after it was made, which is what happens when the OAuth app is in Testing. Set the app to "In production" on its consent screen, then reconnect`
   }
   const idle = provider?.lifetimes.refreshTokenIdleSeconds
@@ -1505,7 +1510,7 @@ function viewConnect(ctx: VaultContext, principal: Principal, input: unknown): C
 
 export const oauthArea: Area = {
   name: "oauth",
-  get migrations() { return [...oauthMigrations,workspaceOAuthMigration] },
+  get migrations() { return [...oauthMigrations,workspaceOAuthMigration,workspaceOAuthClientRejectionMigration] },
   get workspaceOps() { return { ...credentialOps(workspaceOAuthOps), ...platformOAuthOps } },
   async alarm(ctx, key) {
     if(key.startsWith("workspace-refresh:")){

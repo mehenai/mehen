@@ -257,6 +257,16 @@ export function pathPatternsOverlap(a: string, b: string): boolean {
   return meet(0, 0)
 }
 
+// Whether a restrictive pattern (a deny or approve rule, a floor) could
+// match some request a permissive pattern (a binding path) admits, read as
+// the relay reads it: the restrictive pattern loosely, against every loose
+// form of the permissive one (a format suffix or matrix parameters cut,
+// decoded, case folded). Uncertain cases count as meeting.
+export function restrictivePathMayMeet(restrictive: string, permissive: string): boolean {
+  const pattern = loosePath(restrictive)
+  return looseForms(permissive).some((form) => pathPatternsOverlap(pattern, form))
+}
+
 function methodListed(methods: string[] | undefined, method: string): boolean {
   return methods === undefined || methods.length === 0 || methods.some((m) => m.toUpperCase() === method || m === "*")
 }

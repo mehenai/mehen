@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { runInDurableObject } from "cloudflare:test"
 import { env } from "cloudflare:workers"
+import { evaluatePolicyFloor } from "@mehen/protocol/policy-safety"
+import { parseDestination } from "@mehen/protocol"
 import { describeItem, items } from "../src/vault/areas/items.ts"
 import { freshTenant } from "./helpers.ts"
 import { policyFixture } from "./policy-fixtures.ts"
@@ -31,4 +33,22 @@ describe("item policyFloor projection", () => {
       expect(wide).toEqual(expect.arrayContaining(["google-calendar.floor-1", "google-drive.floor-1"]))
     })
   })
+
+  // The relay matches a floor against every loose form of the path (a
+  // format suffix or matrix parameters cut, decoded, case folded), so the
+  // projection keeps every floor that could meet one of them: it never
+  // hides one the relay applies.
+  for (const path of ["/drive/v3/files/123/watch.json", "/drive/v3/files/123/watch;alt=json", "/drive/v3/files/123/%57atch"])
+    it(`lists every floor the relay applies at ${path}`, async () => {
+      await runInDurableObject(env.TENANT_VAULT.getByName(freshTenant()), async (instance) => {
+        const ctx = instance.context
+        await policyFixture(ctx, { slug: "drive-one", binding: { hosts: ["www.googleapis.com"], paths: [path] }, policy: { default: "allow", rules: [] }, provider: null })
+        const dest = parseDestination("POST", `https://www.googleapis.com${path}`)
+        if (!dest.ok) throw new Error(`destination ${path}`)
+        const applied = evaluatePolicyFloor({ destination: dest.destination, body: null })
+        expect(applied.action).toBe("deny")
+        const projected = describeItem(ctx, items.getItem(ctx, "drive-one")!).policyFloor!.map((floor) => floor.id)
+        expect(projected).toEqual(expect.arrayContaining(applied.reasons))
+      })
+    })
 })
