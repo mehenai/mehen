@@ -201,16 +201,22 @@ function mandateRpcMethod(host: string, segments: readonly string[]): MandateRpc
 // or alters what a chat sees: sendMessage, answerCallbackQuery,
 // editMessageText, postStory, approveSuggestedPost, giftPremiumSubscription,
 // stopPoll, setMessageReaction and the rest.
-const MANDATE_TELEGRAM_SEND_STARTS = ["send", "forward", "copy", "answer", "edit", "post", "approvesuggestedpost", "savepreparedinlinemessage", "gift", "upgradegift", "transfergift", "stoppoll", "stopmessagelivelocation", "repoststory", "setgamescore", "setmessagereaction"] as const
+const MANDATE_TELEGRAM_SEND_STARTS = ["send", "forward", "copy", "answer", "edit", "post", "approvesuggestedpost", "savepreparedinlinemessage", "gift", "upgradegift", "transfergift", "stoppoll", "stopmessagelivelocation", "repoststory", "setgamescore", "setmessagereaction", "pinchatmessage"] as const
 // The starts of the part of a Slack method after its last dot that read:
 // conversations.history, users.info, chat.getPermalink.
 const MANDATE_SLACK_READ_STARTS = ["list", "info", "history", "replies", "get", "lookup", "search", "members", "profile", "test", "count", "bots"] as const
 // The starts of that part that send: chat.postMessage, conversations.invite.
 const MANDATE_SLACK_SEND_STARTS = ["postmessage", "postephemeral", "memessage", "schedulemessage", "share", "invite"] as const
+// Whole Slack methods that alter what a conversation already sees, or put
+// something new in front of it, with no send word to find: an edit, an
+// unfurl, a streamed message, a file shared on upload, a reaction, a pin
+// (which Slack announces) and a topic or purpose (posted as a message).
+const MANDATE_SLACK_SEND_METHODS: ReadonlySet<string> = new Set(["chat.update", "chat.unfurl", "chat.startstream", "chat.appendstream", "chat.stopstream", "files.upload", "files.completeuploadexternal", "reactions.add", "reactions.remove", "pins.add", "conversations.settopic", "conversations.setpurpose"])
 // The facts a Telegram or Slack method gives on any HTTP method: an act
 // unless it reads (Telegram's get methods; a Slack method whose family is
 // search, or whose part after the last dot is letters starting with a read
-// word), and a send when it starts with a send word.
+// word), and a send when it starts with a send word or, on Slack, is one
+// of the whole methods that send.
 function rpcMethodFacts(rpc: MandateRpcMethod): MandateFact[] {
   if (rpc.service === "telegram-file") return []
   const facts: MandateFact[] = []
@@ -222,7 +228,7 @@ function rpcMethodFacts(rpc: MandateRpcMethod): MandateFact[] {
   const last = rpc.method.split(".").at(-1) ?? ""
   const reads = rpc.method.split(".")[0] === "search" || (/^[a-z]+$/.test(last) && MANDATE_SLACK_READ_STARTS.some((s) => last.startsWith(s)))
   if (!reads) facts.push("act")
-  if (MANDATE_SLACK_SEND_STARTS.some((s) => last.startsWith(s))) facts.push("send")
+  if (MANDATE_SLACK_SEND_STARTS.some((s) => last.startsWith(s)) || MANDATE_SLACK_SEND_METHODS.has(rpc.method)) facts.push("send")
   return facts
 }
 

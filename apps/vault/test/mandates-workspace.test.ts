@@ -695,6 +695,25 @@ describe("the relay on a mandate", () => {
     })
   })
 
+  // The template's floor reads slack.com alone; on a workspace host the
+  // method decides, and an edit of a message is a send.
+  it("asks, on a mandate with change ticked and send not, for Slack's chat.update on a workspace host, and lets a plain change through", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const item = await seedCredential(ctx, "acme-slack")
+      fixtureSql(ctx).exec("UPDATE items SET policy=?, binding=? WHERE id=?", JSON.stringify({ default: "approve", rules: [] }), JSON.stringify({ hosts: ["acme.slack.com"] }), item.id)
+      const { mandate } = await signMandate(ctx, "owner", terms({ items: [item.id], classes: ["change", "read"], caps: { read: 10, change: 10, send: 0, delete: 0 } }))
+      const post = (method: string) => relayAs(ctx, "dev_owner", { method: "POST", url: `https://acme.slack.com/api/${method}`, headers: [["content-type", "application/json"]], body: json({ channel: "C1", ts: "1700000000.000100", text: "Edited" }) }, "acme-slack")
+      expect((await post("bookmarks.add")).material?.mandate).toBe(mandate.id)
+      for (const method of ["chat.update", "reactions.add", "conversations.setTopic"]) {
+        const { error } = await post(method)
+        expect([method, error?.code, error?.extra.mandateCover]).toEqual([method, "approval_required", expect.objectContaining({ classes: expect.arrayContaining(["send"]), state: "unticked", mandate: mandate.id })])
+      }
+      expect((await relayAs(ctx, "dev_owner", { method: "GET", url: "https://acme.slack.com/api/chat.update?channel=C1&ts=1&text=Edited", headers: [] }, "acme-slack")).error?.code).toBe("approval_required")
+      expect(counts(ctx)).toEqual({ change: 1 })
+    })
+  })
+
   it("tells the machine a mandate could let an ask like this through, and why this one asked", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {

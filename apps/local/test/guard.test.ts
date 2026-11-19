@@ -198,6 +198,13 @@ describe("the management guard on the local edition", () => {
   test("refuses load_extension", () => {
     const ctx = workspace()
     for (const query of ["SELECT load_extension('x')", "select LOAD_EXTENSION ('x', 'entry')"]) expect([query, refusal(() => ctx.sql.exec(query).toArray())]).toEqual([query, expect.stringContaining("load_extension")])
+    // A quoted name is still the function; this SQLite has none
+    // ("no such function"), and the guard refuses it before SQLite sees it.
+    for (const query of [`SELECT "load_extension"('x')`, "SELECT [load_extension]('x')", "SELECT `load_extension`('x')", `SELECT "LOAD_Extension"('x')`, "SELECT [Load_Extension] /* c */ ('x')", `SELECT "load_extension" -- c\n('x')`]) {
+      expect([query, refusal(() => ctx.sql.exec(query).toArray())]).toEqual([query, "load_extension is never run."])
+      expect([query, refusal(() => latest().query(query).all())]).toEqual([query, expect.stringContaining("no such function")])
+    }
+    expect(ctx.sql.exec(`SELECT "upper"('x') AS v, 'load_extension(' AS w`).toArray()).toEqual([{ v: "X", w: "load_extension(" }])
   })
 
   // The raw database handle is a private field of the storage

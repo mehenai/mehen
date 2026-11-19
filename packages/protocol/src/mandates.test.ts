@@ -94,7 +94,7 @@ describe("mandateRequestFacts and mandateClassesOf on real routes", () => {
     ["deletemessage", ["change", "delete"]],
     ["deleteMyCommands", ["change", "delete"]],
     ["editMessageText", ["change", "send"]],
-    ["pinChatMessage", ["change"]],
+    ["pinChatMessage", ["change", "send"]],
     ["unpinAllChatMessages", ["change"]],
     ["setChatTitle", ["change"]],
     ["stopPoll", ["change", "send"]],
@@ -578,6 +578,55 @@ describe("mandateRequestFacts and mandateClassesOf on real routes", () => {
   test("Slack's chat.delete is never on slack.com, where the template's floor reads it as opaque, and a delete on a workspace host", () => {
     expect(classesOf(held(null, "GET", "https://slack.com/api/chat.delete"))).toBe("never")
     expect(classesOf(held(null, "GET", "https://acme.slack.com/api/chat.delete"))).toEqual(["change", "delete"])
+  })
+
+  // A Slack method that alters a message the conversation already sees,
+  // or puts one in front of it, is a send on every host and method: the
+  // template's floor covers slack.com alone, never a workspace subdomain.
+  test.each([
+    ["chat.update", ["change", "send"]],
+    ["CHAT.UPDATE", ["change", "send"]],
+    ["chat.unfurl", ["change", "send"]],
+    ["chat.startStream", ["change", "send"]],
+    ["chat.appendStream", ["change", "send"]],
+    ["chat.stopStream", ["change", "send"]],
+    ["files.upload", ["change", "send"]],
+    ["files.completeUploadExternal", ["change", "send"]],
+    ["reactions.add", ["change", "send"]],
+    ["reactions.remove", ["change", "delete", "send"]],
+    ["pins.add", ["change", "send"]],
+    ["conversations.setTopic", ["change", "send"]],
+    ["conversations.setPurpose", ["change", "send"]],
+    ["chat.delete", ["change", "delete"]],
+    ["chat.scheduleMessage", ["change", "send"]],
+    ["chat.updateX", ["change"]],
+    ["views.update", ["change"]],
+    ["files.remote.update", ["change"]],
+    ["bookmarks.edit", ["change"]],
+    ["reactions.get", ["read"]],
+  ] as [string, MandateClass[]][])("Slack %s on a workspace host gives %p, on a GET and a POST alike", (method, classes) => {
+    expect(classesOf(held(null, "GET", `https://acme.slack.com/api/${method}`))).toEqual(classes)
+    if (!classes.includes("read")) expect(classesOf(held(null, "POST", `https://acme.slack.com/api/${method}`, { channel: "C1", ts: "1", text: "hi" }))).toEqual(classes)
+  })
+
+  test("Slack's chat.update is a send on slack.com too, through the template and without it", () => {
+    expect(classesOf(held(null, "GET", "https://slack.com/api/chat.update"))).toEqual(["change", "send"])
+    expect(classesOf(held("slack-bot", "POST", "https://slack.com/api/chat.update", { channel: "C1", ts: "1", text: "hi" }))).toEqual(["change", "send"])
+  })
+
+  // Telegram's: an edit of a message is a send, a delete a delete, and a
+  // pin, which tells the chat's members by default, a send.
+  test.each([
+    ["editMessageText", ["change", "send"]],
+    ["editMessageCaption", ["change", "send"]],
+    ["editMessageMedia", ["change", "send"]],
+    ["editMessageReplyMarkup", ["change", "send"]],
+    ["deleteMessage", ["change", "delete"]],
+    ["deleteMessages", ["change", "delete"]],
+    ["pinChatMessage", ["change", "send"]],
+    ["unpinChatMessage", ["change"]],
+  ] as [string, MandateClass[]][])("Telegram GET %s gives %p", (method, classes) => {
+    expect(classesOf(held(null, "GET", `https://api.telegram.org/bot123456:TEST/${method}?chat_id=1&message_id=2`))).toEqual(classes)
   })
 
   test("Slack's send words add send on a POST too", () => {

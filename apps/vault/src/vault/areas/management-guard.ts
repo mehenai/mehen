@@ -182,8 +182,20 @@ const PLAIN_KEYWORDS: ReadonlySet<string> = new Set(["select", "insert", "update
 export function firstKeywords(query: string): string[] {
   return blank(query).split(";").filter((statement) => statement.trim() !== "").map((statement) => /^\s*([A-Za-z]+)/.exec(statement)?.[1]?.toLowerCase() ?? "?")
 }
+// Comments, string literals and quoted names, in the order SQLite reads them.
+const LEXEMES = /--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]/g
 // Comments become space, string literals and quoted names a placeholder.
-const blank = (query: string): string => query.replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]/g, (match) => (match.startsWith("--") || match.startsWith("/*") ? " " : " ? "))
+const blank = (query: string): string => query.replace(LEXEMES, (match) => (match.startsWith("--") || match.startsWith("/*") ? " " : " ? "))
+// As blank, but a quoted name becomes the name it quotes, since SQLite calls
+// "load_extension"(...), [load_extension](...) and `load_extension`(...)
+// as it calls load_extension(...).
+const dequoted = (query: string): string => query.replace(LEXEMES, (match) => {
+  if (match.startsWith("--") || match.startsWith("/*")) return " "
+  if (match.startsWith("'")) return " ? "
+  if (match.startsWith("[")) return ` ${match.slice(1, -1)} `
+  const quote = match[0] ?? ""
+  return ` ${match.slice(1, -1).replaceAll(quote + quote, quote)} `
+})
 // Refuses, failing closed: a statement that names the guard's own tables,
 // anywhere in its text, the ROLLBACK conflict algorithm (which ends the
 // transaction it runs in) and load_extension, whatever the scope; and,
@@ -193,7 +205,7 @@ export function assertPlainStatement(storage: object, query: string): void {
   if (query.toLowerCase().includes(GUARD_PREFIX)) throw new VaultError("internal", "The management guard's own tables are reached only through the guard.")
   const blanked = blank(query).toLowerCase()
   if (/\bor\s+rollback\b/.test(blanked)) throw new VaultError("internal", "OR ROLLBACK ends the transaction it runs in, so the vault never runs it.")
-  if (/\bload_extension\s*\(/.test(blanked)) throw new VaultError("internal", "load_extension is never run.")
+  if (/\bload_extension\s*\(/.test(dequoted(query).toLowerCase())) throw new VaultError("internal", "load_extension is never run.")
   if (managementScope(storage).trusted > 0 || query === MINIFLARE_NAME_TABLE) return
   const word = firstKeywords(query).find((keyword) => !PLAIN_KEYWORDS.has(keyword))
   if (word !== undefined) throw new VaultError("internal", `A ${word === "?" ? "statement without a readable keyword" : `${word.toUpperCase()} statement`} runs only in a migration or a restore.`)

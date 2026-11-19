@@ -21,6 +21,8 @@ const refusal = (run: () => unknown): string | null => {
   try { run(); return null } catch (error) { return error instanceof Error ? error.message : String(error) }
 }
 const GUARDED = "management_guard"
+// load_extension called by a quoted name, in mixed case, and across a comment.
+const LOAD_EXTENSION_SPELLINGS = [`SELECT "load_extension"('x')`, "SELECT [load_extension]('x')", "SELECT `load_extension`('x')", `SELECT "LOAD_Extension"('x')`, "SELECT [Load_Extension] /* c */ ('x')", `SELECT "load_extension" -- c\n('x')`, "SELECT load_extension/**/('x')", `SELECT "load_extension"('y') AS a, "load""_extension" AS b`]
 // Runs a change and rolls it back, answering why it was refused or null.
 function tried(ctx: VaultContext, marked: boolean, change: () => void): string | null {
   return refusal(() => ctx.storage.transactionSync(() => {
@@ -338,6 +340,13 @@ describe("statements that would end the transaction under the guard", () => {
     const tenant = await fixture()
     await inAccess(tenant, (ctx) => {
       expect(refusal(() => ctx.sql.exec("SELECT load_extension('x')"))).toMatch(/load_extension/)
+      // A quoted name is still the function: workerd's own authorizer would
+      // refuse each ("not authorized"), and the guard refuses it first.
+      for (const query of LOAD_EXTENSION_SPELLINGS) {
+        expect([query, refusal(() => ctx.sql.exec(query))]).toEqual([query, "load_extension is never run."])
+        expect([query, refusal(() => runUncheckedForTests(ctx, query))]).toEqual([query, expect.stringContaining("not authorized")])
+      }
+      expect(ctx.sql.exec(`SELECT "upper"('x') AS v, 'load_extension(' AS w`).toArray()).toEqual([{ v: "X", w: "load_extension(" }])
       fixtureSql(ctx).exec("INSERT INTO tenant_state(key,value) VALUES ('or rollback', 'load_extension(x)') -- or rollback")
       expect(ctx.sql.exec("SELECT value FROM tenant_state WHERE key='or rollback'").toArray()).toEqual([{ value: "load_extension(x)" }])
     })
