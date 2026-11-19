@@ -3,37 +3,28 @@ on: pull_request
 permissions:
   contents: read
 jobs:
-  probe:
+  gallery-like:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - run: |
-          set +e
-          C=/usr/bin/google-chrome
-          echo "cpus $(nproc); mem $(free -m | awk '/Mem/ {print $2}') MB; chrome $(du -sh /opt/google/chrome | cut -f1)"
-          probe() {
-            name=$1; shift
-            p=$(mktemp -d); start=$(date +%s%N)
-            "$C" --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run --no-default-browser-check "$@" about:blank 2> "$p.err" &
-            pid=$!
-            until [ -s "$p/DevToolsActivePort" ]; do
-              [ $(( ($(date +%s%N) - start) / 1000000 )) -gt 90000 ] && { echo TIMEOUT; break; }
-              sleep 0.02
-            done
-            echo "== $name: $(( ($(date +%s%N) - start) / 1000000 )) ms (stderr $(wc -l < "$p.err") lines, $(grep -vc 'dbus' "$p.err") not about dbus)"
-            kill $pid 2>/dev/null; wait $pid 2>/dev/null; sleep 0.3
-            rm -rf "$p" "$p.err" 2>/dev/null
-          }
-          drop() { sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null; }
-          load() { for i in $(seq 1 $(nproc)); do (timeout 120 sh -c 'while :; do :; done') & done; (timeout 120 sh -c 'while :; do dd if=/dev/zero of=$RUNNER_TEMP/io.$$ bs=1M count=512 oflag=direct status=none; rm -f $RUNNER_TEMP/io.$$; done') & }
-          unload() { pkill -f "while :; do" 2>/dev/null; sleep 1; }
-          probe first-start-of-the-job
-          probe warm
-          drop; probe cold-cache
-          drop; probe cold-cache-again
-          drop; load; sleep 2; probe cold-cache-under-cpu-and-io-load; unload
-          load; sleep 2; probe warm-under-load; unload
-          drop; load; sleep 2; probe cold-under-load-all-flags --password-store=basic --use-mock-keychain --disable-background-networking --disable-component-update --disable-sync --no-proxy-server --disable-gpu; unload
-          drop; t=$(date +%s%N); cat /opt/google/chrome/chrome /opt/google/chrome/*.so* /opt/google/chrome/*.pak /opt/google/chrome/icudtl.dat /opt/google/chrome/*.bin > /dev/null 2>&1; echo "read ahead: $(( ($(date +%s%N) - t) / 1000000 )) ms"; probe after-read-ahead
-          drop; load; sleep 2; t=$(date +%s%N); cat /opt/google/chrome/chrome /opt/google/chrome/*.so* /opt/google/chrome/*.pak /opt/google/chrome/icudtl.dat /opt/google/chrome/*.bin > /dev/null 2>&1; echo "read ahead under load: $(( ($(date +%s%N) - t) / 1000000 )) ms"; probe after-read-ahead-under-load; unload
-          for i in 1 2 3; do drop; load; sleep 2; probe cold-under-load-$i; unload; done
+      - run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: the gallery launcher, first thing, as CI runs it
+        run: bun probe-launch.ts
+      - name: the same with TMPDIR at /tmp
+        run: TMPDIR=/tmp bun probe-launch.ts
+      - name: shell start with TMPDIR at the runner's temp, then /tmp
+        run: |
+          for d in "$RUNNER_TEMP" /tmp "$RUNNER_TEMP" /tmp; do
+            p=$(mktemp -d -p "$d"); s=$(date +%s%N)
+            TMPDIR=$d /usr/bin/google-chrome --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run about:blank 2>"$d/err.$$" & pid=$!
+            until [ -s "$p/DevToolsActivePort" ]; do sleep 0.02; [ $(( ($(date +%s%N)-s)/1000000 )) -gt 60000 ] && break; done
+            echo "profile in $d: $(( ($(date +%s%N)-s)/1000000 )) ms"; kill $pid; wait $pid 2>/dev/null; grep -v dbus "$d/err.$$" | head -5
+          done
+          df -h "$RUNNER_TEMP" /tmp | cat
+      - name: the CLI's real Chrome test, alone
+        run: bun test --timeout 30000 apps/cli/src/browser/page-check.chrome.test.ts 2>&1 | tail -5
