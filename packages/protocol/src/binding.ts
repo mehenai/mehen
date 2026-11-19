@@ -263,11 +263,20 @@ export function pathPatternsOverlap(a: string, b: string): boolean {
 // form of the permissive one (a format suffix or matrix parameters cut,
 // decoded, case folded). A * in the permissive pattern admits one segment,
 // which loose reading may split into several (a fullwidth solidus
-// normalises to "/"), so it is read as **. Uncertain cases count as meeting.
+// normalises to "/"), so it is read as **; and loose reading may end the
+// path inside it (a fullwidth "#" or "?" normalises to one), dropping what
+// follows, so the path up to it followed by ** is read too. Uncertain cases
+// count as meeting.
 export function restrictivePathMayMeet(restrictive: string, permissive: string): boolean {
   const pattern = loosePath(restrictive)
-  const anySegments = (form: string) => form.split("/").map((segment) => segment === "*" ? "**" : segment).join("/")
-  return looseForms(permissive).some((form) => pathPatternsOverlap(pattern, anySegments(form)))
+  const readings = (form: string): string[] => {
+    const segments = form.split("/")
+    const wild = (segment: string) => segment.includes("*")
+    const spread = segments.map((segment) => wild(segment) ? "**" : segment)
+    const ended = segments.flatMap((segment, at) => wild(segment) ? [[...spread.slice(0, at), "**"].join("/")] : [])
+    return [spread.join("/"), ...ended]
+  }
+  return looseForms(permissive).some((form) => readings(form).some((reading) => pathPatternsOverlap(pattern, reading)))
 }
 
 function methodListed(methods: string[] | undefined, method: string): boolean {

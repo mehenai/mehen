@@ -1058,6 +1058,38 @@ it("a rejected client pauses every connection that uses it, with one notice and 
   })
 })
 
+// An agent's reconnect link to a dead connection, still open when another
+// connection finds the client rejected, cannot start until the client's
+// secret is replaced: a person sees only the client's row, and the machine
+// still sees its own ask.
+it("a rejected client hides an open reconnect to a connection it paused from people, beside its own row", async () => {
+  const { deviceInvocation, devicePrincipal } = await import("./credentials-test-support.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const first = await connected(ctx)
+    const again = createWorkspaceConnect(ctx, memberPrincipal(ctx), { provider: "google-gmail", client: "google-client", slug: "gmail-other", home: "workspace" }, memberInvocation(ctx))
+    const action = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, memberPrincipal(ctx), { connect: again.connect }, memberInvocation(ctx)))
+    await startWorkspaceConnect(ctx, memberPrincipal(ctx), { connect: again.connect, state: "state-other-123456789" }, memberInvocation(ctx, "owner", action))
+    upstream()
+    await finishWorkspaceConnect(ctx, memberPrincipal(ctx), { connect: again.connect, state: "state-other-123456789", code: "code-other", error: null }, memberInvocation(ctx))
+    const second = checkedCredential(ctx, "gmail-other")!
+    // A loses its grant, and an agent opens a reconnect link to it.
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, first.id)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_grant" }, { status: 400 }))
+    await expect(workspaceAccessToken(ctx, first)).rejects.toMatchObject({ code: "needs_reauth" })
+    const machine = devicePrincipal("dev_admin"), asked = await deviceInvocation(ctx, "dev_admin")
+    createWorkspaceConnect(ctx, machine, { provider: "google-gmail", client: "google-client", slug: "gmail-test", home: "workspace", reason: "Reconnect the inbox" }, asked)
+    // Then B finds the provider rejecting the client.
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, second.id)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_client" }, { status: 401 }))
+    await expect(workspaceAccessToken(ctx, second)).rejects.toMatchObject({ code: "needs_reauth" })
+    expect((await needsYouRows(ctx)).map((r) => [r.kind, r.id])).toEqual([["review", "google-client"]])
+    const { credentialPending } = await import("../src/vault/areas/credentials-pending.ts")
+    const own = credentialPending(ctx, machine, asked).flatMap((r) => r.view === "detail" ? [r.detail] : [])
+    expect(own.map((r) => [r.kind, r.item])).toEqual([["connect", "gmail-test"]])
+  })
+})
+
 // Restoring a client's previous secret replaces its secret too, so it
 // clears the provider's rejection as a new secret does; any other review
 // reason stays.

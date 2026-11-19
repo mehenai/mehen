@@ -39,6 +39,16 @@ export function credentialPending(ctx: VaultContext, principal: AccessPrincipal,
     // createdAt for people only: a 0.2.0 CLI decodes a machine's asks strictly.
     result.push({ workspace: invocation.workspace, owner, view: "detail", detail: { kind: row.kind === "connect" ? "connect" : "intake", id: row.id, title: row.kind === "connect" ? `Connect ${row.slug}` : `Add ${row.slug}`, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/${row.kind === "connect" ? "c" : "i"}/${row.id}`, expiresAt: new Date(row.expires_at).toISOString(), requestedBy: row.requester_device ? { device: row.requester_device, deviceName: devicePolicyState(ctx, row.requester_device)?.name ?? row.requester_device, session: null, ...(principal.kind === "member" ? askingWorkload(ctx, row.requester_workload) : {}) } : { member: row.requester_member ?? "", self: principal.kind === "member" && principal.memberId === row.requester_member }, item: item?.slug ?? row.slug, provider: payload.provider ?? null, ...(payload.kind ? { kindRequested: payload.kind } : {}), ...(payload.expect ? { account: payload.expect } : {}), ...(principal.kind === "member" ? { createdAt: new Date(row.created_at).toISOString() } : {}) } })
   }
+  // An open connect to a connection whose client the provider rejected
+  // cannot start until the client's secret is replaced, so a person is not
+  // shown it: the client's own row stands for it. The machine that asked
+  // still sees its ask and waits on it.
+  const paused = connectionsPausedByClient(ctx)
+  if (principal.kind === "member" && paused.size > 0) {
+    const pausedSlugs = new Set([...paused.keys()].flatMap((id) => rows(ctx.sql.exec<{ slug: string }>("SELECT slug FROM items WHERE id=?", id)).map((r) => r.slug)))
+    for (const r of result.filter((r) => r.view === "detail" && r.detail.kind === "connect" && pausedSlugs.has(r.detail.item)))
+      result.splice(result.indexOf(r), 1)
+  }
   if (principal.kind === "device" || guest)
     return result
   // A connection that needs reconnecting is listed, with why, to whoever may
@@ -46,7 +56,6 @@ export function credentialPending(ctx: VaultContext, principal: AccessPrincipal,
   // client the provider rejected is not: its client is listed instead, to
   // whoever may replace the client's secret, until it is replaced.
   const owner = { kind: "member" as const, member: principal.memberId, name: state.members.find(m => m.id === principal.memberId)?.name ?? "" }
-  const paused = connectionsPausedByClient(ctx)
   for (const client of new Set(paused.values())) {
     const item = rows(ctx.sql.exec<{ slug: string }>("SELECT slug FROM items WHERE id=?", client))[0]
     const stored = item ? checkedCredential(ctx, item.slug) : null

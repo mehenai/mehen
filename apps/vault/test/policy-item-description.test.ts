@@ -54,6 +54,25 @@ describe("item policyFloor projection", () => {
     })
   })
 
+  // A * segment can also normalise to "#" or "?" under loose reading and so
+  // end the path there: Graph's $batch floor applies to such a request, so
+  // the projection lists it though the binding names a segment after it.
+  it("lists the floor a request admitted by a * segment meets once its segment ends the path under loose reading", async () => {
+    await runInDurableObject(env.TENANT_VAULT.getByName(freshTenant()), async (instance) => {
+      const ctx = instance.context
+      const binding = { hosts: ["graph.microsoft.com"], paths: ["/v1.0/*/tail"] }
+      await policyFixture(ctx, { slug: "graph-tail", binding, policy: { default: "allow", rules: [] }, provider: null })
+      const dest = parseDestination("POST", "https://graph.microsoft.com/v1.0/$batch%EF%BC%83/tail")
+      if (!dest.ok) throw new Error("destination")
+      expect(checkBinding(binding, dest.destination).ok).toBe(true)
+      const applied = evaluatePolicyFloor({ destination: dest.destination, body: null })
+      const floors = applied.reasons.filter((reason) => POLICY_FLOOR.some((f) => f.id === reason))
+      expect(floors.length).toBeGreaterThan(0)
+      const projected = describeItem(ctx, items.getItem(ctx, "graph-tail")!).policyFloor!.map((floor) => floor.id)
+      expect(projected).toEqual(expect.arrayContaining(floors))
+    })
+  })
+
   // The relay matches a floor against every loose form of the path (a
   // format suffix or matrix parameters cut, decoded, case folded), so the
   // projection keeps every floor that could meet one of them: it never

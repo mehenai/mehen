@@ -261,6 +261,10 @@ describe("restrictivePathMayMeet", () => {
     expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/about/*")).toBe(false)
     // A glob still meets what it could cover.
     expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/**")).toBe(true)
+    // A * segment may also end the path under loose reading (a fullwidth "#"
+    // or "?" normalises to one), dropping what the binding puts after it.
+    expect(restrictivePathMayMeet("/v1.0/$batch", "/v1.0/*/tail")).toBe(true)
+    expect(restrictivePathMayMeet("/v1.0/$batch", "/v2.0/*/tail")).toBe(false)
   })
 })
 
