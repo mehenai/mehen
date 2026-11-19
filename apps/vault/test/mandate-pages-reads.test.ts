@@ -237,6 +237,29 @@ describe("the mandate pages", () => {
     expect(page).not.toContain('data-region="mandate-renews"')
   })
 
+  it("prefills only from an open, bound proposal: a closed legacy one or an expired one opens narrow, with its terms as text behind Use these terms", async () => {
+    const base = { id: "mdp_tomlaptop0000000001", device: { id: fx.PEOPLE_DEVICE.device, name: fx.PEOPLE_DEVICE.name }, items: [{ id: "itm_githubtom0000001", slug: "github-tom" }], hiddenItems: 0, classes: ["change", "delete", "read", "send"], caps: { read: 50_000, change: 10_000, send: 500, delete: 200 }, ttlDays: 90, schedule: null, note: "Everything", reason: "Everything", mandate: null, createdAt: "2026-11-01T09:00:00.000Z", expiresAt: "2026-11-08T09:00:00.000Z" }
+    const legacy = { ...base, state: "expired", items: [], unbound: ["github-tom"], closedReason: "unbound" }
+    const expired = { ...base, state: "expired" }
+    const boot = (page: string) => JSON.parse((/data-boot="([^"]*)"/.exec(page)?.[1] ?? "{}").replace(/&quot;/g, '"').replace(/&amp;/g, "&")) as { proposal?: string | null }
+    for (const [name, proposal] of [["legacy", legacy], ["expired", expired]] as const) {
+      vault.answers.set(`/mandate-proposals/${base.id}`, proposal)
+      const page = await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })
+      const { live, source } = parts(page)
+      expect([checkedItems(live), checkedClasses(live), ttl(live)], name).toEqual([[], ["read"], "30"])
+      expect(live, name).toContain('data-action="mandate-use-source"')
+      expect(boot(page).proposal, name).toBeNull()
+      expect(checkedClasses(source), name).toEqual(["read", "change", "send", "delete"])
+      expect(source, name).toContain('data-input="mandate-ttl" value="90" checked')
+    }
+    // The open, bound one still opens on its terms, signed against it.
+    vault.answers.set(`/mandate-proposals/${base.id}`, { ...base, state: "open" })
+    const open_ = await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })
+    expect(checkedClasses(parts(open_).live)).toEqual(["read", "change", "send", "delete"])
+    expect(boot(open_).proposal).toBe(base.id)
+    expect(open_).not.toContain('data-action="mandate-use-source"')
+  })
+
   it("names a renewed mandate's terms as text with Use these terms, and opens the form narrow, even for an expired broad one", async () => {
     vault.answers.set(`/mandates/${MANDATE().id}`, broad())
     const page = await open(pages.sign, {}, { viewer: TOM, query: `?renew=${MANDATE().id}` })

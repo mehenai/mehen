@@ -68,7 +68,7 @@ async function signPage(rc: RequestContext, page: WorkspacePageContext): Promise
     device = renews.device.id
   }
   if (device === null || !DEVICE_ID.test(device)) return noSuch(page, "machine")
-  // ?from=: another machine's mandate, whose terms this one starts on.
+  // ?from=: another machine's mandate, whose terms are offered as a source.
   let from: MandateView | null = null
   if (proposal === null && renews === null && fromId !== null) {
     if (!MANDATE_ID.test(fromId)) return noSuch(page, "mandate")
@@ -85,7 +85,8 @@ async function signPage(rc: RequestContext, page: WorkspacePageContext): Promise
   if (!candidates.ok && candidates.error.error === "frozen") return refused(page.shell, candidates)
   const named = candidates.ok ? candidates.value : null
   // A mandate renewed or copied only names a source: its terms wait behind
-  // Use these terms, and the form opens narrow.
+  // Use these terms, and the form opens narrow. So does a proposal that is
+  // not open and bound (mandateSignPage).
   const start = proposal !== null ? proposalStart(proposal) : mandateSignDefaults(machine.value.name)
   const sourced = renews ?? from
   const source = proposal === null && sourced !== null ? { kind: renews !== null ? "renew" as const : "from" as const, mandate: sourced, start: renewStart(sourced, named) } : null

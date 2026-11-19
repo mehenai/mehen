@@ -6,7 +6,7 @@
 // only for who may press them (5.2), the vault deciding every press; the
 // browser side is client/pages/mandates.ts and client/mandate-sign.ts.
 
-import { MANDATE_CAP_DEFAULTS, MANDATE_CAP_MAX, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_CLASSES, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MANDATE_ENDING_NOTICE_MS, MANDATE_LIVE_STATES, MANDATE_NOTE_MAX, MANDATE_TTL_DAYS, type MandateCandidates, type MandateClass, type MandateList, type MandateOpenProposal, type MandateProposalView, type MandateReceiptView, type MandateReceiptsPage, type MandateSchedule, type MandateTtlDays, type MandateView } from "@mehen/protocol/mandate-terms"
+import { MANDATE_CAP_MAX, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_CLASSES, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MANDATE_ENDING_NOTICE_MS, MANDATE_LIVE_STATES, MANDATE_NOTE_MAX, MANDATE_TTL_DAYS, type MandateCandidates, type MandateClass, type MandateList, type MandateOpenProposal, type MandateProposalView, type MandateReceiptView, type MandateReceiptsPage, type MandateSchedule, type MandateTtlDays, type MandateView } from "@mehen/protocol/mandate-terms"
 import type { WorkspaceDeviceView } from "@mehen/protocol/workspace"
 import { spellCardText } from "../../relay/spelling.ts"
 import { cardText, emptyState, kv, notice, pageHead, pill, row, timeTag } from "../components.ts"
@@ -16,7 +16,7 @@ import type { PageInput } from "../layout.ts"
 import { type WorkspaceShell, workspaceHref } from "../shell.ts"
 import {
   MANDATE_ALL_CREDENTIALS, MANDATE_ALWAYS_WORDS, MANDATE_CANDIDATES_UNREAD_WORDS, MANDATE_CAPS_LABEL, MANDATE_CAPS_WORDS, MANDATE_CARD_LEAD, MANDATE_CARD_TITLE, MANDATE_CLASS_CHOICES, MANDATE_CLASSES_LABEL, MANDATE_HIDDEN_CREDENTIAL, MANDATE_ITEMS_LABEL,
-  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, mandateProposalUnboundWords, MANDATE_SOURCE_RENEW_WORDS, MANDATE_USE_SOURCE_BUTTON, mandateSourceFromWords,
+  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, mandateProposalUnboundWords, MANDATE_SOURCE_RENEW_WORDS, MANDATE_SOURCE_PROPOSAL_WORDS, MANDATE_USE_SOURCE_BUTTON, mandateSourceFromWords,
   MANDATE_RECEIPTS_EMPTY, MANDATE_RECEIPTS_LEAD, MANDATE_RECEIPTS_OLDER, MANDATE_RECEIPTS_TITLE, MANDATE_RENEW_LINK, MANDATE_SIGN_AGAIN_LINK, MANDATE_REPLACED_WORDS, MANDATE_REPLACES_WORDS, MANDATE_RESUME_BUTTON, MANDATE_RESUME_HINT, MANDATE_SCHEDULE_HINT, MANDATE_SCHEDULE_LABELS,
   MANDATE_SCHEDULE_TICK, MANDATE_SIGN_BUTTON, MANDATE_SIGN_EYEBROW, MANDATE_SIGN_LEAD, MANDATE_STATE_PILLS, MANDATE_STATE_WORDS, MANDATE_STOP_BUTTON, MANDATE_STOP_TITLE, MANDATE_STOP_WORDS, MANDATE_SUMMARY_TITLE, MANDATE_TEAM_MACHINE_WORDS, MANDATE_TERM_LABELS,
   MANDATE_TRUST_BUTTON, MANDATE_TTL_LABEL, MANDATE_UNREVIEWED_ENTRY, MANDATE_WAITING_LEAD, MANDATE_WAITING_OPEN, MANDATE_WAITING_TITLE, type MandateSummaryInput, machinesCarryingOnWords, machinesNeedResumeWords, mandateAllItemsWords, mandateCapHint, mandateClassWords, mandateDayWords, mandateDefaultNote, mandateEndsInWords, mandateHiddenItemsWords, mandateLapsedWords, mandateNotOwnerWords, mandatePauseAllConfirmWords, mandateSignSameWords,
@@ -303,8 +303,9 @@ export function mandateStrip(shell: WorkspaceShell, machines: number | null, res
 
 // ---------------------------------------------------------------- the sign page
 
-// What the form opens on: a proposal's terms, a renewed mandate's, or the
-// defaults: read alone ticked, every cap at its default, 30 days.
+// What the form opens on: an open, bound proposal's terms, or the
+// defaults: read alone ticked, every cap at a machine's proposal default,
+// 30 days. A renewed, copied or closed one's terms are a source instead.
 export type MandateSignStart = { classes: MandateClass[]; caps: Record<MandateClass, number>; items: "all" | string[]; ttlDays: MandateTtlDays; schedule: MandateSchedule | null; note: string }
 
 // Without a proposal: the narrowest terms, read alone ticked, no
@@ -326,7 +327,7 @@ export type MandateSignData = {
   renews: MandateView | null
   // A mandate renewed or copied from, whose terms the person may choose to
   // use with one press; the form opens on start, never on these.
-  source?: { kind: "renew" | "from"; mandate: MandateView; start: MandateSignStart } | null
+  source?: { kind: "renew" | "from" | "proposal"; mandate?: MandateView; start: MandateSignStart } | null
   replaces: MandateView | null
   now: number
 }
@@ -415,12 +416,21 @@ function formBody(data: MandateSignData, start: MandateSignStart): Html {
 function sourceCard(machine: string, data: MandateSignData): Html {
   const source = data.source
   if (!source) return html``
-  const words = source.kind === "renew" ? MANDATE_SOURCE_RENEW_WORDS : mandateSourceFromWords(source.mandate.device.name)
+  const words = source.kind === "renew" ? MANDATE_SOURCE_RENEW_WORDS : source.kind === "proposal" ? MANDATE_SOURCE_PROPOSAL_WORDS : mandateSourceFromWords(source.mandate?.device.name ?? machine)
   const lines = mandateSummaryOf(machine, { ...source.start, note: source.start.note || "-" }, data.candidates, data.now) ?? []
   return html`<section class="card stack" data-region="mandate-source"><p>${cardText(words)}</p>${lines.map((line) => html`<p class="small">${cardText(line)}</p>`)}<div class="actions"><button type="button" class="btn secondary sm" data-action="mandate-use-source">${MANDATE_USE_SOURCE_BUTTON}</button></div></section>`
 }
 
-export function mandateSignPage(shell: WorkspaceShell, data: MandateSignData): PageInput {
+// Only an open proposal bound to the credentials it named fills the form;
+// any other's terms wait behind Use these terms, as a renewal's do.
+const boundOpen = (p: MandateProposalView): boolean => p.state === "open" && p.unbound === undefined && p.closedReason === undefined
+function settled(data: MandateSignData): MandateSignData {
+  if (data.proposal === null || boundOpen(data.proposal)) return data
+  return { ...data, start: mandateSignDefaults(data.device.name), source: { kind: "proposal", start: data.start } }
+}
+
+export function mandateSignPage(shell: WorkspaceShell, given: MandateSignData): PageInput {
+  const data = settled(given)
   const refusal = signRefusal(shell, data)
   const name = data.device.name
   const head = pageHead({ tile: kindTile("machine", undefined, "lg", name), eyebrow: MANDATE_SIGN_EYEBROW, title: cardText(mandateSignTitle(name)), lead: MANDATE_SIGN_LEAD })
@@ -429,7 +439,7 @@ export function mandateSignPage(shell: WorkspaceShell, data: MandateSignData): P
   }
   const summary = mandateSummaryOf(name, data.start, data.candidates, data.now)
   const proposal = data.proposal
-  const open = proposal !== null && proposal.state === "open"
+  const open = proposal !== null && boundOpen(proposal)
   return {
     title: spellCardText(mandateSignTitle(name)),
     viewer: null,

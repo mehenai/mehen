@@ -1627,6 +1627,7 @@ export const MANDATE_SOURCE_RENEW_WORDS = "You are signing again a mandate this 
 export function mandateSourceFromWords(machine: string): string {
   return `You are copying terms from ${machine}'s mandate. The form starts on the narrowest terms; those terms are:`
 }
+export const MANDATE_SOURCE_PROPOSAL_WORDS = "This proposal can no longer be signed as it stands. The form starts on the narrowest terms; it proposed:"
 export const MANDATE_USE_SOURCE_BUTTON = "Use these terms"
 export const MANDATE_PROPOSAL_SUPERSEDED_WORDS = "This proposal closed because a mandate was signed for this machine since. You may still sign these terms to replace it."
 export function mandateNotOwnerWords(owner: string): string {

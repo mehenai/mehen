@@ -136,6 +136,22 @@ describe("the mandate gallery", () => {
     expect(terms(VIEWERS.owner, { ...everything, signer: { name: "Tom Barker", self: false } })).toContain('<span data-region="mandate-items">Every credential it can use whose home Tom Barker manages, now and later</span>')
   })
 
+  it("renews behind Use these terms: the form opens narrow, the old terms shown in words with the button, filled in only from the template", () => {
+    const page = shown("ws-mandate-sign-renew")
+    const live = page.slice(0, page.indexOf('<template data-region="mandate-source-form">'))
+    expect(live).toContain('data-region="mandate-source"')
+    expect(live).toContain('data-action="mandate-use-source"')
+    expect(live).toContain('data-input="mandate-ttl" value="30" checked')
+    expect(page).toContain('<template data-region="mandate-source-form">')
+  })
+
+  it("shows a closed proposal's terms only behind Use these terms, never in the live form", () => {
+    const page = shown("ws-mandate-sign-superseded")
+    const live = page.slice(0, page.indexOf('<template data-region="mandate-source-form">'))
+    expect(live).toContain('data-action="mandate-use-source"')
+    expect([...live.matchAll(/data-input="mandate-class" value="(\w+)" checked/g)].map((m) => m[1])).toEqual(["read"])
+  })
+
   it("opens fresh on the narrowest terms: read alone, every cap at a machine's proposal default, a note naming the machine, 30 days and nothing to sign yet", () => {
     const page = shown("ws-mandate-sign")
     expect(page).toContain('data-input="mandate-class" value="read" checked disabled')
