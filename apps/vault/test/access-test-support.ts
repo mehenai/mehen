@@ -8,7 +8,7 @@ import { installIdentity, memberRows, newMember, registerAccessStateProvider, re
 import { workspaceAccessState } from "./workspace-fixtures.ts"
 import { freshTenant } from "./helpers.ts"
 import { fixtureSql } from "./fixture-sql.ts"
-import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
+import { GUARD_PREFIX, withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 // Test-only seed. No production operation imports or exposes this function.
 export function seedAccessStateForTests(ctx: VaultContext, state: AccessState): void {
@@ -41,7 +41,7 @@ export function accountAuth(role = "owner", action?: AccountInvocationAuth["step
 export function workspaceInvoke(tenant: string, op: string, input: unknown, auth: WorkspaceInvocation["auth"] = accountAuth()): Promise<import("../src/vault/core.ts").InvocationResult> { return env.TENANT_VAULT.getByName(tenant).invoke({ op, input, auth }) }
 // The data, never the management guard's own tables, whose revision counts
 // writes rather than holding state.
-export async function accessSnapshot(tenant: string): Promise<string> { return inAccess(tenant, (ctx) => canonicalJson(ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*' AND name NOT GLOB '_mehen_*' ORDER BY name").toArray().map(({ name }) => ({ name, rows: ctx.sql.exec(`SELECT * FROM ${name}`).toArray() })))) }
+export async function accessSnapshot(tenant: string): Promise<string> { return inAccess(tenant, (ctx) => canonicalJson(ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*' ORDER BY name").toArray().filter(({ name }) => !name.startsWith(GUARD_PREFIX)).map(({ name }) => ({ name, rows: ctx.sql.exec(`SELECT * FROM ${name}`).toArray() })))) }
 
 export function registerFixtureLifecycleHooks(): void {
   // Explicit doubles for resources owned by the parallel lanes.

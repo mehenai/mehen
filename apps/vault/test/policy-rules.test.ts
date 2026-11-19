@@ -866,7 +866,7 @@ describe("the request bytes the vault keeps", () => {
       withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [policyArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='policy'").toArray()[0]!.applied).toBe(policyArea.migrations.length)
       expect(bytesOf(ctx, approval)).toBe(1)
-      expect(ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT source FROM policy_rule_anchors WHERE created_at<=?", 0).toArray().map((r) => r.detail).join(" ")).toContain("policy_rule_anchors_created")
+      expect(withTrustedSchema(ctx, () => ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT source FROM policy_rule_anchors WHERE created_at<=?", 0)).toArray().map((r) => r.detail).join(" ")).toContain("policy_rule_anchors_created")
     })
   })
 
@@ -890,7 +890,7 @@ describe("the request bytes the vault keeps", () => {
       expect(rule).not.toHaveProperty("kind")
       setUpstreamFetch(async () => new Response("ok"))
       expect((await relay(ctx, linearCall(comment("Second")))).material?.rules).toEqual([rule!.id])
-      expect(ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT * FROM policy_rules WHERE item_id=? AND device=? AND kind='area' AND ended_at IS NULL", "x", "y").toArray().map((r) => r.detail).join(" ")).toContain("policy_rules_kind")
+      expect(withTrustedSchema(ctx, () => ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT * FROM policy_rules WHERE item_id=? AND device=? AND kind='area' AND ended_at IS NULL", "x", "y")).toArray().map((r) => r.detail).join(" ")).toContain("policy_rules_kind")
     })
   })
 
@@ -1821,7 +1821,7 @@ describe("the POLICY_RULES switch and managed workspaces", () => {
   it("reads an approval's rule, a machine's rules and a co-sign's proposal by index", async () => {
     const f = await credentialsFixture()
     await inRules(f.tenant, (ctx) => {
-      const plan = (sql: string) => ctx.sql.exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, "x").toArray().map((r) => r.detail).join(" ")
+      const plan = (sql: string) => withTrustedSchema(ctx, () => ctx.sql.exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, "x")).toArray().map((r) => r.detail).join(" ")
       expect(plan("SELECT * FROM policy_rules WHERE source=?")).toContain("policy_rules_source")
       expect(plan("SELECT * FROM policy_rules WHERE device=?")).toContain("policy_rules_device")
       expect(plan("SELECT * FROM policy_proposals WHERE requester=?")).toContain("policy_proposals_requester")

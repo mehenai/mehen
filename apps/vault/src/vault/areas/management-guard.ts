@@ -14,8 +14,8 @@
 // transaction commits, and a rollback removes it with everything else.
 // recursive_triggers is on, so rows a REPLACE deletes fire their triggers
 // too. What triggers cannot stop (DROP TABLE, DROP TRIGGER and other schema
-// statements) the SQL wrapper refuses outside migrations and restores
-// (assertNoSchemaChange), and the triggers are checked, and put back, every
+// statements, PRAGMA, EXPLAIN, transaction control) the SQL wrapper refuses
+// outside migrations and restores (assertPlainStatement), and the triggers are checked, and put back, every
 // time the object starts (installGuardTriggers). docs/OPERATIONS.md, The
 // management guard.
 
@@ -71,6 +71,19 @@ export const NEUTRAL_COLUMNS: Readonly<Record<GraphTable, readonly string[]>> = 
 // are there (a deleteAll removes them until the object starts again).
 type Scope = { depth: number; trusted: number; ready: boolean }
 const scopes = new WeakMap<object, Scope>()
+// The guard's own SQL for each object, unchecked: the storage wrapper
+// (tenant-vault.ts) hands it over and nothing else may reach it. The checked
+// SQL refuses any statement that names the guard's tables.
+const guardSqls = new WeakMap<object, SqlStorage>()
+export function registerGuardSql(storage: object, sql: SqlStorage): void {
+  if (guardSqls.has(storage)) throw new Error("The management guard's SQL is registered once per object.")
+  guardSqls.set(storage, sql)
+}
+function guardSql(storage: object): SqlStorage {
+  const sql = guardSqls.get(storage)
+  if (!sql) throw new VaultError("internal", "The management guard has no SQL for this object.")
+  return sql
+}
 export function managementScope(storage: object): Scope {
   let scope = scopes.get(storage)
   if (!scope) scopes.set(storage, (scope = { depth: 0, trusted: 0, ready: false }))
@@ -83,23 +96,29 @@ export function beforeManagementChange(ctx: VaultContext): void {
   const scope = managementScope(ctx.storage)
   if (scope.depth === 0) throw new VaultError("internal", "The management guard runs only inside a synchronous transaction.")
   for (const guard of managementGuards.values()) guard(ctx)
-  ctx.sql.exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
+  guardSql(ctx.storage).exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
 }
 
-// Schema changes and connection settings, which triggers cannot see: only
-// migrations and restores make them, and the guard's own start-up.
-const SCHEMA_KEYWORDS = new Set(["create", "drop", "alter", "pragma", "attach", "detach", "vacuum", "reindex"])
+// What the vault's checked SQL runs, statement by statement: only reads and
+// row changes. Everything else (schema statements, PRAGMA and EXPLAIN, which
+// applies a flag pragma while it is prepared, transaction control, ATTACH,
+// VACUUM, ANALYZE, a statement with no readable first keyword) runs only in
+// a migration, a restore or the guard's own start, and transaction control
+// only inside the storage implementation.
+const PLAIN_KEYWORDS: ReadonlySet<string> = new Set(["select", "insert", "update", "delete", "replace", "with"])
 // The first keyword of each statement in a query: comments become space,
 // string literals and quoted names a placeholder that is no keyword.
 export function firstKeywords(query: string): string[] {
   const blanked = query.replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]/g, (match) => (match.startsWith("--") || match.startsWith("/*") ? " " : " ? "))
   return blanked.split(";").filter((statement) => statement.trim() !== "").map((statement) => /^\s*([A-Za-z]+)/.exec(statement)?.[1]?.toLowerCase() ?? "?")
 }
-// A statement that does not start with a keyword is refused as well: its
-// first keyword cannot be read, so it might be any of these.
-export function assertNoSchemaChange(storage: object, query: string): void {
+// Refuses, failing closed: a statement that names the guard's own tables,
+// anywhere in its text and whatever the scope; and, outside a migration or
+// restore, a statement that is not a plain read or row change.
+export function assertPlainStatement(storage: object, query: string): void {
+  if (query.toLowerCase().includes(GUARD_PREFIX)) throw new VaultError("internal", "The management guard's own tables are reached only through the guard.")
   if (managementScope(storage).trusted > 0) return
-  const word = firstKeywords(query).find((keyword) => SCHEMA_KEYWORDS.has(keyword) || keyword === "?")
+  const word = firstKeywords(query).find((keyword) => !PLAIN_KEYWORDS.has(keyword))
   if (word !== undefined) throw new VaultError("internal", `A ${word === "?" ? "statement without a readable keyword" : `${word.toUpperCase()} statement`} runs only in a migration or a restore.`)
 }
 // Runs a restore's own statements with schema changes allowed, inside a
@@ -110,11 +129,12 @@ export function withTrustedSchema<T>(ctx: VaultContext, run: () => T): T {
   scope.trusted++
   try {
     return ctx.storage.transactionSync(() => {
-      ctx.sql.exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
+      const own = guardSql(ctx.storage)
+      own.exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
       // A trigger naming a column keeps that column from being dropped.
-      for (const { name } of ctx.sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB '${GUARD_PREFIX}*'`).toArray()) ctx.sql.exec(`DROP TRIGGER ${quote(name)}`)
+      for (const { name } of own.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB '${GUARD_PREFIX}*'`).toArray()) own.exec(`DROP TRIGGER ${quote(name)}`)
       const result = run()
-      installGuardTriggers(ctx.sql)
+      installGuardTriggers(own)
       return result
     })
   } finally {
@@ -164,8 +184,11 @@ export function enableRecursiveTriggers(sql: SqlStorage): void {
   const on = sql.exec<{ recursive_triggers: number }>("PRAGMA recursive_triggers").toArray()[0]?.recursive_triggers
   if (on !== 1) throw new Error("recursive_triggers did not turn on")
 }
-// The expected triggers that are missing or not as expected.
-export function missingGuardTriggers(sql: SqlStorage): string[] {
+// The expected triggers that are missing or not as expected, on an object.
+export function missingGuardTriggers(ctx: Pick<VaultContext, "storage">): string[] {
+  return missingTriggers(guardSql(ctx.storage))
+}
+function missingTriggers(sql: SqlStorage): string[] {
   const expected = expectedGuardTriggers(guardedTables(sql))
   const present = new Map(sql.exec<{ name: string; sql: string }>(`SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name GLOB '${GUARD_PREFIX}*'`).toArray().map((row) => [row.name, row.sql]))
   return [...expected].filter(([name, text]) => present.get(name) !== text).map(([name]) => name)
@@ -178,7 +201,7 @@ export function installGuardTriggers(sql: SqlStorage): void {
   const present = new Map(sql.exec<{ name: string; sql: string }>(`SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name GLOB '${GUARD_PREFIX}*'`).toArray().map((row) => [row.name, row.sql]))
   for (const [name, text] of present) if (expected.get(name) !== text) sql.exec(`DROP TRIGGER IF EXISTS ${quote(name)}`)
   for (const [name, text] of expected) if (present.get(name) !== text) sql.exec(text)
-  const missing = missingGuardTriggers(sql)
+  const missing = missingTriggers(sql)
   if (missing.length > 0) throw new Error(`The management guard's triggers did not install: ${missing.join(", ")}`)
 }
 
@@ -188,9 +211,25 @@ export function installGuardTriggers(sql: SqlStorage): void {
 export function clearLeftoverMarker(ctx: VaultContext): boolean {
   const scope = managementScope(ctx.storage)
   if (!scope.ready || scope.depth > 0) return false
-  if (ctx.sql.exec(`SELECT 1 FROM ${GUARD_TABLE} LIMIT 1`).toArray().length === 0) return false
-  ctx.sql.exec(`DELETE FROM ${GUARD_TABLE}`)
+  const own = guardSql(ctx.storage)
+  if (own.exec(`SELECT 1 FROM ${GUARD_TABLE} LIMIT 1`).toArray().length === 0) return false
+  own.exec(`DELETE FROM ${GUARD_TABLE}`)
   console.error(JSON.stringify({ at: "management_guard", error: "leftover_marker" }))
   ctx.audit({ actor: "system", action: "management_guard.leftover", target: ctx.tenant })
   return true
+}
+// The access revision the revision triggers keep (VaultContext.accessRevision).
+export function accessRevisionOf(storage: object): number {
+  return guardSql(storage).exec<{ n: number }>(`SELECT n FROM ${REVISION_TABLE} WHERE id=1`).toArray()[0]?.n ?? 0
+}
+// Test support only, through the guard's own SQL: the marker rows there are,
+// and one planted where no transaction holds it.
+export function guardMarkersForTests(ctx: Pick<VaultContext, "storage">): number {
+  return guardSql(ctx.storage).exec(`SELECT 1 FROM ${GUARD_TABLE}`).toArray().length
+}
+export function plantGuardMarkerForTests(ctx: Pick<VaultContext, "storage">): void {
+  guardSql(ctx.storage).exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
+}
+export function dropGuardTriggerForTests(ctx: Pick<VaultContext, "storage">, name: string): void {
+  guardSql(ctx.storage).exec(`DROP TRIGGER ${quote(name)}`)
 }

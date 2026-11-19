@@ -23,7 +23,7 @@ import { accountAuth, inAccess } from "./access-test-support.ts"
 import { credentialsFixture, seedCredential } from "./credentials-test-support.ts"
 import { platformAuth } from "./managed-support.ts"
 import { createWorkspaceFixture, type WorkspaceTestFixture } from "./workspace-fixtures.ts"
-import { GUARD_TABLE, beforeManagementChange, managementScope, missingGuardTriggers, withTrustedSchema } from "../src/vault/areas/management-guard.ts"
+import { GUARD_PREFIX, beforeManagementChange, guardMarkersForTests, managementScope, missingGuardTriggers, withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 const SECRET = "test-secret-never-returned"
 const SLUG = "acme-billing-ledger-key"
@@ -56,7 +56,7 @@ function hex(value: ArrayBuffer): string {
 }
 // Every application table and its rows, BLOBs as hex, in a stable order.
 function snapshot(ctx: VaultContext): { schema: string[]; tables: { name: string; rows: string[] }[] } {
-  const schema = ctx.sql.exec<{ type: string; name: string; sql: string }>("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '_mehen_*' AND tbl_name NOT GLOB '_mehen_*' ORDER BY type, name").toArray()
+  const schema = ctx.sql.exec<{ type: string; name: string; tbl_name: string; sql: string }>("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' ORDER BY type, name").toArray().filter((entry) => !entry.name.startsWith(GUARD_PREFIX) && !entry.tbl_name.startsWith(GUARD_PREFIX))
   return {
     schema: schema.map((entry) => `${entry.type} ${entry.name}: ${entry.sql}`),
     tables: schema.filter((entry) => entry.type === "table").map(({ name }) => ({ name, rows: ctx.sql.exec(`SELECT * FROM "${name}"`).toArray().map((row) => JSON.stringify(Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v instanceof ArrayBuffer ? `hex:${hex(v)}` : v])))).sort() })),
@@ -65,7 +65,7 @@ function snapshot(ctx: VaultContext): { schema: string[]; tables: { name: string
 // What a lost object looks like: every table there, every row gone but
 // the migrations and the generation marker.
 function wipe(ctx: VaultContext): void {
-  const tables = ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '_mehen_*' AND name NOT IN ('_migrations','_workspace_generation') ORDER BY rowid DESC").toArray()
+  const tables = ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT IN ('_migrations','_workspace_generation') ORDER BY rowid DESC").toArray().filter(({ name }) => !name.startsWith(GUARD_PREFIX))
   ctx.storage.transactionSync(() => {
     withTrustedSchema(ctx, () => ctx.sql.exec("PRAGMA defer_foreign_keys = ON"))
     beforeManagementChange(ctx)
@@ -205,8 +205,8 @@ describe("vaultbackup.restore from a dump", () => {
       expect(new TextDecoder().decode(opened)).toBe(SECRET)
       // The trusted sequence left the management guard whole: every trigger
       // there, recursive triggers on, no marker, and a graph write refused.
-      expect(missingGuardTriggers(ctx.sql)).toEqual([])
-      expect(ctx.sql.exec(`SELECT * FROM ${GUARD_TABLE}`).toArray()).toEqual([])
+      expect(missingGuardTriggers(ctx)).toEqual([])
+      expect(guardMarkersForTests(ctx)).toBe(0)
       const scope = managementScope(ctx.storage)
       scope.trusted++
       try { expect(ctx.sql.exec("PRAGMA recursive_triggers").toArray()).toEqual([{ recursive_triggers: 1 }]) } finally { scope.trusted-- }

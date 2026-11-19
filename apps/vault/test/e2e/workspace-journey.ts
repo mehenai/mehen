@@ -16,7 +16,7 @@ import { ORIGIN } from "../helpers.ts"
 import { newDeviceKey, publicJwk } from "../devices.ts"
 import { assertion, registration, softwarePasskey, type SoftwarePasskey } from "./passkeys.ts"
 import { fixtureSql } from "../fixture-sql.ts"
-import { withTrustedSchema } from "../../src/vault/areas/management-guard.ts"
+import { GUARD_PREFIX, withTrustedSchema } from "../../src/vault/areas/management-guard.ts"
 
 let network: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>
 beforeEach(() => { network = vi.spyOn(globalThis, "fetch").mockImplementation(async () => { throw new Error("Unexpected real network call in a workspace journey") }) })
@@ -118,7 +118,7 @@ export async function journey() {
   async function snapshot(workspace: WorkspaceRef) {
     return runInDurableObject(env.TENANT_VAULT.getByName(workspace.id), instance => {
       const sql = instance.context.sql
-      return Object.fromEntries(sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '_mehen_*' ORDER BY name").toArray().map(({ name }) => {
+      return Object.fromEntries(sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' ORDER BY name").toArray().filter(({ name }) => !name.startsWith(GUARD_PREFIX)).map(({ name }) => {
         if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error("Unexpected application table")
         return [name, sql.exec(`SELECT * FROM ${name}`).toArray()]
       }))

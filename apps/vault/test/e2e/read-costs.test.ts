@@ -203,11 +203,12 @@ it("counts what the mandates list and an ask's page cost a full workspace with m
   // whether a mandate could cover the ask only for the machine's owner, so
   // the reader of another's machine's ask costs one call less; for the
   // owner, that call reads the ask too, to check they may see it. Each
-  // access state built reads the shares whose end is settled, one join;
-  // each call checks for a management guard marker left behind, and each
-  // read of the access state reads the access revision first, one row by
-  // its key, so a write by any route rebuilds it (areas/management-guard.ts).
-  expect(Object.fromEntries(Object.entries(costs).map(([read, c]) => [read, [c.invocations, c.accessStates, c.statements, c.d1]]))).toEqual({ mandates: [1, 1, 248, 4], ownAsk: [4, 0, 32, 11], othersAsk: [3, 0, 20, 11] })
+  // access state built reads the shares whose end is settled, one join.
+  // Not counted here, as they run on the management guard's own SQL, not
+  // the context's: each read of the access state first reads the access
+  // revision, one row by its key, so a write by any route rebuilds it, and
+  // each call checks for a guard marker left behind (areas/management-guard.ts).
+  expect(Object.fromEntries(Object.entries(costs).map(([read, c]) => [read, [c.invocations, c.accessStates, c.statements, c.d1]]))).toEqual({ mandates: [1, 1, 215, 4], ownAsk: [4, 0, 19, 11], othersAsk: [3, 0, 11, 11] })
   expect(costs.mandates.rowsRead).toBeLessThan(2_500)
   const cover = async (approval: string) => (await (await page(`/w/northwind/a/${approval}`)()).text()).includes('data-region="mandate-cover"')
   expect([await cover(own), await cover(others)]).toEqual([true, false])

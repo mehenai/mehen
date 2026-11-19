@@ -6,7 +6,7 @@
 import { env } from "cloudflare:test"
 import { describe, expect, it } from "vitest"
 import type { VaultContext } from "../src/vault/core.ts"
-import { GRAPH_TABLES, GUARD_TABLE, MANAGEMENT_COLUMNS, NEUTRAL_COLUMNS, REVISION_TABLE, beforeManagementChange, managementScope, missingGuardTriggers, withTrustedSchema, type GraphTable } from "../src/vault/areas/management-guard.ts"
+import { GRAPH_TABLES, MANAGEMENT_COLUMNS, NEUTRAL_COLUMNS, beforeManagementChange, dropGuardTriggerForTests, guardMarkersForTests, managementScope, missingGuardTriggers, plantGuardMarkerForTests, withTrustedSchema, type GraphTable } from "../src/vault/areas/management-guard.ts"
 import { accessState } from "../src/vault/areas/workspace-runtime.ts"
 import { applyMigrations, invocationContext } from "../src/vault/tenant-vault.ts"
 import { projectWorkspaceOps } from "../src/vault/areas/projects-workspace.ts"
@@ -38,7 +38,35 @@ function pragma(ctx: VaultContext, name: string): unknown {
   scope.trusted++
   try { return ctx.sql.exec(`PRAGMA ${name}`).toArray()[0]?.[name] } finally { scope.trusted-- }
 }
-const revision = (ctx: VaultContext): number => ctx.sql.exec<{ n: number }>(`SELECT n FROM ${REVISION_TABLE}`).toArray()[0]!.n
+const revision = (ctx: VaultContext): number => Number(ctx.accessRevision().split(":")[0])
+// A valid new row for each graph table: a copy of an existing one with
+// these columns given fresh values, so no key is taken and nothing refers to
+// it.
+const FRESH: Readonly<Record<GraphTable, Record<string, string>>> = {
+  items: { id: "itm_fresh", slug: "fresh-key" },
+  team_members: { team: "tm_service", member: "mem_kim" },
+  project_shares: { id: "shr_fresh", subject_id: "mem_fresh_subject" },
+  members: { id: "mem_fresh", account: "acc_fresh" },
+  teams: { id: "tm_fresh", slug: "fresh-team" },
+  projects: { id: "prj_fresh", slug: "fresh-project" },
+}
+// A valid new value for every management column of that fresh row, or the
+// constraint that refuses every other value.
+const CHANGES: Readonly<Record<GraphTable, Record<string, string | { refused: RegExp }>>> = {
+  items: { id: "itm_fresh2", slug: "fresh-key-2", home_kind: "member", home_id: "mem_kim" },
+  team_members: { team: "tm_engineering", member: "mem_owner", role: { refused: /CHECK constraint failed/ } },
+  project_shares: { id: "shr_fresh2", project: "prj_b", subject_kind: "team", subject_id: "mem_fresh_subject2", value: '{"fresh":true}' },
+  members: { id: "mem_fresh2", account: "acc_fresh2", role: "guest", status: "suspended" },
+  teams: { id: "tm_fresh2", slug: "fresh-team-2" },
+  projects: { id: "prj_fresh2", slug: "fresh-project-2" },
+}
+function insertFresh(ctx: VaultContext, table: GraphTable): void {
+  const fresh = FRESH[table], columns = columnsOf(ctx, table)
+  const source = oneRow(ctx, table)
+  ctx.sql.exec(`INSERT INTO ${table}(${columns.map((c) => `"${c}"`).join(",")}) SELECT ${columns.map((c) => (c in fresh ? "?" : `"${c}"`)).join(",")} FROM ${table} WHERE rowid=?`, ...columns.filter((c) => c in fresh).map((c) => fresh[c] as string), source._rowid as number)
+}
+const freshWhere = (table: GraphTable): string => Object.keys(FRESH[table]).map((c) => `"${c}"=?`).join(" AND ")
+const freshKey = (table: GraphTable): string[] => Object.values(FRESH[table])
 
 describe("the management guard's columns", () => {
   it("classifies every column the migrations make, each once, as management or neutral", async () => {
@@ -52,30 +80,60 @@ describe("the management guard's columns", () => {
     })
   })
 
-  it("refuses a real change of every management column unmarked and lets it through marked, and never refuses a neutral one", async () => {
+  it("refuses a real change of every management column unmarked, and makes it, read back, marked", async () => {
     const tenant = await fixture()
     await inAccess(tenant, (ctx) => {
       for (const table of GRAPH_TABLES) {
         const row = oneRow(ctx, table)
-        const update = (column: string) => () => ctx.sql.exec(`UPDATE ${table} SET "${column}"=? WHERE rowid=?`, changed(row[column] ?? null), row._rowid as number)
-        for (const column of MANAGEMENT_COLUMNS[table]) {
-          expect([table, column, tried(ctx, false, update(column))]).toEqual([table, column, expect.stringContaining(GUARDED)])
-          expect([table, column, tried(ctx, true, update(column)) ?? ""]).toEqual([table, column, expect.not.stringContaining(GUARDED)])
+        for (const [column, change] of Object.entries(CHANGES[table])) {
+          const value = typeof change === "string" ? change : changed(row[column] ?? null)
+          // Unmarked, on an existing row, to a value it does not have: the
+          // trigger refuses it first.
+          const other = value === row[column] ? changed(value) : value
+          expect([table, column, tried(ctx, false, () => ctx.sql.exec(`UPDATE ${table} SET "${column}"=? WHERE rowid=?`, other, row._rowid as number))]).toEqual([table, column, expect.stringContaining(GUARDED)])
+          // Marked, on a fresh row nothing refers to: made and read back, or
+          // refused by the one constraint that allows no other value.
+          const outcome = tried(ctx, true, () => {
+            insertFresh(ctx, table)
+            const [rowid] = ctx.sql.exec<{ rowid: number }>(`SELECT rowid FROM ${table} WHERE ${freshWhere(table)}`, ...freshKey(table)).toArray().map((r) => r.rowid)
+            ctx.sql.exec(`UPDATE ${table} SET "${column}"=? WHERE rowid=?`, value, rowid as number)
+            expect(ctx.sql.exec(`SELECT "${column}" AS v FROM ${table} WHERE rowid=?`, rowid as number).toArray()).toEqual([{ v: value }])
+          })
+          if (typeof change === "string") expect([table, column, outcome]).toEqual([table, column, null])
+          else expect([table, column, outcome]).toEqual([table, column, expect.stringMatching(change.refused)])
         }
-        for (const column of NEUTRAL_COLUMNS[table]) expect([table, column, tried(ctx, false, update(column)) ?? ""]).toEqual([table, column, expect.not.stringContaining(GUARDED)])
+        expect(Object.keys(CHANGES[table]).sort()).toEqual([...MANAGEMENT_COLUMNS[table]].sort())
       }
     })
   })
 
-  it("refuses an insert and a delete on every graph table unmarked and lets them through marked", async () => {
+  it("never refuses a change of a neutral column, made and read back unmarked", async () => {
     const tenant = await fixture()
     await inAccess(tenant, (ctx) => {
       for (const table of GRAPH_TABLES) {
         const row = oneRow(ctx, table)
+        for (const column of NEUTRAL_COLUMNS[table]) {
+          const value = changed(row[column] ?? null)
+          expect([table, column, tried(ctx, false, () => {
+            ctx.sql.exec(`UPDATE ${table} SET "${column}"=? WHERE rowid=?`, value, row._rowid as number)
+            expect(ctx.sql.exec(`SELECT "${column}" AS v FROM ${table} WHERE rowid=?`, row._rowid as number).toArray()).toEqual([{ v: value }])
+          })]).toEqual([table, column, null])
+        }
+      }
+    })
+  })
+
+  it("refuses an insert and a delete on every graph table unmarked, and makes them, read back, marked", async () => {
+    const tenant = await fixture()
+    await inAccess(tenant, (ctx) => {
+      for (const table of GRAPH_TABLES) {
+        const row = oneRow(ctx, table)
+        const count = (where: string, ...bindings: SqlStorageValue[]) => ctx.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`, ...bindings).toArray()[0]!.n
+        expect([table, tried(ctx, false, () => insertFresh(ctx, table))]).toEqual([table, expect.stringContaining(GUARDED)])
+        expect([table, tried(ctx, true, () => { insertFresh(ctx, table); expect(count(freshWhere(table), ...freshKey(table))).toBe(1) })]).toEqual([table, null])
         const remove = () => ctx.sql.exec(`DELETE FROM ${table} WHERE rowid=?`, row._rowid as number)
-        const insert = () => ctx.sql.exec(`INSERT INTO ${table} SELECT * FROM ${table} WHERE rowid=?`, row._rowid as number)
-        expect([table, tried(ctx, false, remove), tried(ctx, true, remove)]).toEqual([table, expect.stringContaining(GUARDED), null])
-        expect([table, tried(ctx, false, insert), tried(ctx, true, insert) ?? ""]).toEqual([table, expect.stringContaining(GUARDED), expect.not.stringContaining(GUARDED)])
+        expect([table, tried(ctx, false, remove)]).toEqual([table, expect.stringContaining(GUARDED)])
+        expect([table, tried(ctx, true, () => { remove(); expect(count("rowid=?", row._rowid as number)).toBe(0) })]).toEqual([table, null])
       }
     })
   })
@@ -116,7 +174,7 @@ describe("the guard's marker", () => {
   it("is taken only inside a synchronous transaction, held for the whole outermost one, and gone when it ends, by commit or by throw", async () => {
     const tenant = await fixture()
     await inAccess(tenant, (ctx) => {
-      const marker = () => ctx.sql.exec(`SELECT COUNT(*) AS n FROM ${GUARD_TABLE}`).toArray()[0]!.n
+      const marker = () => guardMarkersForTests(ctx)
       let n = 0
       const write = () => ctx.sql.exec("INSERT INTO team_members(team,member) VALUES ('tm_service',?)", ["mem_owner", "mem_admin", "mem_kim", "mem_guest"][n++] as string)
       expect(refusal(() => beforeManagementChange(ctx))).toBe("The management guard runs only inside a synchronous transaction.")
@@ -141,7 +199,7 @@ describe("the guard's marker", () => {
     const tenant = await fixture()
     const share = { project: "prj_a", subject: { kind: "member", member: "mem_kim" }, before: { level: "manage", protected: false, expiresAt: null }, after: { level: "use", protected: false, expiresAt: null } } as const
     const team = { team: "tm_engineering", member: "mem_kim", change: "add" } as const
-    const markers = (ctx: VaultContext) => ctx.sql.exec(`SELECT * FROM ${GUARD_TABLE}`).toArray().length
+    const markers = (ctx: VaultContext) => guardMarkersForTests(ctx)
     const leftovers = (ctx: VaultContext) => ctx.sql.exec("SELECT 1 FROM audit WHERE action='management_guard.leftover'").toArray().length
     await inAccess(tenant, async (ctx) => {
       await projectWorkspaceOps["projects.share"]!.handler(ctx, memberPrincipal(ctx, "owner"), share, memberInvocation(ctx, "owner", { type: "project.share", ...share }))
@@ -149,7 +207,7 @@ describe("the guard's marker", () => {
       const rename = { team: "tm_engineering", change: "rename", name: "Platform", slug: "platform" } as const
       await workspaceMemberOps["access.team.update"]!.handler(ctx, memberPrincipal(ctx, "owner"), rename, memberInvocation(ctx, "owner", { type: "team.update", ...rename }))
       expect([markers(ctx), leftovers(ctx)]).toEqual([0, 0])
-      ctx.sql.exec(`INSERT INTO ${GUARD_TABLE}(id) VALUES (1)`)
+      plantGuardMarkerForTests(ctx)
     })
     await env.TENANT_VAULT.getByName(tenant).invoke({ op: "access.teams.read", input: {}, auth: { kind: "system", reason: "test" } })
     await inAccess(tenant, (ctx) => expect([markers(ctx), leftovers(ctx)]).toEqual([0, 1]))
@@ -159,7 +217,7 @@ describe("the guard's marker", () => {
 describe("schema statements and the raw handle", () => {
   it.each([
     "DROP TABLE team_members",
-    "DROP TRIGGER _mehen_guard_items_delete",
+    "DROP TRIGGER any_trigger",
     "ALTER TABLE project_shares RENAME TO shares_old",
     "CREATE TABLE sneaky(x)",
     "PRAGMA recursive_triggers = OFF",
@@ -171,12 +229,21 @@ describe("schema statements and the raw handle", () => {
     "SELECT 1; DROP TABLE members",
     "SELECT ';'; DROP TABLE members",
     "SELECT 1; 'x' DROP TABLE members",
+    "EXPLAIN PRAGMA recursive_triggers = OFF",
+    "EXPLAIN QUERY PLAN SELECT * FROM items",
+    "BEGIN",
+    "COMMIT",
+    "END",
+    "ROLLBACK",
+    "SAVEPOINT s1",
+    "RELEASE s1",
+    "ANALYZE",
   ])("refuses %s through ctx.sql and storage.sql alike", async (query) => {
     const tenant = await fixture()
     await inAccess(tenant, (ctx) => {
       expect(refusal(() => ctx.sql.exec(query))).toMatch(/runs only in a migration or a restore/)
       expect(refusal(() => ctx.storage.sql.exec(query))).toMatch(/runs only in a migration or a restore/)
-      expect(missingGuardTriggers(ctx.sql)).toEqual([])
+      expect(missingGuardTriggers(ctx)).toEqual([])
     })
   })
 
@@ -184,7 +251,7 @@ describe("schema statements and the raw handle", () => {
     const tenant = await fixture()
     await inAccess(tenant, (ctx) => {
       withTrustedSchema(ctx, () => ctx.sql.exec("CREATE TABLE trusted_probe(x)"))
-      expect(missingGuardTriggers(ctx.sql)).toEqual([])
+      expect(missingGuardTriggers(ctx)).toEqual([])
       expect(ctx.sql.exec("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='trusted_probe'").toArray().length).toBe(3)
     })
   })
@@ -194,14 +261,14 @@ describe("schema statements and the raw handle", () => {
     await inAccess(tenant, (ctx) => {
       const scope = managementScope(ctx.storage)
       scope.trusted++
-      try { ctx.sql.exec("DROP TRIGGER _mehen_guard_project_shares_insert") } finally { scope.trusted-- }
-      expect(missingGuardTriggers(ctx.sql)).toEqual(["_mehen_guard_project_shares_insert"])
+      try { dropGuardTriggerForTests(ctx, "_mehen_guard_project_shares_insert") } finally { scope.trusted-- }
+      expect(missingGuardTriggers(ctx)).toEqual(["_mehen_guard_project_shares_insert"])
       ctx.restart("guard test")
     }).catch((error: Error) => expect(error.message).toBe("guard test"))
     await inAccess(tenant, (ctx) => {
-      expect(missingGuardTriggers(ctx.sql)).toEqual([])
+      expect(missingGuardTriggers(ctx)).toEqual([])
       expect(pragma(ctx, "recursive_triggers")).toBe(1)
-      expect(ctx.sql.exec(`SELECT * FROM ${GUARD_TABLE}`).toArray()).toEqual([])
+      expect(guardMarkersForTests(ctx)).toBe(0)
     })
   })
 
@@ -212,15 +279,16 @@ describe("schema statements and the raw handle", () => {
       const scope = managementScope(ctx.storage)
       scope.trusted++
       try {
-        // As the start runs it (guarded); without the marker the graph write is refused.
+        // Without the marker the graph write is refused; holding it, as the
+        // start does for each migration, it runs.
         expect(refusal(() => applyMigrations(ctx.sql, ctx.storage, [area]))).toContain(GUARDED)
-        applyMigrations(ctx.sql, ctx.storage, [area], true)
+        ctx.storage.transactionSync(() => { beforeManagementChange(ctx); applyMigrations(ctx.sql, ctx.storage, [area]) })
       } finally { scope.trusted-- }
       expect(ctx.sql.exec("SELECT member FROM team_members WHERE team='tm_service'").toArray()).toEqual([{ member: "mem_kim" }])
-      expect(missingGuardTriggers(ctx.sql)).toEqual(["_mehen_revision_guard_probe_insert", "_mehen_revision_guard_probe_update", "_mehen_revision_guard_probe_delete"])
+      expect(missingGuardTriggers(ctx)).toEqual(["_mehen_revision_guard_probe_insert", "_mehen_revision_guard_probe_update", "_mehen_revision_guard_probe_delete"])
       ctx.restart("guard test")
     }).catch((error: Error) => expect(error.message).toBe("guard test"))
-    await inAccess(tenant, (ctx) => expect(missingGuardTriggers(ctx.sql)).toEqual([]))
+    await inAccess(tenant, (ctx) => expect(missingGuardTriggers(ctx)).toEqual([]))
   })
 
   // Only the storage wrapper holds the raw SQL handle; the platform vault is
@@ -229,6 +297,11 @@ describe("schema statements and the raw handle", () => {
     const sources = import.meta.glob<string>("../src/**/*.ts", { query: "?raw", import: "default", eager: true })
     const reaching = Object.entries(sources).filter(([path, text]) => !path.endsWith(".test.ts") && /storage\s*\.\s*sql\b|storage\[\s*["'`]sql["'`]\s*\]/.test(text)).map(([path]) => path.replace("../src/", "")).sort()
     expect(reaching).toEqual(["platform/platform-vault.ts", "vault/tenant-vault.ts"])
+    // The guard's own SQL is handed over once, by the wrapper, and its test
+    // helpers are for tests alone.
+    const naming = (pattern: RegExp) => Object.entries(sources).filter(([path, text]) => !path.endsWith(".test.ts") && pattern.test(text)).map(([path]) => path.replace("../src/", "")).sort()
+    expect(naming(/registerGuardSql\(/)).toEqual(["vault/areas/management-guard.ts", "vault/tenant-vault.ts"])
+    expect(naming(/\w+ForTests\b/).filter((path) => /GuardMarker|GuardTrigger/.test(sources[`../src/${path}`] ?? ""))).toEqual(["vault/areas/management-guard.ts"])
   })
 })
 

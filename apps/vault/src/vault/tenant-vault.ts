@@ -20,7 +20,7 @@ import { restoreAwaitingRestart } from "./areas/vault-backup.ts"
 import { admitManagedDeviceCall, managedAuditShape, managedPurged } from "./managed-platform.ts"
 import { TenantKeys, parseRootKeys } from "./keys.ts"
 import { wakeStorageWaiters } from "./storage-waits.ts"
-import { GUARD_TABLE, REVISION_TABLE, assertNoSchemaChange, clearLeftoverMarker, enableRecursiveTriggers, installGuardTables, installGuardTriggers, managementScope } from "./areas/management-guard.ts"
+import { GUARD_TABLE, accessRevisionOf, assertPlainStatement, clearLeftoverMarker, enableRecursiveTriggers, installGuardTables, installGuardTriggers, managementScope, registerGuardSql } from "./areas/management-guard.ts"
 
 const CORE: Area = {
   name: "core",
@@ -44,9 +44,11 @@ const READ_STATEMENT = /^\s*SELECT\b/i
 // - a synchronous transaction is the management guard's scope: its callback
 //   may not return a promise, and the outermost one deletes the guard's
 //   marker before it commits (management-guard.ts);
-// - storage.sql is the same checked SQL as ctx.sql, which refuses schema
-//   statements outside migrations and restores, so no area reaches the raw
-//   handle. Only this module holds it.
+// - storage.sql is the same checked SQL as ctx.sql, which runs only reads
+//   and row changes outside migrations and restores, and never a statement
+//   naming the guard's own tables (management-guard.ts assertPlainStatement),
+//   so no area reaches the raw handle. Only this module holds it, and hands
+//   the guard its own unchecked SQL (registerGuardSql).
 // It answers the SQL migrations run on (counted, unchecked) and the SQL
 // everything else runs on.
 function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolledBack: () => void): { migrations: SqlStorage; sql: SqlStorage } {
@@ -93,7 +95,7 @@ function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolled
   }
   const sql: SqlStorage = {
     exec(query, ...bindings) {
-      assertNoSchemaChange(storage, query)
+      assertPlainStatement(storage, query)
       return migrations.exec(query, ...bindings)
     },
     get databaseSize() {
@@ -103,6 +105,7 @@ function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolled
     Statement: raw.Statement,
   }
   Object.defineProperty(storage, "sql", { value: sql, configurable: true, writable: true })
+  registerGuardSql(storage, migrations)
   return { migrations, sql }
 }
 
@@ -204,8 +207,7 @@ export class TenantVault extends DurableObject<Env> {
         return self.storageWrites
       },
       accessRevision() {
-        const n = one(sql.exec<{ n: number }>(`SELECT n FROM ${REVISION_TABLE} WHERE id=1`))?.n ?? 0
-        return `${n}:${self.rollbacks}`
+        return `${accessRevisionOf(self.ctx.storage)}:${self.rollbacks}`
       },
       now: () => Date.now(),
       async sealField(ref, plaintext) {

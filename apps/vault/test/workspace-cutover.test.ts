@@ -6,7 +6,7 @@ import { initialiseWorkspaceGeneration } from "../src/vault/workspace-vault.ts"
 import { WORKSPACE_GENERATION } from "../src/directory/workspace-cutover.ts"
 import { freshTenant } from "./helpers.ts"
 import { createWorkspaceFixture,resetWorkspaceDatabase } from "./workspace-fixtures.ts"
-import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
+import { GUARD_PREFIX, withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 const refusal = { error: "upstream_failed",message: "Workspaces are unavailable until the fresh-start cutover completes.",retryAfter: 60 }
 it("P3-14: the default-on Worker refuses every route and cron before the legacy D1 wipe, with no writes or workspace RPC",async () => {
@@ -84,7 +84,7 @@ it("the fresh class accepts Cloudflare-internal SQL tables before creating its m
     await state.storage.put("guard-test",true)
     const sql = instance.context.sql
     withTrustedSchema(instance.context, () => {
-      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '__cf_*' AND name NOT GLOB '_mehen_*'").toArray()) sql.exec(`DROP TABLE "${name}"`)
+      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '__cf_*'").toArray().filter(({ name }) => !name.startsWith(GUARD_PREFIX))) sql.exec(`DROP TABLE "${name}"`)
       sql.exec("CREATE TABLE IF NOT EXISTS __cf_kv(key TEXT PRIMARY KEY,value BLOB)")
     })
     // workerd reserves and hides _cf_METADATA from user SQL. Overlay that
