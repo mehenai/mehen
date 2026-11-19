@@ -7,7 +7,7 @@
 import { secretPrefix, PLACEHOLDER_CORE } from "@mehen/protocol"
 import { type Dirent, existsSync, lstatSync, readdirSync, readlinkSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path"
 import { loginFiles, sourceType } from "../adopt/sources.ts"
 import { type ShellNode, type Word, parseShell } from "./shell.ts"
 
@@ -485,6 +485,143 @@ function walkForSecrets(dir: string, target: string, grep: GrepArgs, home: strin
   return null
 }
 
+// ---- what a name could be ------------------------------------------------
+
+// Files that live in the protected folders under names that are ordinary
+// elsewhere: in a folder the guard cannot see, `credentials` may be
+// ~/.aws/credentials.
+const PROTECTED_FILE_NAMES = new Set(["credentials", "config", "known_hosts", "authorized_keys", "hosts.yml", "default.toml", "config.json", "application_default_credentials.json", "pubring.kbx", "trustdb.gpg", "directory.sqlite"])
+
+// The protected folders, as runs of folder names: ~/.aws is [".aws"],
+// ~/.config/gh is [".config", "gh"].
+function protectedRuns(home: string, vaultDirs: string[]): string[][] {
+  const dirs = [...privateDirs(home, vaultDirs), ...loginFiles(home).filter((f) => f.type !== "json").map((f) => dirname(f.path))]
+  const runs = dirs.map((dir) => {
+    const rel = relative(home, dir)
+    const parts = (rel.startsWith("..") || isAbsolute(rel) ? dir : rel).split(sep).filter(Boolean)
+    return rel.startsWith("..") || isAbsolute(rel) ? parts.slice(-2) : parts
+  })
+  return [...runs, [".local-secrets"]]
+}
+
+function containsRun(parts: string[], run: string[]): boolean {
+  for (let i = 0; i + run.length <= parts.length; i++) if (run.every((name, j) => parts[i + j] === name)) return true
+  return false
+}
+
+// Whether a file of this name is a key file wherever it is, by the rules.
+function secretName(name: string): boolean {
+  if (name.endsWith(".pub")) return false
+  const type = sourceType(`${sep}${name}`)
+  return type === "dotenv" || type === "envrc" || KEY_FILE.test(name) || SSH_PRIVATE.test(name) || /^id_/.test(name) || DOTFILES.has(name)
+}
+
+// Whether a relative path could name a key file from some folder: its name
+// is a key file's, or one kept in a protected folder, or it passes through
+// a protected folder.
+function couldNameSecret(path: string, home: string, vaultDirs: string[]): boolean {
+  const parts = path.split(sep).filter((p) => p && p !== "." && p !== "..")
+  const name = parts.at(-1) ?? ""
+  if (secretName(name) || PROTECTED_FILE_NAMES.has(name)) return true
+  return protectedRuns(home, vaultDirs).some((run) => containsRun(parts, run))
+}
+
+// ---- find, as a source of file names ----------------------------------------
+
+// Extensions that key files the rules know end with.
+const SECRET_EXTENSIONS = new Set(["env", "envrc", "vars", "pem", "key", "p12", "pfx", "jks", "keystore", "ppk", "kdbx", "npmrc", "netrc", "pypirc", "pgpass", "cnf", "sqlite", "gpg", "kbx"])
+
+// Names a key file the rules know may have, to test a pattern against: the
+// fixed ones, and one of each family.
+const SECRET_WITNESSES = [".env", ".env.local", ".env.development", ".env.dev", ".env.production", ".env.prod", ".env.test", ".env.staging", ".env.ci", ".env.preview", "x.env", ".envrc", ".dev.vars", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ed25519_sk", ...[...DOTFILES], ...PROTECTED_FILE_NAMES]
+
+// Whether every name a find pattern matches is provably not a key file's:
+// a literal name that is not one, or a pattern ending in a literal
+// extension that no key file the rules know has. Anything else (*, .*,
+// *.env, a pattern with no extension) could match one.
+function safeFindPattern(pattern: string, caseless: boolean): boolean {
+  const last = pattern.split("/").at(-1) ?? ""
+  if (!/[*?[\\]/.test(pattern)) return !secretName(last) && !PROTECTED_FILE_NAMES.has(last)
+  const extension = /\.([A-Za-z0-9]+)$/.exec(pattern)?.[1]
+  if (extension === undefined || SECRET_EXTENSIONS.has(extension.toLowerCase())) return false
+  const re = new RegExp(globRegex(last).source, caseless ? "i" : "")
+  return !SECRET_WITNESSES.some((name) => re.test(name))
+}
+
+const FIND_NAME_TESTS = new Set(["-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename"])
+const FIND_VALUE_TESTS = new Set(["-type", "-xtype", "-maxdepth", "-mindepth", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-anewer", "-cnewer", "-size", "-perm", "-user", "-group", "-uid", "-gid", "-links", "-inum", "-used", "-fstype", "-printf", "-samefile"])
+const FIND_FLAG_TESTS = new Set(["-print", "-print0", "-empty", "-readable", "-writable", "-executable", "-ls", "-delete", "-quit", "-true", "-depth", "-xdev", "-mount", "-follow", "-nouser", "-nogroup", "-daystart", "-noleaf", "-ignore_readdir_race", "-a", "-and"])
+const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"])
+
+type FindModel = { why: string | null; execs: Word[][] }
+
+// A find of the common form: starting folders, then a conjunction of
+// tests and actions. `why` says why the files it yields cannot be told
+// safe, or is null when every one of its name patterns provably cannot
+// match a key file's name and no starting folder is or holds a protected
+// one.
+function findModel(args: Word[], cwds: Cwds, ctx: Context): FindModel {
+  const model: FindModel = { why: null, execs: [] }
+  const fail = (why: string) => {
+    model.why ??= why
+  }
+  let i = 0
+  while (i < args.length && ["-H", "-L", "-P"].includes((args[i] as Word).text)) i++
+  const starts: Word[] = []
+  while (i < args.length && !/^[-(!,)]/.test((args[i] as Word).text) && (args[i] as Word).text !== "!") starts.push(args[i++] as Word)
+  const protectedDirs = [...privateDirs(ctx.home, ctx.vaultDirs), ...loginFiles(ctx.home).filter((f) => f.type !== "json").map((f) => dirname(f.path))]
+  for (const start of starts.length ? starts : [{ text: ".", dynamic: false, glob: false }]) {
+    if (start.dynamic || start.glob) fail(`it starts from ${shownWord(start)}, which only the shell knows`)
+    else if (!isAbsolute(start.text) && cwds === null) fail("it starts from a folder the guard cannot follow")
+    else
+      for (const cwd of isAbsolute(start.text) ? ["/"] : (cwds as string[])) {
+        const dir = resolve(cwd, start.text)
+        if (classify(dir, ctx.home, ctx.vaultDirs) !== null || protectedDirs.some((p) => dir === sep || under(p, dir))) fail(`it starts from ${shown(dir, ctx.home)}, which is or holds a protected folder`)
+      }
+  }
+  const patterns: { word: Word | undefined; caseless: boolean }[] = []
+  for (; i < args.length; i++) {
+    const word = args[i] as Word
+    const text = word.text
+    if (word.dynamic) {
+      fail(`its expression has ${shownWord(word)}, which only the shell knows`)
+      continue
+    }
+    if (FIND_NAME_TESTS.has(text)) {
+      patterns.push({ word: args[++i], caseless: text.startsWith("-i") })
+      continue
+    }
+    if (["-o", "-or", "!", "-not", "(", ")", ","].includes(text)) {
+      fail(`its expression uses ${text}, which the guard does not follow`)
+      continue
+    }
+    if (FIND_VALUE_TESTS.has(text)) {
+      i++
+      continue
+    }
+    if (FIND_FLAG_TESTS.has(text)) continue
+    if (FIND_EXEC.has(text)) {
+      const block: Word[] = []
+      for (i++; i < args.length; i++) {
+        const part = args[i] as Word
+        if (!part.dynamic && (part.text === ";" || (part.text === "+" && block.at(-1)?.text === "{}"))) break
+        block.push(part)
+      }
+      model.execs.push(block)
+      continue
+    }
+    fail(`its expression uses ${text}, which the guard does not follow`)
+  }
+  if (patterns.length === 0) fail("it has no -name, -iname or -path pattern")
+  for (const { word, caseless } of patterns) {
+    if (word === undefined || word.dynamic) fail("one of its patterns is only known when the shell runs it")
+    else if (!safeFindPattern(word.text, caseless)) fail(`its pattern '${word.text}' could match a key file's name`)
+  }
+  return model
+}
+
+const FED_HINT = "name the files directly, or feed it from a find with a -name pattern such as '*.ts'"
+
 // ---- reading the line ------------------------------------------------------
 
 type Context = { home: string; vaultDirs: string[]; command: string; findings: Finding[] }
@@ -510,6 +647,9 @@ function judgeRead(ctx: Context, state: State, cwds: Cwds, program: string, word
   const text = word.text
   const written = shown(text, ctx.home)
   if (!isAbsolute(text) && cwds === null) {
+    // The folder is unknown: a path that could not name a key file from
+    // any folder is fine; one that could is refused.
+    if (!couldNameSecret(text, ctx.home, ctx.vaultDirs)) return false
     refuse(ctx, CANT_FOLDER(program, written))
     return true
   }
@@ -735,7 +875,20 @@ function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
 
 // One simple command: its folder changes, links, environment dumps, grep
 // -r walks and the files it reads.
-function command(ctx: Context, state: State, node: Extract<ShellNode, { kind: "command" }>): void {
+type CommandNode = Extract<ShellNode, { kind: "command" }>
+
+// Why the files `xargs` hands its program cannot be told safe, or null when
+// they come straight from a find the guard can read whose names cannot be a
+// key file's.
+function xargsInput(ctx: Context, state: State, node: CommandNode, producer: CommandNode | null, fromFile: boolean): string | null {
+  if (fromFile) return "its input is a file, not a find"
+  if (node.op !== "|" || producer === null || producer.next !== "|") return "its input is not a find"
+  const words = unwrap(producer.words, state.cwds, ctx).words
+  if (words[0]?.dynamic || basename(words[0]?.text ?? "") !== "find") return "its input is not a find"
+  return findModel(words.slice(1), state.cwds, ctx).why
+}
+
+function command(ctx: Context, state: State, node: CommandNode, producer: CommandNode | null = null): void {
   let words = node.words
   while (words.length && !(words[0] as Word).dynamic && RESERVED.has((words[0] as Word).text)) words = words.slice(1)
   const apart = node.op === "|" || node.next === "|" || node.next === "&"
@@ -808,24 +961,59 @@ function command(ctx: Context, state: State, node: Extract<ShellNode, { kind: "c
         }
       }
     }
-    if (unwrapped.fed) return refuse(ctx, `can't tell which files \`xargs ${program}\` reads (they come from its input); name the files directly`)
+    if (unwrapped.fed) {
+      const why = xargsInput(ctx, state, node, producer, unwrapped.reads.length > 0)
+      if (why) return refuse(ctx, `can't tell which files \`xargs ${program}\` reads: ${why}; ${FED_HINT}`)
+    }
     for (const file of grep.files) if (judgeRead(ctx, state, cwds, `\`${program}\``, file, true)) return
+    return
+  }
+  if (program === "find") {
+    const model = findModel(args, cwds, ctx)
+    for (const block of model.execs) {
+      const runner = block[0]
+      if (!runner) continue
+      const reader = runner.dynamic || basename(runner.text) in FILE_READERS
+      if (reader && model.why && block.some((w) => w.text.includes("{}"))) {
+        refuse(ctx, `can't tell which files \`find -exec ${runner.dynamic ? "" : basename(runner.text)}\` reads: ${model.why}; ${FED_HINT}`)
+        continue
+      }
+      // The command -exec runs, with the found file left out: anything
+      // else it names is judged as any command's would be.
+      command(ctx, { ...state, stack: [...state.stack] }, { kind: "command", words: block.filter((w) => w.text !== "{}"), inputs: [], op: "start", next: null })
+    }
     return
   }
   const strict = program in FILE_READERS
   if (!(READERS.has(program) || head.dynamic)) return
-  if (unwrapped.fed && strict) return refuse(ctx, `can't tell which files \`xargs ${program}\` reads (they come from its input); name the files directly`)
+  if (unwrapped.fed && strict) {
+    const why = xargsInput(ctx, state, node, producer, unwrapped.reads.length > 0)
+    if (why) return refuse(ctx, `can't tell which files \`xargs ${program}\` reads: ${why}; ${FED_HINT}`)
+  }
   const operands = strict ? fileOperands(program, args) : args.filter((w) => w.dynamic || !w.text.startsWith("-"))
   for (const word of operands) if (judgeRead(ctx, state, cwds, name, word, strict)) return
 }
 
 function lines(ctx: Context, state: State, nodes: ShellNode[]): void {
-  const saved: { cwds: Cwds; stack: Cwds[] }[] = []
+  const saved: { cwds: Cwds; stack: Cwds[]; previous: CommandNode | null }[] = []
+  // The command before, at this level: what a pipe feeds the next one.
+  let previous: CommandNode | null = null
   for (const node of nodes) {
-    if (node.kind === "open") saved.push({ cwds: state.cwds, stack: [...state.stack] })
-    else if (node.kind === "close") Object.assign(state, saved.pop() ?? {})
-    else if (node.kind === "unknown") refuse(ctx, `can't tell what this command runs (${node.why}); run the part that reads files on its own`)
-    else command(ctx, state, node)
+    if (node.kind === "open") {
+      saved.push({ cwds: state.cwds, stack: [...state.stack], previous })
+      previous = null
+    } else if (node.kind === "close") {
+      const back = saved.pop()
+      if (back) {
+        state.cwds = back.cwds
+        state.stack = back.stack
+        previous = back.previous
+      }
+    } else if (node.kind === "unknown") refuse(ctx, `can't tell what this command runs (${node.why}); run the part that reads files on its own`)
+    else {
+      command(ctx, state, node, previous)
+      previous = node
+    }
   }
 }
 

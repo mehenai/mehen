@@ -399,7 +399,7 @@ describe("second review: wrappers", () => {
     expect(commandFindings("xargs -a .env echo", CWD, HOME)[0]?.reason).toContain(".env")
     expect(commandFindings("xargs --arg-file=.env echo", CWD, HOME)).toHaveLength(1)
     expect(commandFindings("xargs -a.env echo", CWD, HOME)).toHaveLength(1)
-    expect(commandFindings("find . -name '*.txt' | xargs cat", CWD, HOME)[0]?.reason).toContain("can't tell which files")
+    expect(commandFindings("find . -type f | xargs cat", CWD, HOME)[0]?.reason).toContain("can't tell which files")
     expect(commandFindings("ls | xargs rm", CWD, HOME)).toEqual([])
   })
 
@@ -435,7 +435,7 @@ describe("second review: where a relative path points", () => {
   })
 
   test("a folder change the guard does not model, then a relative read, is refused; an absolute read is still judged", () => {
-    for (const command of ["cd - && cat credentials", 'cd "$DIR" && cat notes.txt', "popd && cat notes.txt", "pushd +1 && cat notes.txt", "cd $(pick) && cat notes.txt"]) {
+    for (const command of ["cd - && cat credentials", 'cd "$DIR" && cat .env', "popd && cat id_rsa", "pushd +1 && cat .aws/config", "cd $(pick) && cat credentials"]) {
       expect({ command, reason: commandFindings(command, CWD, HOME)[0]?.reason }).toEqual({ command, reason: expect.stringContaining("can't tell which folder") })
     }
     expect(commandFindings('cd "$DIR" && cat /etc/hostname', CWD, HOME)).toEqual([])
@@ -508,5 +508,84 @@ describe("second review: links", () => {
     const findings = commandFindings("ln -s ../.aws/credentials work/x; cat work/x", home.path, home.path)
     expect(findings.map((f) => f.reason)).toEqual([expect.stringContaining("`ln -s`"), expect.stringContaining("`cat` would read work/x, a symbolic link made earlier in this command")])
     expect(commandFindings("ln -s ~/.aws work/d && cat work/d/credentials", home.path, home.path)[1]?.reason).toContain("work/d/credentials")
+  })
+})
+
+describe("narrowed refusals: an unknown folder, then a relative read", () => {
+  test("a relative path that could not name a key file anywhere passes", () => {
+    for (const read of ["README.md", "src/index.ts", "package.json", "docs/guide.md", "apps/cli/src/hook/rules.ts"]) {
+      const command = `cd "$(git rev-parse --show-toplevel)" && cat ${read}`
+      expect({ command, findings: commandFindings(command, CWD, HOME) }).toEqual({ command, findings: [] })
+    }
+  })
+
+  test("one whose name or folders could be a key file's is still refused", () => {
+    for (const read of [".env", ".env.local", "app/.env.production", ".envrc", ".aws/credentials", "credentials", "config", "known_hosts", "id_ed25519", "certs/server.pem", "tls.key", ".npmrc", "sub/.config/gh/hosts.yml", ".kube/config", ".local-secrets/stripe", "../.ssh/notes.txt", ".gnupg/pubring.kbx", "x/.config/mehen/state.json"]) {
+      const command = `cd "$(git rev-parse --show-toplevel)" && cat ${read}`
+      expect({ command, reason: commandFindings(command, CWD, HOME)[0]?.reason }).toEqual({ command, reason: expect.stringContaining("can't tell which folder") })
+    }
+  })
+})
+
+describe("narrowed refusals: find feeding a file reader", () => {
+  const allowed = [
+    "find . -name '*.ts' | xargs grep foo",
+    "find src -name '*.md' -type f | xargs cat",
+    "find . -type f -name '*.ts' -print0 | xargs -0 grep -l foo",
+    "find . -iname '*.TS' | xargs head -5",
+    "find . -path './src/*.ts' | xargs cat",
+    "find . -name '*.ts' -name '*.d.ts' | xargs cat",
+    "find . -maxdepth 2 -name package.json | xargs cat",
+    "find . -name '*.ts' -exec grep foo {} +",
+    "find . -name '*.md' -exec cat {} \\;",
+    "find . -name '*.md' -exec cat {} ';'",
+    "find . -type f | xargs rm",
+    "find . -type f -exec rm {} +",
+    "find -L . -name '*.ts' | xargs cat",
+  ]
+  const refused = [
+    "find . -type f | xargs cat",
+    "find . | xargs grep foo",
+    "find . -name '*' | xargs cat",
+    "find . -name '.*' | xargs cat",
+    "find . -name '*.env' | xargs cat",
+    "find . -name '*.local' | xargs cat",
+    "find . -name '*.json' | xargs cat",
+    "find . -name '*.pem' | xargs cat",
+    "find . -name 'id_*' | xargs cat",
+    "find . -name '*.ts' -o -name '*.env' | xargs cat",
+    "find . ! -name '*.ts' | xargs cat",
+    "find . -not -name '*.ts' | xargs cat",
+    "find . \\( -name '*.ts' \\) | xargs cat",
+    "find . -name '*.ts' -path '*' | xargs cat",
+    "find . -regex '.*\\.ts' | xargs cat",
+    "find ~/.aws -name '*.ts' | xargs cat",
+    "find ~ -name '*.ts' | xargs cat",
+    "find / -name '*.ts' | xargs cat",
+    'find "$D" -name \'*.ts\' | xargs cat',
+    'find . -name "$P" | xargs cat',
+    "git ls-files | xargs cat",
+    "find . -name '*.ts' | grep src | xargs cat",
+    "xargs -a list.txt cat",
+    "find . -type f -exec cat {} +",
+    "find . -name '*.env' -exec grep KEY {} \\;",
+    "find . -name '*' -execdir cat {} \\;",
+    "find . -name '*.ts' -exec sh -c 'cat \"$1\"' _ {} \\;",
+  ]
+
+  test("a find whose every pattern cannot match a key file's name, from folders that are not protected, may feed a reader", () => {
+    for (const command of allowed) expect({ command, findings: commandFindings(command, CWD, HOME) }).toEqual({ command, findings: [] })
+  })
+
+  test("anything else feeding a reader is refused, with the reason", () => {
+    for (const command of refused) expect({ command, reason: commandFindings(command, CWD, HOME)[0]?.reason }).toEqual({ command, reason: expect.stringContaining("can't tell") })
+    expect(commandFindings("find . -name '*.ts' -o -name x | xargs cat", CWD, HOME)[0]?.reason).toContain("-o")
+    expect(commandFindings("find . -name '*.env' | xargs cat", CWD, HOME)[0]?.reason).toContain("'*.env' could match a key file")
+    expect(commandFindings("git ls-files | xargs cat", CWD, HOME)[0]?.reason).toContain("not a find")
+  })
+
+  test("a literal file named beside the input is still judged", () => {
+    expect(commandFindings("find . -name '*.ts' | xargs cat .env", CWD, HOME)[0]?.path).toBe(".env")
+    expect(commandFindings("find . -name '*.md' -exec cat .env {} \\;", CWD, HOME)[0]?.path).toBe(".env")
   })
 })
