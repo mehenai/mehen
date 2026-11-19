@@ -28,6 +28,9 @@ afterEach(() => {
 })
 const inVault = async (test: (ctx: import("../src/vault/core.ts").VaultContext) => Promise<void>) => runInDurableObject(env.TENANT_VAULT.getByName(freshTenant()), (instance) => test(instance.context))
 
+// A made-up value (SENTINEL marks the tests' fake keys) the relay must never open here.
+const FAKE = "SENTINEL"
+
 type Case = [template: string, method: string, url: string, code: "approval_required" | "policy_denied", body?: unknown]
 
 const MCP = { model: "grok-4", input: "hi", tools: [{ type: "mcp", server_url: "https://evil.test/mcp", server_label: "evil" }] }
@@ -73,7 +76,7 @@ describe("the new providers' sensitive operations at the relay, with the item's 
       ceiling: "relay",
       policy: { default: "allow", rules: [{ action: "allow", paths: ["/**"], note: "everything" }] },
       publicFields: basic ? { username: "agent@example.com" } : {},
-      secretFields: basic ? { password: "relay-floor-test-secret-0123456789" } : { key: "relay-floor-test-secret-0123456789" },
+      secretFields: basic ? { password: FAKE } : { key: FAKE },
     })
     let sends = 0
     let opens = 0
@@ -102,7 +105,7 @@ describe("the body floors at the relay", () => {
   ] as const)("let a plain %s call through to the provider, once", async (id, url, body) => inVault(async (ctx) => {
     const template = getTemplate(id)
     if (!template) throw new Error(id)
-    const device = await policyFixture(ctx, { slug: `${id}-key`, kind: template.kind, provider: id, binding: template.binding, injection: template.injection, ceiling: "relay", policy: template.policy, secretFields: { key: "relay-floor-test-secret-0123456789" } })
+    const device = await policyFixture(ctx, { slug: `${id}-key`, kind: template.kind, provider: id, binding: template.binding, injection: template.injection, ceiling: "relay", policy: template.policy, secretFields: { key: FAKE } })
     let sends = 0
     setUpstreamFetch(async () => {
       sends++
