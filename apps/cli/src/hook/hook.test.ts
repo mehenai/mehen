@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { claudeAnswer, claudeToolCall, guardLevel, judge, SESSION_CONTEXT } from "./index.ts"
-import { GREP_WALK_DEPTH, GREP_WALK_ENTRIES, commandFindings, secretFile, secretInText } from "./rules.ts"
+import { GREP_WALK_DEPTH, GREP_WALK_ENTRIES, GREP_WALK_SKIPS, commandFindings, secretFile, secretInText } from "./rules.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
 
 const HOME = "/home/a"
@@ -261,6 +261,49 @@ describe("review fixes: recursive grep", () => {
       for (let i = 0; i <= GREP_WALK_DEPTH + 1; i++) deep += `/d${i}`
       await Bun.write(`${deep}/x.txt`, "")
       expect(commandFindings("grep -r KEY deep", dir.path, HOME)[0]?.reason).toContain("too deep")
+    } finally {
+      await dir.remove()
+    }
+  })
+})
+
+describe("review fixes: grep -r skips tool output folders", () => {
+  test("the bulk of a tree under node_modules, .git and the like is not walked, so an ordinary grep -r . passes", async () => {
+    const dir = await tempDir()
+    try {
+      for (let i = 0; i < GREP_WALK_ENTRIES + 5; i++) await Bun.write(`${dir.path}/node_modules/pkg/f${i}.js`, "")
+      await Bun.write(`${dir.path}/node_modules/pkg/.env`, "KEY=x")
+      for (const skipped of [".git", "dist", ".venv", "coverage"]) await Bun.write(`${dir.path}/${skipped}/.env`, "KEY=x")
+      await Bun.write(`${dir.path}/src/index.ts`, "")
+      expect(commandFindings("grep -r foo .", dir.path, HOME)).toEqual([])
+      await Bun.write(`${dir.path}/src/deep/config/.env`, "KEY=x")
+      expect(commandFindings("grep -r foo .", dir.path, HOME)[0]?.reason).toContain("src/deep/config/.env")
+    } finally {
+      await dir.remove()
+    }
+  })
+
+  test("only folders are skipped: a key file named like one is still found", async () => {
+    const keys = await tempDir()
+    const tree = await tempDir()
+    try {
+      await Bun.write(`${keys.path}/.env`, "KEY=x")
+      await Bun.write(`${tree.path}/src/index.ts`, "")
+      const { symlink } = await import("node:fs/promises")
+      await symlink(`${keys.path}/.env`, `${tree.path}/src/vendor`)
+      expect(commandFindings("grep -r foo .", tree.path, HOME)[0]?.reason).toContain("src/vendor")
+    } finally {
+      await keys.remove()
+      await tree.remove()
+    }
+  })
+
+  test("a folder named on the command line is searched even when it is one the walk skips inside a tree", async () => {
+    const dir = await tempDir()
+    try {
+      await Bun.write(`${dir.path}/node_modules/pkg/.env`, "KEY=x")
+      expect(commandFindings("grep -r foo node_modules", dir.path, HOME)[0]?.reason).toContain(".env")
+      expect(GREP_WALK_SKIPS.has("node_modules")).toBe(true)
     } finally {
       await dir.remove()
     }

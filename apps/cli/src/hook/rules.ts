@@ -269,6 +269,11 @@ function globRegex(glob: string): RegExp {
 export const GREP_WALK_DEPTH = 16
 export const GREP_WALK_ENTRIES = 10_000
 
+// Folders the walk does not enter: tools' and package managers' own output,
+// which never holds the person's key files and is the bulk of most trees.
+// Only folders: a file with one of these names is still judged.
+export const GREP_WALK_SKIPS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", "target", "vendor", ".cache", ".turbo", "coverage"])
+
 type GrepArgs = { recursive: boolean; targets: string[]; excludes: RegExp[]; includes: RegExp[]; excludeDirs: RegExp[] }
 
 const GREP_LONG_VALUE = new Set(["--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--directories", "--devices", "--exclude", "--include", "--exclude-dir", "--exclude-from", "--label", "--binary-files", "--group-separator"])
@@ -318,7 +323,8 @@ function grepArgs(args: string[]): GrepArgs {
 type Walk = { found: string } | { refused: string } | null
 
 // A breadth-first walk of what grep -r would read under `dir`, skipping what
-// the command excludes, until it finds a key file or runs past its bounds.
+// the command excludes and the folders in GREP_WALK_SKIPS, until it finds a
+// key file or runs past its bounds.
 function walkForSecrets(dir: string, target: string, grep: GrepArgs, cwd: string, home: string, vaultDirs: string[]): Walk {
   const cache = new Map<string, boolean>()
   const queue: { path: string; shown: string; depth: number }[] = [{ path: dir, shown: target, depth: 0 }]
@@ -337,7 +343,7 @@ function walkForSecrets(dir: string, target: string, grep: GrepArgs, cwd: string
       const full = join(path, entry.name)
       const label = join(shown, entry.name)
       if (entry.isDirectory()) {
-        if (grep.excludeDirs.some((re) => re.test(entry.name))) continue
+        if (GREP_WALK_SKIPS.has(entry.name) || grep.excludeDirs.some((re) => re.test(entry.name))) continue
         if (depth + 1 > GREP_WALK_DEPTH) return { refused: `\`grep -r\` over ${target} goes too deep (more than ${GREP_WALK_DEPTH} folders down) for the guard to check it for key files; search a narrower folder` }
         queue.push({ path: full, shown: label, depth: depth + 1 })
         continue
