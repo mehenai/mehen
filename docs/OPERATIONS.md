@@ -216,6 +216,24 @@ The Worker has a cron trigger every 15 minutes that deletes expired challenges, 
 
 **Reconcile fair progress.** The enrolment reconcile scan (`reconcileEnrolmentMirrors` in `directory/workspace-enrolment.ts`) keeps two queues. Rows D1 has already settled (expired or rejected, their source not yet told) drain oldest first, in batches of 50, at most 4 batches a run (200 rows a run, 19,200 a day), stopping at the first short batch, and leave the scan once their source acknowledges; a row whose source fails is asked once a run and stays for the next. A row that never reached a workspace (the same test as the prune step that deletes it at its hard cap) is not in this queue: that step takes it without its source being told, so a flood of anonymous starts never takes this queue's places. Pending rows, live or lapsed, which may have nothing to do until their 24-hour hard cap, are visited in a window that moves on by one batch every 15 minutes, so a later start whose acceptance reply was lost is reached behind any number of earlier starts: with a backlog of N pending rows, within ceil(N / 50) runs (96 runs a day cover 4,800 pending rows). Lapsed attempts are never expired early: that would break the lease. A growing count of unreconciled rows still deserves a look, since a source that keeps failing is retried every run and logs `enrol.source_reconcile.pending`.
 
+## The management guard
+
+A mandate lapses when its signer stops managing a credential's home, and a manage share that has ended must lapse the mandates it took management from before anything else changes who manages what. The vault makes that hold in SQLite itself, in every workspace object, the Worker's and the local edition's alike (`apps/vault/src/vault/areas/management-guard.ts`):
+
+- **Triggers.** The six tables that decide who manages what (`items`, `team_members`, `project_shares`, `members`, `teams`, `projects`) each have three triggers that abort with `management_guard`: before an insert, before a delete, and before an update that changes a management column (an id, a slug, a credential's home, a member's account, role or status, and every column of `team_members` and `project_shares`). A new column on one of these tables fails the vault's tests until it is listed as management or neutral.
+- **The marker.** A trigger lets the write through only while `_mehen_guard` holds its one row. Only `beforeManagementChange` writes it, inside a synchronous transaction and after expired shares are settled; the outermost transaction deletes it before it commits, and a rollback removes it. A request or a start that finds one left behind deletes it and writes `management_guard.leftover` to the audit: that should never happen, so treat it as a bug to report.
+- **Recursive triggers.** `recursive_triggers` is turned on and read back when the object starts, so a row a `REPLACE` deletes fires its delete trigger.
+- **Schema statements.** Triggers cannot stop `DROP TABLE` or `DROP TRIGGER`, so the vault's SQL refuses any statement whose first keyword is `CREATE`, `DROP`, `ALTER`, `PRAGMA`, `ATTACH`, `DETACH`, `VACUUM` or `REINDEX` outside the migrations, a restore and the start, and no area reaches the raw SQL handle.
+- **Every start** sets recursive triggers, applies the migrations (each holding the marker, as a migration may move rows of these tables), puts back every guard trigger that is missing or changed and checks them all before serving. A dump restore runs as one trusted sequence: drop the tables, make the dump's schema, write its rows under the marker, install the triggers, check them; the restart that follows checks again. Dumps never carry the guard's own tables or triggers.
+- **The access-state memo** is stamped with a revision that triggers on every table increment, with the count of rolled-back transactions, so a write by any route rebuilds it.
+
+What it does not cover:
+
+- It proves the settlement ran in the same transaction, not that the write after it is right: a handler that holds the marker can still write a wrong share.
+- It guards those six tables only. Devices, settings and the rest decide other things and are not refused.
+- Anyone who can write the object's storage outside the vault's code (the local edition's data folder, which the vault refuses to use when anyone else can write it) can drop the triggers; the next start puts them back but cannot undo what was written meanwhile.
+- A point-in-time restore brings back the triggers as they were at that moment; the restart checks and repairs them before serving.
+
 ## Rebuilding `mehen` for a test machine
 
 The CLI is a standalone binary built from `apps/cli` with the protocol compiled in. Machines with a released `mehen` update themselves (https://docs.mehen.dev/security/keys-and-signing#releases); rebuild by hand only to test a change before it is released.

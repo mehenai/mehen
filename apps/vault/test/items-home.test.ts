@@ -144,7 +144,7 @@ it("refuses an action prepared against an older configuration before mutating or
   await inAccess(f.tenant, async (ctx) => {
     const item = await seedCredential(ctx, "stale-action"), p = memberPrincipal(ctx), i = memberInvocation(ctx), change = { description: "new" }
     const action = WorkspaceStepUpActionSchema.parse(await workspaceItemOps["items.action"].handler(ctx, p, { slug: item.slug, change, action: "update" }, i))
-    ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE id=?", item.id)
+    fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE id=?", item.id)
     const before = canonicalJson(checkedCredential(ctx, item.slug)), open = vi.spyOn(ctx, "openField")
     await expect(workspaceItemOps["items.update"].handler(ctx, p, { slug: item.slug, change }, memberInvocation(ctx, "owner", action))).rejects.toMatchObject({ code: "conflict", message: "The credential changed; review and try again." })
     expect(canonicalJson(checkedCredential(ctx, item.slug))).toBe(before)

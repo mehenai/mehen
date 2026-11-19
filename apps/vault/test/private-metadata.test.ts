@@ -99,7 +99,7 @@ it("minimises real private relay allow, binding refusal and policy denial before
     await authoriseWorkspaceRelay(ctx,p,req,i)
     const open=vi.spyOn(ctx,"openField"),send=vi.spyOn(globalThis,"fetch")
     await expect(authoriseWorkspaceRelay(ctx,p,{...req,url:"https://wrong.example.com/secret-path"},i)).rejects.toMatchObject({code:"binding_refused"})
-    ctx.sql.exec("UPDATE items SET policy=? WHERE id=?",JSON.stringify({default:"deny",rules:[]}),item.id)
+    fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE id=?",JSON.stringify({default:"deny",rules:[]}),item.id)
     await expect(authoriseWorkspaceRelay(ctx,p,req,i)).rejects.toMatchObject({code:"policy_denied"})
     const rows=ctx.sql.exec<AuditRow>("SELECT * FROM audit ORDER BY seq").toArray()
     for(const [action,outcome] of [["relay.allow","allowed"],["relay.refuse","refused:binding_refused"],["relay.deny","refused:policy_denied"]]){

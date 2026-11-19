@@ -10,6 +10,7 @@ import { PROJECT_RUN_INPUT, accountAuth, inAccess, projectDeviceInvocation, proj
 import { accessMember } from "./workspace-fixtures.ts"
 import { seedCredential } from "./credentials-test-support.ts"
 import { registerCredentialServices } from "../src/vault/areas/items-workspace.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const HOUR = 3_600_000
 const DEVICE = "dev_member"
@@ -127,7 +128,7 @@ describe("service runs", () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
       const { renew } = await serviceRun(ctx)
-      ctx.sql.exec("UPDATE items SET version=version+1, config_rev=config_rev+1 WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET version=version+1, config_rev=config_rev+1 WHERE slug='key-workspace'")
       expect(await refusal(renew)).toMatchObject({ error: "conflict" })
     })
   })
@@ -148,7 +149,7 @@ describe("service runs", () => {
   it("refuse a lease once the machine's scope no longer allows them", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
       const { created, invocation } = await serviceRun(ctx)
       expect(created.vars).toMatchObject([{ name: "TOKEN", delivery: "lease" }])
       const lease = () => workspaceRunOps["runs.lease"]!.handler(ctx, principal, { run: created.run, item: "key-workspace" }, invocation)

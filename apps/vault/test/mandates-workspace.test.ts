@@ -54,9 +54,9 @@ const POST_MESSAGE = { method: "POST", url: "https://slack.com/api/chat.postMess
 async function twoPlaceholderRun(ctx: VaultContext, host = "api.example.com"): Promise<{ run: string; placeholders: string[] }> {
   registerCredentialServices()
   await seedCredential(ctx, "second-key")
-  ctx.sql.exec("UPDATE items SET policy=? WHERE slug='second-key'", JSON.stringify({ default: "approve", rules: [] }))
+  fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='second-key'", JSON.stringify({ default: "approve", rules: [] }))
   ctx.sql.exec("INSERT INTO vars(project,env,name,item,field,updated_by,updated_at) VALUES('prj_a','dev','OTHER','second-key','key','member:mem_owner',?)", ctx.now())
-  ctx.sql.exec("UPDATE items SET binding=? WHERE slug IN ('key-workspace','second-key')", JSON.stringify({ hosts: [host] }))
+  fixtureSql(ctx).exec("UPDATE items SET binding=? WHERE slug IN ('key-workspace','second-key')", JSON.stringify({ hosts: [host] }))
   const run = await workspaceRunOps["runs.create"]!.handler(ctx, devicePrincipal("dev_owner"), { ...PROJECT_RUN_INPUT, env: "dev", vars: ["TOKEN", "OTHER"] }, await deviceInvocation(ctx, "dev_owner")) as WorkspaceRunCreated
   return { run: run.run, placeholders: run.vars.flatMap((v) => v.delivery === "placeholder" ? [v.value] : []) }
 }
@@ -119,7 +119,7 @@ describe("signing a mandate", () => {
     await inAccess(f.tenant, async (ctx) => {
       const live = await seedGithub(ctx, "stripe-live"), wildcard = await seedGithub(ctx, "wildcard"), plain = await seedGithub(ctx, "github-work")
       ctx.sql.exec("UPDATE item_secrets SET prefix='sk_live_' WHERE item=?", live.id)
-      ctx.sql.exec("UPDATE items SET binding=? WHERE id=?", JSON.stringify({ hosts: ["*.example.com"] }), wildcard.id)
+      fixtureSql(ctx).exec("UPDATE items SET binding=? WHERE id=?", JSON.stringify({ hosts: ["*.example.com"] }), wildcard.id)
       const offered = (await mandateOp(ctx, "mandates.candidates", "owner", { device: "dev_owner" }) as MandateCandidates).items
       expect(offered.filter((c) => [live.id, wildcard.id, plain.id].includes(c.id))).toEqual([
         { id: plain.id, slug: "github-work", never: null },
@@ -350,7 +350,7 @@ describe("the relay on a mandate", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       const item = await seedCredential(ctx, "selector-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE id=?", JSON.stringify({ default: "approve", rules: [] }), item.id)
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE id=?", JSON.stringify({ default: "approve", rules: [] }), item.id)
       const { mandate } = await signMandate(ctx, "owner", terms({ items: [item.id], classes: ["read"], caps: { read: 10, change: 0, send: 0, delete: 0 } }))
       const get = (query: string) => relayAs(ctx, "dev_owner", { method: "GET", url: `https://api.example.com/api?${query}`, headers: [] }, "selector-key")
       expect((await get("action=list_items")).material?.mandate).toBe(mandate.id)
@@ -594,7 +594,7 @@ describe("the relay on a mandate", () => {
     await inAccess(f.tenant, async (ctx) => {
       await seedGithub(ctx)
       await signMandate(ctx, "owner", terms())
-      ctx.sql.exec("UPDATE items SET binding=? WHERE slug='github-work'", JSON.stringify({ hosts: ["api.github.com", "*.github.com"] }))
+      fixtureSql(ctx).exec("UPDATE items SET binding=? WHERE slug='github-work'", JSON.stringify({ hosts: ["api.github.com", "*.github.com"] }))
       expect((await relayAs(ctx, "dev_owner", { ...READ_ISSUES, url: "https://attacker.github.com/repos/acme/app/issues" })).error?.code).toBe("approval_required")
       expect((await relayAs(ctx, "dev_owner", READ_ISSUES)).error).toBeNull()
       const guarded = vi.spyOn(projects, "isProtectedItem").mockReturnValue(true)
@@ -1017,6 +1017,44 @@ describe("the signer at each use", () => {
       })
     })
 
+    // The fifth review: the clock passes a share's end between the hook
+    // and the final check, which refuses the use; the lapse it found must
+    // stay even if the clock is then set back before the end.
+    it("commits the lapse the final check finds when a share's end passes after the hook, so a retry before that end is still refused", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        const a = await seedGithub(ctx, "github-work", PROJECT)
+        ctx.sql.exec("UPDATE devices SET scope=json_set(scope,'$.privateCredentials',json('true')) WHERE id='dev_kim'")
+        const b = await seedGithub(ctx, "kim-own", { kind: "member", member: "mem_kim" })
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim", items: [a.id, b.id].sort() }))
+        const { end } = await endKims(ctx)
+        let clock = end - 1
+        const moving = Object.assign(Object.create(ctx) as VaultContext, { now: () => clock })
+        beforeFinal(ctx, () => { clock = end + 1 })
+        expect((await relayAs(moving, "dev_kim", READ_ISSUES, "kim-own")).error?.code).toBe("conflict")
+        vi.restoreAllMocks()
+        clock = end - 1
+        expect((await relayAs(moving, "dev_kim", READ_ISSUES, "kim-own")).error?.code).toBe("approval_required")
+        expect(lapsedAt(ctx, mandate.id)).not.toBeNull()
+      })
+    })
+
+    it("prunes a settled end whose share no longer ends in the sweep's own upkeep, so the workspace stops waking for it", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        await seedGithub(ctx, "github-work", PROJECT)
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim" }))
+        const { end, ending } = await endKims(ctx)
+        sweepMandates(at(ctx, end + 1))
+        await share(at(ctx, end + 2), ending, level("manage"))
+        const { rev } = mandateState(ctx, mandate.id)!
+        await mandateOp(at(ctx, end + 2), "mandates.stop", "kim", { id: mandate.id, rev })
+        sweepMandates(at(ctx, end + 3))
+        expect(ctx.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM share_ends_settled").toArray()[0]!.n).toBe(0)
+        expect(ctx.sql.exec("SELECT due_at FROM schedule WHERE area='mandates' AND key='mandate-sweep'").toArray()).toEqual([])
+      })
+    })
+
     it("plans a passkey resume for a mandate its signer paused once a share it rested on has ended, and the resume sticks past the sweep", async () => {
       const f = await fixture()
       await inAccess(f.tenant, async (ctx) => {
@@ -1403,9 +1441,9 @@ describe("the signer at each use", () => {
       // A session ending or another browser does not end it.
       ctx.sql.exec("UPDATE account_security SET state=json_set(state,'$.revokedSessionIds',json('[\"ses_owner\"]')) WHERE account='acc_owner'")
       expect((await relayAs(ctx, "dev_owner", READ_ISSUES)).error).toBeNull()
-      ctx.sql.exec("UPDATE members SET gate_generation=gate_generation+1 WHERE id='mem_owner'")
+      fixtureSql(ctx).exec("UPDATE members SET gate_generation=gate_generation+1 WHERE id='mem_owner'")
       expect((await relayAs(ctx, "dev_owner", READ_ISSUES)).error?.code).toBe("approval_required")
-      ctx.sql.exec("UPDATE members SET gate_generation=gate_generation-1 WHERE id='mem_owner'")
+      fixtureSql(ctx).exec("UPDATE members SET gate_generation=gate_generation-1 WHERE id='mem_owner'")
       expect((await relayAs(ctx, "dev_owner", READ_ISSUES)).error).toBeNull()
       setSetting(ctx, "identity_rule_rev", 2)
       expect((await relayAs(ctx, "dev_owner", READ_ISSUES)).error?.code).toBe("approval_required")
@@ -1536,7 +1574,7 @@ describe("what a mandate never authorises", () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
       registerCredentialServices()
-      ctx.sql.exec("UPDATE items SET ceiling='lease' WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease' WHERE slug='key-workspace'")
       await signMandate(ctx, "owner", terms())
       const run = await workspaceRunOps["runs.create"]!.handler(ctx, devicePrincipal("dev_owner"), { ...PROJECT_RUN_INPUT, env: "dev" }, await deviceInvocation(ctx, "dev_owner")) as WorkspaceRunCreated
       expect(run.vars.map((v) => v.delivery)).toEqual(["placeholder"])

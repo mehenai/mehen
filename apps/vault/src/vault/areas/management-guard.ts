@@ -1,17 +1,23 @@
-// What must run before any write that can change who manages a credential's
-// home (team membership, shares, a member made or their role or status, a
-// credential made, deleted or moved, a team or project deleted): mandates
-// lapse what expired shares took (settleShareExpiries) while access is
-// still as it was. Its own module, with no imports but types and the error,
-// so any area may call it without an import cycle.
+// The management guard: what must run before any write that can change who
+// manages a credential's home (team membership, shares, a member made or
+// their role, status or account changed, a credential made, deleted, moved
+// or renamed, a team or project made, deleted, renamed or given another id):
+// mandates lapse what expired shares took (settleShareExpiries) while access
+// is still as it was.
 //
-// The guarantee is the vault's SQL itself: the workspace vault's `sql.exec`
-// (tenant-vault.ts, which the Worker and the local edition both run) hands
-// every statement to assertManagementWrite, which throws for a statement
-// that writes the management graph unless beforeManagementChange marked the
-// synchronous transaction it runs in. The mark lasts until that transaction
-// ends, by returning or throwing, and a graph write outside a transaction
-// is refused. Nothing switches it off.
+// SQLite enforces it, not this code's reading of the SQL: triggers on the
+// six graph tables abort an insert, a delete, or an update that changes a
+// management column (MANAGEMENT_COLUMNS) unless the guard's marker row is in
+// _mehen_guard. beforeManagementChange writes that row, only inside a
+// synchronous transaction and only once the guards have run; the
+// transaction wrapper (tenant-vault.ts) deletes it before the outermost
+// transaction commits, and a rollback removes it with everything else.
+// recursive_triggers is on, so rows a REPLACE deletes fire their triggers
+// too. What triggers cannot stop (DROP TABLE, DROP TRIGGER and other schema
+// statements) the SQL wrapper refuses outside migrations and restores
+// (assertNoSchemaChange), and the triggers are checked, and put back, every
+// time the object starts (installGuardTriggers). docs/OPERATIONS.md, The
+// management guard.
 
 import { VaultError } from "../../http.ts"
 import type { VaultContext } from "../core.ts"
@@ -26,115 +32,165 @@ export function isolateManagementGuardsForTests(): () => void {
   return () => { managementGuards.clear(); for (const [name, guard] of saved) managementGuards.set(name, guard) }
 }
 
-// One object's synchronous transactions: how deep the current one is
-// nested, and whether the guards ran in it. Keyed by the object's storage,
-// which every context of the object shares.
-type Scope = { depth: number; settled: boolean }
-const scopes = new WeakMap<object, Scope>()
-const scopeOf = (storage: object): Scope => {
-  let scope = scopes.get(storage)
-  if (!scope) scopes.set(storage, (scope = { depth: 0, settled: false }))
-  return scope
-}
-// Runs a synchronous transaction as the management scope: entered before it
-// starts, the mark cleared when the outermost one ends, and on any throw,
-// since a nested one that threw rolled back what the guards wrote in it.
-export function inManagementScope<T>(storage: object, run: () => T): T {
-  const scope = scopeOf(storage)
-  scope.depth++
-  try {
-    return run()
-  } catch (error) {
-    scope.settled = false
-    throw error
-  } finally {
-    scope.depth--
-    if (scope.depth === 0) scope.settled = false
-  }
-}
+export const GUARD_TABLE = "_mehen_guard"
+export const REVISION_TABLE = "_mehen_revision"
+// The guard's own tables and triggers: never dumped, restored or counted as
+// data (vault-backup.ts).
+export const GUARD_PREFIX = "_mehen_"
+export const MANAGEMENT_GUARD_ERROR = "management_guard"
 
-// Runs every guard and marks the current transaction as settled.
-export function beforeManagementChange(ctx: VaultContext): void {
-  for (const guard of managementGuards.values()) guard(ctx)
-  const scope = scopeOf(ctx.storage)
-  if (scope.depth > 0) scope.settled = true
+export const GRAPH_TABLES = ["items", "team_members", "project_shares", "members", "teams", "projects"] as const
+export type GraphTable = (typeof GRAPH_TABLES)[number]
+// The columns whose change is a change to who manages what: an update that
+// changes any of them takes the guard. Ids and slugs among them, since a
+// REPLACE on a unique one deletes another row. Every column of
+// team_members and project_shares.
+export const MANAGEMENT_COLUMNS: Readonly<Record<GraphTable, readonly string[]>> = {
+  items: ["id", "slug", "home_kind", "home_id"],
+  team_members: ["team", "member", "role"],
+  project_shares: ["id", "project", "subject_kind", "subject_id", "value"],
+  members: ["id", "account", "role", "status"],
+  teams: ["id", "slug"],
+  projects: ["id", "slug"],
 }
-
-const GRAPH_TABLES = ["items", "team_members", "project_shares", "members", "teams", "projects"] as const
-type GraphTable = (typeof GRAPH_TABLES)[number]
-// Rows made or deleted here change who manages what; teams and projects
-// are made empty, so only their deletion counts.
-const INSERTED: ReadonlySet<string> = new Set<GraphTable>(["items", "team_members", "project_shares", "members"])
-const DELETED: ReadonlySet<string> = new Set<GraphTable>(GRAPH_TABLES)
-// The columns an update may set without being a graph write: none of them
-// decides who manages a credential's home (effectiveAccess, managesHome).
-// Every other column of these tables, and every column of team_members and
-// project_shares, is a graph write.
-export const MANAGEMENT_NEUTRAL_COLUMNS: Readonly<Record<GraphTable, readonly string[]>> = {
-  items: ["kind", "provider", "account", "account_verified", "tags", "ceiling", "binding", "policy", "injection", "public_fields", "description", "status", "status_reason", "version", "config_rev", "dependency_revision", "updated_at", "rotated_at", "last_used_at", "review_reason", "review_at", "custom_provider", "browser", "pushable"],
-  members: ["name", "revision", "check_sequence", "gate_generation", "invite", "pending_role", "pending_since", "pending_action", "pending_by"],
-  teams: ["name", "slug"],
-  projects: ["slug", "default_env", "revision", "updated_at"],
+// Every other column: none decides who manages a credential's home
+// (effectiveAccess, managesHome). The two lists together are exactly the
+// columns the migrations make, which management-guard.test.ts checks.
+export const NEUTRAL_COLUMNS: Readonly<Record<GraphTable, readonly string[]>> = {
+  items: ["kind", "provider", "account", "account_verified", "tags", "ceiling", "binding", "policy", "injection", "public_fields", "status", "status_reason", "version", "description", "created_at", "updated_at", "rotated_at", "last_used_at", "review_reason", "review_at", "config_rev", "dependency_revision", "browser", "pushable", "custom_provider"],
   team_members: [],
   project_shares: [],
+  members: ["name", "pending_role", "pending_since", "gate_generation", "joined_at", "revision", "invite", "check_sequence", "pending_action", "pending_by"],
+  teams: ["name", "created_by", "created_at"],
+  projects: ["default_env", "created_by", "created_at", "updated_at", "revision"],
 }
 
-// The statements in a query as SQLite reads them for this purpose: comments
-// and string literals blanked, identifier quotes dropped, a schema prefix
-// dropped, case folded, whitespace collapsed, split at semicolons.
-function statementsOf(query: string): string[] {
-  const blanked = query
-    .replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, " ")
-    .replace(/'(?:[^']|'')*'/g, "?")
-    .replace(/["`[\]]/g, "")
-    .toLowerCase()
-    .replace(/\b(main|temp)\./g, "")
-    .replace(/\s+/g, " ")
-  return blanked.split(";").map((s) => s.trim()).filter((s) => s !== "")
+// One object's synchronous transactions, keyed by its storage, which every
+// context of the object shares: how deep the current one is, whether the
+// schema may change (migrations, restores), and whether the guard's tables
+// are there (a deleteAll removes them until the object starts again).
+type Scope = { depth: number; trusted: number; ready: boolean }
+const scopes = new WeakMap<object, Scope>()
+export function managementScope(storage: object): Scope {
+  let scope = scopes.get(storage)
+  if (!scope) scopes.set(storage, (scope = { depth: 0, trusted: 0, ready: false }))
+  return scope
 }
-// The columns a SET clause assigns, tuple assignments `(a,b)=(?,?)`
-// included, a column qualified by its table counted by its own name.
-function assignedColumns(set: string): string[] {
-  const parts: string[] = []
-  let depth = 0, start = 0
-  for (let i = 0; i < set.length; i++) {
-    const c = set[i]
-    if (c === "(") depth++
-    else if (c === ")") depth--
-    else if (c === "," && depth === 0) { parts.push(set.slice(start, i)); start = i + 1 }
+
+// Runs every guard, then writes the marker the triggers look for, inside the
+// current synchronous transaction, which removes it before it commits.
+export function beforeManagementChange(ctx: VaultContext): void {
+  const scope = managementScope(ctx.storage)
+  if (scope.depth === 0) throw new VaultError("internal", "The management guard runs only inside a synchronous transaction.")
+  for (const guard of managementGuards.values()) guard(ctx)
+  ctx.sql.exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
+}
+
+// Schema changes and connection settings, which triggers cannot see: only
+// migrations and restores make them, and the guard's own start-up.
+const SCHEMA_KEYWORDS = new Set(["create", "drop", "alter", "pragma", "attach", "detach", "vacuum", "reindex"])
+// The first keyword of each statement in a query: comments become space,
+// string literals and quoted names a placeholder that is no keyword.
+export function firstKeywords(query: string): string[] {
+  const blanked = query.replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]/g, (match) => (match.startsWith("--") || match.startsWith("/*") ? " " : " ? "))
+  return blanked.split(";").filter((statement) => statement.trim() !== "").map((statement) => /^\s*([A-Za-z]+)/.exec(statement)?.[1]?.toLowerCase() ?? "?")
+}
+// A statement that does not start with a keyword is refused as well: its
+// first keyword cannot be read, so it might be any of these.
+export function assertNoSchemaChange(storage: object, query: string): void {
+  if (managementScope(storage).trusted > 0) return
+  const word = firstKeywords(query).find((keyword) => SCHEMA_KEYWORDS.has(keyword) || keyword === "?")
+  if (word !== undefined) throw new VaultError("internal", `A ${word === "?" ? "statement without a readable keyword" : `${word.toUpperCase()} statement`} runs only in a migration or a restore.`)
+}
+// Runs a restore's own statements with schema changes allowed, inside a
+// transaction, with the guard's marker held for the rows it writes, and
+// puts the guard's triggers back on whatever schema it leaves.
+export function withTrustedSchema<T>(ctx: VaultContext, run: () => T): T {
+  const scope = managementScope(ctx.storage)
+  scope.trusted++
+  try {
+    return ctx.storage.transactionSync(() => {
+      ctx.sql.exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
+      // A trigger naming a column keeps that column from being dropped.
+      for (const { name } of ctx.sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB '${GUARD_PREFIX}*'`).toArray()) ctx.sql.exec(`DROP TRIGGER ${quote(name)}`)
+      const result = run()
+      installGuardTriggers(ctx.sql)
+      return result
+    })
+  } finally {
+    scope.trusted--
   }
-  parts.push(set.slice(start))
-  return parts.flatMap((part) => {
-    const lhs = part.split("=")[0]?.trim() ?? ""
-    return lhs.replace(/^\(|\)$/g, "").split(",").map((column) => column.trim().split(".").at(-1) ?? "")
-  })
 }
-const TABLE = String.raw`(${GRAPH_TABLES.join("|")})\b`
-const INSERT_INTO = new RegExp(String.raw`\b(?:insert(?: or \w+)?|replace) into ${TABLE}`, "g")
-const DELETE_FROM = new RegExp(String.raw`\bdelete from ${TABLE}`, "g")
-const UPDATE_SET = new RegExp(String.raw`\bupdate(?: or \w+)? ${TABLE}(?: as \w+)? set (.*?)(?= where | returning | from |$)`, "g")
 
-// Why a query writes the management graph, or null when it does not.
-export function managementWrite(query: string): string | null {
-  for (const statement of statementsOf(query)) {
-    for (const [, table] of statement.matchAll(INSERT_INTO)) if (table && INSERTED.has(table)) return `insert into ${table}`
-    for (const [, table] of statement.matchAll(DELETE_FROM)) if (table && DELETED.has(table)) return `delete from ${table}`
-    for (const [, table, set] of statement.matchAll(UPDATE_SET)) {
-      const neutral = MANAGEMENT_NEUTRAL_COLUMNS[table as GraphTable]
-      const columns = assignedColumns(set ?? "")
-      const moving = columns.filter((column) => !neutral.includes(column))
-      if (moving.length > 0 || columns.length === 0) return `update of ${table} (${moving.join(", ") || "unreadable"})`
+const quote = (name: string): string => `"${name.replaceAll('"', '""')}"`
+const UNGUARDED = `NOT EXISTS (SELECT 1 FROM ${GUARD_TABLE})`
+const ABORT = `BEGIN SELECT RAISE(ABORT, '${MANAGEMENT_GUARD_ERROR}'); END`
+// Every trigger the guard expects, by name, for the tables there are: the
+// guard's on the graph tables, and the revision's on every table, which the
+// access-state memo is stamped with (workspace-runtime.ts accessState).
+export function expectedGuardTriggers(tables: readonly string[]): Map<string, string> {
+  const triggers = new Map<string, string>()
+  for (const table of GRAPH_TABLES) {
+    if (!tables.includes(table)) continue
+    const changed = MANAGEMENT_COLUMNS[table].map((column) => `OLD.${quote(column)} IS NOT NEW.${quote(column)}`).join(" OR ")
+    triggers.set(`${GUARD_PREFIX}guard_${table}_insert`, `CREATE TRIGGER ${GUARD_PREFIX}guard_${table}_insert BEFORE INSERT ON ${quote(table)} WHEN ${UNGUARDED} ${ABORT}`)
+    triggers.set(`${GUARD_PREFIX}guard_${table}_delete`, `CREATE TRIGGER ${GUARD_PREFIX}guard_${table}_delete BEFORE DELETE ON ${quote(table)} WHEN ${UNGUARDED} ${ABORT}`)
+    triggers.set(`${GUARD_PREFIX}guard_${table}_update`, `CREATE TRIGGER ${GUARD_PREFIX}guard_${table}_update BEFORE UPDATE ON ${quote(table)} WHEN (${changed}) AND ${UNGUARDED} ${ABORT}`)
+  }
+  for (const table of tables) {
+    for (const op of ["insert", "update", "delete"]) {
+      const name = `${GUARD_PREFIX}revision_${table}_${op}`
+      triggers.set(name, `CREATE TRIGGER ${quote(name)} AFTER ${op.toUpperCase()} ON ${quote(table)} BEGIN UPDATE ${REVISION_TABLE} SET n=n+1 WHERE id=1; END`)
     }
   }
-  return null
+  return triggers
+}
+// The tables triggers go on: every application table, never SQLite's,
+// Cloudflare's or the guard's own.
+function guardedTables(sql: SqlStorage): string[] {
+  return sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '${GUARD_PREFIX}*'`).toArray().map((row) => row.name)
 }
 
-// Throws for a statement that writes the management graph outside a
-// transaction the guards marked.
-export function assertManagementWrite(storage: object, query: string): void {
-  const write = managementWrite(query)
-  if (write === null) return
-  const scope = scopes.get(storage)
-  if (scope && scope.depth > 0 && scope.settled) return
-  throw new VaultError("internal", `A ${write} ran without the management guard (beforeManagementChange) in its transaction.`)
+// The guard's tables, made once and kept.
+export function installGuardTables(sql: SqlStorage): void {
+  sql.exec(`CREATE TABLE IF NOT EXISTS ${GUARD_TABLE}(id INTEGER PRIMARY KEY CHECK (id = 1))`)
+  sql.exec(`CREATE TABLE IF NOT EXISTS ${REVISION_TABLE}(id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL)`)
+  sql.exec(`INSERT OR IGNORE INTO ${REVISION_TABLE}(id, n) VALUES (1, 0)`)
+}
+// recursive_triggers on and read back: without it a row a REPLACE deletes
+// would not fire its delete trigger.
+export function enableRecursiveTriggers(sql: SqlStorage): void {
+  sql.exec("PRAGMA recursive_triggers = ON")
+  const on = sql.exec<{ recursive_triggers: number }>("PRAGMA recursive_triggers").toArray()[0]?.recursive_triggers
+  if (on !== 1) throw new Error("recursive_triggers did not turn on")
+}
+// The expected triggers that are missing or not as expected.
+export function missingGuardTriggers(sql: SqlStorage): string[] {
+  const expected = expectedGuardTriggers(guardedTables(sql))
+  const present = new Map(sql.exec<{ name: string; sql: string }>(`SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name GLOB '${GUARD_PREFIX}*'`).toArray().map((row) => [row.name, row.sql]))
+  return [...expected].filter(([name, text]) => present.get(name) !== text).map(([name]) => name)
+}
+// Puts back every guard trigger that is missing or changed, drops ones for
+// tables or columns that are gone, and checks the result. Run at start-up
+// after the migrations, and by a restore after its rows.
+export function installGuardTriggers(sql: SqlStorage): void {
+  const expected = expectedGuardTriggers(guardedTables(sql))
+  const present = new Map(sql.exec<{ name: string; sql: string }>(`SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name GLOB '${GUARD_PREFIX}*'`).toArray().map((row) => [row.name, row.sql]))
+  for (const [name, text] of present) if (expected.get(name) !== text) sql.exec(`DROP TRIGGER IF EXISTS ${quote(name)}`)
+  for (const [name, text] of expected) if (present.get(name) !== text) sql.exec(text)
+  const missing = missingGuardTriggers(sql)
+  if (missing.length > 0) throw new Error(`The management guard's triggers did not install: ${missing.join(", ")}`)
+}
+
+// A marker left behind, which no transaction should ever do: removed, and
+// written to the audit. Checked at start-up and at every request outside a
+// transaction. True when one was found.
+export function clearLeftoverMarker(ctx: VaultContext): boolean {
+  const scope = managementScope(ctx.storage)
+  if (!scope.ready || scope.depth > 0) return false
+  if (ctx.sql.exec(`SELECT 1 FROM ${GUARD_TABLE} LIMIT 1`).toArray().length === 0) return false
+  ctx.sql.exec(`DELETE FROM ${GUARD_TABLE}`)
+  console.error(JSON.stringify({ at: "management_guard", error: "leftover_marker" }))
+  ctx.audit({ actor: "system", action: "management_guard.leftover", target: ctx.tenant })
+  return true
 }

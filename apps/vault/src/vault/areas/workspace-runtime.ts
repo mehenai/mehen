@@ -91,10 +91,11 @@ function frozen<T>(value: T): T {
 // (TenantVault.invoke): a caller that needs a changed state copies it.
 export function accessState(ctx: VaultContext): AccessState {
   const memo = ctx.accessStateMemo
-  if (memo?.state && memo.writes === ctx.storageWrites && ctx.now() < memo.until) return memo.state
-  const writes = ctx.storageWrites, now = ctx.now()
+  const revision = memo ? ctx.accessRevision() : null
+  if (memo?.state && memo.revision === revision && ctx.now() < memo.until) return memo.state
+  const now = ctx.now()
   const built = buildAccessState(ctx, now)
-  if (memo) Object.assign(memo, { writes, until: built.until, state: frozen(built.state) })
+  if (memo) Object.assign(memo, { revision, until: built.until, state: frozen(built.state) })
   return built.state
 }
 // `until` is when the state next changes without a write: the first open

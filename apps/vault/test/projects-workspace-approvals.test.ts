@@ -14,6 +14,7 @@ import { authoriseWorkspaceRelay, workspaceRelayOps } from "../src/vault/areas/r
 import { setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import type { ApprovalBundleCreated } from "@mehen/protocol/api"
 import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 const SUBJECT = { item: "key-project", method: "POST", url: "https://api.example.com/write", contentType: "application/json", contentEncoding: null, headersSha256: digestOf([]), bodySha256: digestOf("{}"), constraints: { uses: 1, ttlSeconds: 600 } }
 const PRESENTATION = { title: "Write a record", details: [{ label: "Action", value: "Write" }], body: "{}", headers: [] as [string, string][] }
 const BATCH = { floor: [], shape: "shape-write", replaces: null }
@@ -238,10 +239,10 @@ describe("asking with batch approvals", () => {
       const off = switchedOff(ctx)
       const kept = ask(off, projectState(off), "kept")
       const before = ctx.sql.exec("SELECT * FROM approvals").toArray()
-      ctx.sql.exec("DROP INDEX approvals_review_group; DROP INDEX approvals_shape; DROP INDEX approvals_bundle; DROP TABLE approval_bundles")
-      for (const column of ["review_group", "shape", "floor", "bundle", "superseded_by"]) ctx.sql.exec(`ALTER TABLE approvals DROP COLUMN ${column}`)
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP INDEX approvals_review_group; DROP INDEX approvals_shape; DROP INDEX approvals_bundle; DROP TABLE approval_bundles"))
+      for (const column of ["review_group", "shape", "floor", "bundle", "superseded_by"]) withTrustedSchema(ctx, () => ctx.sql.exec(`ALTER TABLE approvals DROP COLUMN ${column}`))
       ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='approvals'", approvalsArea.migrations.length - 1)
-      applyMigrations(ctx.sql, ctx.storage, [approvalsArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [approvalsArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='approvals'").toArray()[0]!.applied).toBe(approvalsArea.migrations.length)
       expect(ctx.sql.exec("SELECT * FROM approvals").toArray()).toEqual(before)
       expect(batchColumns(ctx, kept)).toEqual({ review_group: null, shape: null, floor: null, bundle: null, superseded_by: null, policy_status: null })
@@ -260,7 +261,7 @@ describe("asking for a bundle", () => {
   const refused = async (fn: () => Promise<unknown>) => { try { await fn() } catch (error) { if (error instanceof VaultError) return error.toJSON(); throw error } throw new Error("accepted") }
   const held = async (ctx: VaultContext) => {
     await seedCredential(ctx, "plan-key")
-    ctx.sql.exec("UPDATE items SET policy=? WHERE slug='plan-key'", JSON.stringify({ default: "approve", rules: [] }))
+    fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='plan-key'", JSON.stringify({ default: "approve", rules: [] }))
   }
   const nothingAsked = (ctx: VaultContext) => [ctx.sql.exec("SELECT * FROM approval_bundles").toArray(), ctx.sql.exec("SELECT * FROM audit WHERE action='approval.bundle'").toArray()]
 

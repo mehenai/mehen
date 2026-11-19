@@ -26,6 +26,7 @@ import type { WorkspaceInvocationContext } from "../src/vault/areas/workspace-ru
 import { deviceInvocation, devicePrincipal } from "./credentials-test-support.ts"
 import { PROJECT_RUN_INPUT, projectFixture } from "./projects-workspace-fixture.ts"
 import { runAsk } from "./approvals-batch-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -154,7 +155,7 @@ describe("Let it work in the relay", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedGithub(ctx)
-      ctx.sql.exec("UPDATE items SET binding=? WHERE slug='github-work'", JSON.stringify({ hosts: ["api.example.com"] }))
+      fixtureSql(ctx).exec("UPDATE items SET binding=? WHERE slug='github-work'", JSON.stringify({ hosts: ["api.example.com"] }))
       setSetting(ctx, "approval_dial", "work")
       const { error } = await relayAs(ctx, "dev_owner", { ...OPEN_ISSUE, url: "https://api.example.com/v1/things" })
       expect(error?.code).toBe("forbidden")
@@ -190,7 +191,7 @@ describe("Let it work in the relay", () => {
     await inAccess(f.tenant, async (ctx) => {
       await seedGithub(ctx)
       await seedGithub(ctx, "example-api")
-      ctx.sql.exec("UPDATE items SET binding=? WHERE slug='example-api'", JSON.stringify({ hosts: ["api.example.com"] }))
+      fixtureSql(ctx).exec("UPDATE items SET binding=? WHERE slug='example-api'", JSON.stringify({ hosts: ["api.example.com"] }))
       const { mandate } = await signMandate(ctx, "owner", terms({ caps: { ...terms().caps, change: 1 } }))
       setSetting(ctx, "approval_dial", "work")
       const thing = { item: "example-api", ...OPEN_ISSUE, url: "https://api.example.com/v1/things" }
@@ -381,7 +382,7 @@ describe("Let it work on the other paths", () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
       registerCredentialProvider()
-      ctx.sql.exec("UPDATE items SET policy=?", JSON.stringify({ default: "allow", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=?", JSON.stringify({ default: "allow", rules: [] }))
       ctx.sql.exec("UPDATE vars SET item='key-workspace' WHERE env='prod'")
       for (const project of ["prj_a", "prj_b"]) ctx.sql.exec("INSERT OR IGNORE INTO vars(project,env,name,item,field,updated_by,updated_at) VALUES(?,'prod','TOKEN','key-workspace','key','member:mem_owner',?)", project, ctx.now())
       const request = { item: "key-workspace", method: "GET", url: "https://api.example.com/test", headers: [], context: { project: "prj_a", environment: "prod" } }
@@ -410,7 +411,7 @@ describe("Let it work on the other paths", () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
       registerCredentialServices()
-      ctx.sql.exec("UPDATE items SET binding=? WHERE slug='key-workspace'", JSON.stringify({ hosts: ["api.github.com"] }))
+      fixtureSql(ctx).exec("UPDATE items SET binding=? WHERE slug='key-workspace'", JSON.stringify({ hosts: ["api.github.com"] }))
       const now = ctx.now()
       ctx.sql.exec("INSERT INTO workloads(id,device,label,jwk,thumbprint,scope,created_at,expires_at,hard_expires_at) VALUES ('wkl_build','dev_owner','build','{}','thumb-build',?,?,?,?)", JSON.stringify({ modes: ["placeholder"] }), now, now + 3_600_000, now + 3_600_000)
       const principal = { kind: "device" as const, deviceId: "dev_owner", workload: "wkl_build" }
@@ -469,7 +470,7 @@ describe("an approval a person already gave, at Let it work", () => {
   })
 
   for (const [why, spoil] of [
-    ["changed", (ctx: VaultContext) => { ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='github-work'"); return ctx }],
+    ["changed", (ctx: VaultContext) => { fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='github-work'"); return ctx }],
     ["expired", (ctx: VaultContext) => at(ctx, ctx.now() + 11 * 60_000)],
     ["revoked", (ctx: VaultContext) => { ctx.sql.exec("UPDATE protected_use_grants SET revoked_at=?", ctx.now()); return ctx }],
   ] as const) {

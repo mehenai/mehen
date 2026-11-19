@@ -249,7 +249,7 @@ it("protecting an environment atomically clears every override and later looseni
 it("private override leases resolve their field and cannot lease the displaced shared source", async () => {
   const f = await fixture()
   value(await f.set({ kind: "item", item: f.privateItem.slug, field: "key" }))
-  await inAccess(f.tenant, ctx => ctx.sql.exec("UPDATE items SET injection=NULL WHERE id=?", f.privateItem.id))
+  await inAccess(f.tenant, ctx => fixtureSql(ctx).exec("UPDATE items SET injection=NULL WHERE id=?", f.privateItem.id))
   const run = value<WorkspaceRunCreated>(await f.device("runs.create", runInput))
   expect(run.vars).toEqual([{ name: "TOKEN", delivery: "lease", value: "test-secret-never-returned", item: f.privateItem.slug }])
   expect(value(await f.device("runs.lease", { run: run.run, item: f.privateItem.slug, field: "key" }))).toMatchObject({ value: "test-secret-never-returned" })
@@ -264,7 +264,7 @@ it("private override leases resolve their field and cannot lease the displaced s
 for (const path of ["runs.create", "runs.lease"] as const) it(`${path} rechecks the override source after secret opening`, async () => {
   const f = await fixture()
   value(await f.set({ kind: "item", item: f.privateItem.slug, field: "key" }))
-  await inAccess(f.tenant, ctx => ctx.sql.exec("UPDATE items SET injection=NULL WHERE id=?", f.privateItem.id))
+  await inAccess(f.tenant, ctx => fixtureSql(ctx).exec("UPDATE items SET injection=NULL WHERE id=?", f.privateItem.id))
   const run = path === "runs.lease" ? value<WorkspaceRunCreated>(await f.device("runs.create", runInput)) : null
   await inAccess(f.tenant, async ctx => {
     const beforeExposures = ctx.sql.exec("SELECT * FROM exposures").toArray()
@@ -311,7 +311,7 @@ for (const source of ["private", "workspace"] as const) it(`runs.create refuses 
   if (source === "private") value(await f.set({ kind: "item", item: f.privateItem.slug, field: "key" }))
   await inAccess(f.tenant, async ctx => {
     const slug = source === "private" ? f.privateItem.slug : "key-workspace"
-    ctx.sql.exec("UPDATE items SET injection=NULL,ceiling='lease' WHERE slug=?", slug)
+    fixtureSql(ctx).exec("UPDATE items SET injection=NULL,ceiling='lease' WHERE slug=?", slug)
     const before = items.getItem(ctx, slug)!
     const beforeExposures = ctx.sql.exec("SELECT * FROM exposures").toArray()
     const original = ctx.openField.bind(ctx)

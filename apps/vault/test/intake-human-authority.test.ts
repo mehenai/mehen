@@ -437,7 +437,7 @@ describe("a replaced value kept and restored", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       const seededConnection = await seedOAuthConnection(ctx)
-      ctx.sql.exec("UPDATE items SET version=version+1 WHERE id=?", seededConnection.id)
+      fixtureSql(ctx).exec("UPDATE items SET version=version+1 WHERE id=?", seededConnection.id)
       const connection = checkedCredential(ctx, seededConnection.slug)!
       ctx.sql.exec("INSERT INTO item_secret_history (item, name, version, root_version, wrapped_dek, ciphertext, length, prefix, fingerprint, fp_version, replaced_at, replaced_by, expires_at) SELECT item, name, ?, root_version, wrapped_dek, ciphertext, length, prefix, fingerprint, fp_version, ?, 'member:mem_owner', ? FROM item_secrets WHERE item=?", connection.version - 1, ctx.now(), ctx.now() + 86_400_000, connection.id)
       const snapshot = () => JSON.stringify([checkedCredential(ctx, connection.slug), current(ctx, connection.id).map((r) => r.fingerprint), history(ctx, connection.id).map((r) => [r.version, r.fingerprint])])

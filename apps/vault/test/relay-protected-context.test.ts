@@ -16,7 +16,7 @@ async function relayFixture() {
   const f = await projectFixture()
   await inAccess(f.tenant, ctx => {
     registerCredentialProvider()
-    ctx.sql.exec("UPDATE items SET policy=?", JSON.stringify({ default: "allow", rules: [] }))
+    fixtureSql(ctx).exec("UPDATE items SET policy=?", JSON.stringify({ default: "allow", rules: [] }))
     ctx.sql.exec("UPDATE vars SET item='key-workspace' WHERE env='prod'")
     for (const project of ["prj_a", "prj_b"])
       ctx.sql.exec("INSERT OR IGNORE INTO vars(project,env,name,item,field,updated_by,updated_at) VALUES(?,'prod','TOKEN','key-workspace','key','member:mem_owner',?)", project, ctx.now())

@@ -48,8 +48,10 @@ export const workspaceMemberOps: NonNullable<Area["workspaceOps"]> = {
       if (input.change !== "delete" && (!input.name || !input.slug)) throw new VaultError("bad_request", "A team needs a name and slug.")
       if (input.change === "delete" && state.devices.some((d) => d.status === "active" && d.owner.kind === "team" && d.owner.id === input.team)) throw new VaultError("conflict", "Revoke its machines first.")
       const by = decision.principal.kind === "member" ? decision.principal.memberId : "system"
-      if (input.change === "create") ctx.sql.exec("INSERT INTO teams VALUES (?,?,?,?,?)", input.team, input.slug, input.name, by, ctx.now())
-      else if (input.change === "rename") ctx.sql.exec("UPDATE teams SET name=?,slug=? WHERE id=?", input.name, input.slug, input.team)
+      // A team made or renamed takes the guard too: its slug is unique, so a
+      // REPLACE on it would delete another team.
+      if (input.change === "create") { beforeManagementChange(ctx); ctx.sql.exec("INSERT INTO teams VALUES (?,?,?,?,?)", input.team, input.slug, input.name, by, ctx.now()) }
+      else if (input.change === "rename") { beforeManagementChange(ctx); ctx.sql.exec("UPDATE teams SET name=?,slug=? WHERE id=?", input.name, input.slug, input.team) }
       else { accessChanged(ctx, null, "team.delete", { team: input.team }); ctx.sql.exec("DELETE FROM teams WHERE id=?", input.team); ctx.sql.exec("DELETE FROM team_members WHERE team=?", input.team); ctx.sql.exec("DELETE FROM project_shares WHERE subject_kind='team' AND subject_id=?", input.team) }
       bumpAccessRevision(ctx)
       ctx.audit({ actor: actor(invocation, by), action: `team.${input.change}`, target: input.team })

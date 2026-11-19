@@ -177,7 +177,7 @@ for (const lost of ["connector-right", "client-revision", "client-after-exchange
       if (lost === "connector-right")
         fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_owner'")
       if (lost === "client-revision")
-        ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='google-client'")
+        fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='google-client'")
       const open = vi.spyOn(ctx, "openField"), sends = upstream(lost === "client-after-exchange" ? () => { fixtureSql(ctx).exec("DELETE FROM items WHERE slug='google-client'"); } : undefined)
       await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth", message: "Reconnect this credential." })
       if (lost !== "client-after-exchange")
@@ -334,7 +334,7 @@ for(const phase of ["probe","seal"] as const)it(`refuses a client changed during
   setUpstreamFetch(async req=>{
    sends++
    if(req.url.includes("/token"))return Response.json({access_token:"prepared-access",refresh_token:"prepared-refresh",expires_in:3600,scope:"openid email https://www.googleapis.com/auth/gmail.modify"})
-   if(phase === "probe")ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='google-client'")
+   if(phase === "probe")fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='google-client'")
    return Response.json({sub:"test-subject",email:"test@example.com",email_verified:true})
   })
   let changed=false

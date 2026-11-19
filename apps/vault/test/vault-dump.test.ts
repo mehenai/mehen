@@ -23,7 +23,7 @@ import { accountAuth, inAccess } from "./access-test-support.ts"
 import { credentialsFixture, seedCredential } from "./credentials-test-support.ts"
 import { platformAuth } from "./managed-support.ts"
 import { createWorkspaceFixture, type WorkspaceTestFixture } from "./workspace-fixtures.ts"
-import { beforeManagementChange } from "../src/vault/areas/management-guard.ts"
+import { GUARD_TABLE, beforeManagementChange, managementScope, missingGuardTriggers, withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 const SECRET = "test-secret-never-returned"
 const SLUG = "acme-billing-ledger-key"
@@ -56,7 +56,7 @@ function hex(value: ArrayBuffer): string {
 }
 // Every application table and its rows, BLOBs as hex, in a stable order.
 function snapshot(ctx: VaultContext): { schema: string[]; tables: { name: string; rows: string[] }[] } {
-  const schema = ctx.sql.exec<{ type: string; name: string; sql: string }>("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' ORDER BY type, name").toArray()
+  const schema = ctx.sql.exec<{ type: string; name: string; sql: string }>("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '_mehen_*' AND tbl_name NOT GLOB '_mehen_*' ORDER BY type, name").toArray()
   return {
     schema: schema.map((entry) => `${entry.type} ${entry.name}: ${entry.sql}`),
     tables: schema.filter((entry) => entry.type === "table").map(({ name }) => ({ name, rows: ctx.sql.exec(`SELECT * FROM "${name}"`).toArray().map((row) => JSON.stringify(Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v instanceof ArrayBuffer ? `hex:${hex(v)}` : v])))).sort() })),
@@ -65,9 +65,9 @@ function snapshot(ctx: VaultContext): { schema: string[]; tables: { name: string
 // What a lost object looks like: every table there, every row gone but
 // the migrations and the generation marker.
 function wipe(ctx: VaultContext): void {
-  const tables = ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT IN ('_migrations','_workspace_generation') ORDER BY rowid DESC").toArray()
+  const tables = ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '_mehen_*' AND name NOT IN ('_migrations','_workspace_generation') ORDER BY rowid DESC").toArray()
   ctx.storage.transactionSync(() => {
-    ctx.sql.exec("PRAGMA defer_foreign_keys = ON")
+    withTrustedSchema(ctx, () => ctx.sql.exec("PRAGMA defer_foreign_keys = ON"))
     beforeManagementChange(ctx)
     for (const { name } of tables) ctx.sql.exec(`DELETE FROM "${name}"`)
   })
@@ -169,7 +169,7 @@ describe("a workspace too large to dump in one piece", () => {
   it("is refused as too_large from its storage size, before anything is read or written", async () => {
     const tenant = await seededWorkspace()
     await inAccess(tenant, async (ctx) => {
-      const large = Object.assign(Object.create(ctx) as VaultContext, { storage: { sql: { databaseSize: MAX_DUMP_DATABASE_BYTES + 1 } } })
+      const large = Object.assign(Object.create(ctx) as VaultContext, { sql: { databaseSize: MAX_DUMP_DATABASE_BYTES + 1 } })
       await expect(dumpVault(large, utcDate(Date.now()))).rejects.toMatchObject({ code: "too_large", message: `This workspace's storage is ${MAX_DUMP_DATABASE_BYTES + 1} bytes, above the ${MAX_DUMP_DATABASE_BYTES}-byte limit for a dump; nothing was dumped.` })
     })
     expect(await env.VAULT_BACKUPS.head(backupObjectKey(tenant, utcDate(Date.now())))).toBeNull()
@@ -203,6 +203,14 @@ describe("vaultbackup.restore from a dump", () => {
       const secret = ctx.sql.exec<{ item: string; name: string; root_version: number; wrapped_dek: ArrayBuffer; ciphertext: ArrayBuffer }>("SELECT s.item, s.name, s.root_version, s.wrapped_dek, s.ciphertext FROM item_secrets s JOIN items i ON i.id = s.item WHERE i.slug = ?", SLUG).one()
       const opened = await ctx.openField(secretRef({ id: secret.item }, secret.name), { rootVersion: secret.root_version, wrappedDek: new Uint8Array(secret.wrapped_dek), ciphertext: new Uint8Array(secret.ciphertext) })
       expect(new TextDecoder().decode(opened)).toBe(SECRET)
+      // The trusted sequence left the management guard whole: every trigger
+      // there, recursive triggers on, no marker, and a graph write refused.
+      expect(missingGuardTriggers(ctx.sql)).toEqual([])
+      expect(ctx.sql.exec(`SELECT * FROM ${GUARD_TABLE}`).toArray()).toEqual([])
+      const scope = managementScope(ctx.storage)
+      scope.trusted++
+      try { expect(ctx.sql.exec("PRAGMA recursive_triggers").toArray()).toEqual([{ recursive_triggers: 1 }]) } finally { scope.trusted-- }
+      expect(() => ctx.storage.transactionSync(() => ctx.sql.exec("DELETE FROM items"))).toThrow("management_guard")
     })
   })
 

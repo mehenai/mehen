@@ -20,7 +20,7 @@ import { restoreAwaitingRestart } from "./areas/vault-backup.ts"
 import { admitManagedDeviceCall, managedAuditShape, managedPurged } from "./managed-platform.ts"
 import { TenantKeys, parseRootKeys } from "./keys.ts"
 import { wakeStorageWaiters } from "./storage-waits.ts"
-import { assertManagementWrite, inManagementScope } from "./areas/management-guard.ts"
+import { GUARD_TABLE, REVISION_TABLE, assertNoSchemaChange, clearLeftoverMarker, enableRecursiveTriggers, installGuardTables, installGuardTriggers, managementScope } from "./areas/management-guard.ts"
 
 const CORE: Area = {
   name: "core",
@@ -36,30 +36,51 @@ const ALARM_RETRY_MS = 60_000
 const ALARM_BATCH = 50
 const READ_STATEMENT = /^\s*SELECT\b/i
 
-// Calls `counted`, and wakes the object's long polls, after every statement
-// that is not a SELECT, a synchronous transaction that rolled back, and
-// deleteAll. The storage object itself is patched rather than wrapped,
-// because areas key their per-object state on its identity
-// (managed-platform.ts, vault-backup.ts, storage-waits.ts).
-function countWrites(storage: DurableObjectStorage, counted: () => void): SqlStorage {
+// The object's storage as the vault uses it, patched in place rather than
+// wrapped, because areas key their per-object state on its identity
+// (managed-platform.ts, vault-backup.ts, storage-waits.ts):
+// - every statement that is not a SELECT, a synchronous transaction that
+//   rolled back, and deleteAll call `counted` and wake the long polls;
+// - a synchronous transaction is the management guard's scope: its callback
+//   may not return a promise, and the outermost one deletes the guard's
+//   marker before it commits (management-guard.ts);
+// - storage.sql is the same checked SQL as ctx.sql, which refuses schema
+//   statements outside migrations and restores, so no area reaches the raw
+//   handle. Only this module holds it.
+// It answers the SQL migrations run on (counted, unchecked) and the SQL
+// everything else runs on.
+function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolledBack: () => void): { migrations: SqlStorage; sql: SqlStorage } {
   const raw = storage.sql, transactionSync = storage.transactionSync.bind(storage), deleteAll = storage.deleteAll.bind(storage)
+  const scope = managementScope(storage)
   const wrote = () => {
     counted()
     wakeStorageWaiters(storage)
   }
   storage.transactionSync = <T>(closure: () => T): T => {
+    scope.depth++
     try {
-      return inManagementScope(storage, () => transactionSync(closure))
+      return transactionSync(() => {
+        const result = closure()
+        if (result instanceof Promise || (typeof result === "object" && result !== null && typeof (result as { then?: unknown }).then === "function")) {
+          throw new VaultError("internal", "A synchronous transaction's callback returned a promise.")
+        }
+        if (scope.depth === 1 && scope.ready) raw.exec(`DELETE FROM ${GUARD_TABLE}`)
+        return result
+      })
     } catch (error) {
+      rolledBack()
       wrote()
       throw error
+    } finally {
+      scope.depth--
     }
   }
   storage.deleteAll = (options) => {
     wrote()
+    scope.ready = false
     return deleteAll(options).finally(wrote)
   }
-  return {
+  const migrations: SqlStorage = {
     exec(query, ...bindings) {
       if (!READ_STATEMENT.test(query)) wrote()
       return raw.exec(query, ...bindings)
@@ -70,22 +91,19 @@ function countWrites(storage: DurableObjectStorage, counted: () => void): SqlSto
     Cursor: raw.Cursor,
     Statement: raw.Statement,
   }
-}
-// The context's SQL: every statement checked against the management guard
-// (management-guard.ts) before it runs. Migrations run on the counted SQL
-// beneath it.
-function guardManagementWrites(storage: DurableObjectStorage, sql: SqlStorage): SqlStorage {
-  return {
+  const sql: SqlStorage = {
     exec(query, ...bindings) {
-      assertManagementWrite(storage, query)
-      return sql.exec(query, ...bindings)
+      assertNoSchemaChange(storage, query)
+      return migrations.exec(query, ...bindings)
     },
     get databaseSize() {
-      return sql.databaseSize
+      return raw.databaseSize
     },
-    Cursor: sql.Cursor,
-    Statement: sql.Statement,
+    Cursor: raw.Cursor,
+    Statement: raw.Statement,
   }
+  Object.defineProperty(storage, "sql", { value: sql, configurable: true, writable: true })
+  return { migrations, sql }
 }
 
 // Keyed by the object's own context, made once in the constructor, which
@@ -102,19 +120,23 @@ const accessStateMemos = new WeakMap<VaultContext, AccessStateMemo>()
 export function invocationContext(base: VaultContext): VaultContext {
   let memo = accessStateMemos.get(base)
   if (!memo) {
-    memo = { writes: base.storageWrites, until: 0, state: null }
+    memo = { revision: null, until: 0, state: null }
     accessStateMemos.set(base, memo)
   }
   return Object.assign(Object.create(base) as VaultContext, { accessStateMemo: memo })
 }
 
-export function applyMigrations(sql: SqlStorage, storage: DurableObjectStorage, areas: Area[]): void {
+// Each migration in a transaction of its own; in a workspace object
+// (guarded) it holds the management guard's marker, as a migration may
+// move rows of the graph tables, whose triggers an earlier start installed.
+export function applyMigrations(sql: SqlStorage, storage: DurableObjectStorage, areas: Area[], guarded = false): void {
   sql.exec("CREATE TABLE IF NOT EXISTS _migrations (area TEXT PRIMARY KEY, applied INTEGER NOT NULL)")
   for (const area of areas) {
     const applied = one(sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area = ?", area.name))?.applied ?? 0
     if (applied > area.migrations.length) throw new Error(`area ${area.name} has fewer migrations than applied`)
     for (let i = applied; i < area.migrations.length; i++) {
       storage.transactionSync(() => {
+        if (guarded) sql.exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
         sql.exec(area.migrations[i] as string)
         sql.exec(
           "INSERT INTO _migrations (area, applied) VALUES (?, ?) ON CONFLICT (area) DO UPDATE SET applied = excluded.applied",
@@ -130,17 +152,32 @@ export class TenantVault extends DurableObject<Env> {
   private readonly sql: SqlStorage
   private keys: TenantKeys | null = null
   private storageWrites = 0
+  private rollbacks = 0
   private readonly areas: Map<string, Area>
   readonly context: VaultContext
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
-    const counted = countWrites(ctx.storage, () => { this.storageWrites++ })
-    this.sql = guardManagementWrites(ctx.storage, counted)
+    const raw = ctx.storage.sql
+    this.initialiseStorage(raw)
+    const { migrations, sql } = vaultStorage(ctx.storage, () => { this.storageWrites++ }, () => { this.rollbacks++ })
+    this.sql = sql
     this.areas = new Map(AREAS.map((a) => [a.name, a]))
-    applyMigrations(counted, ctx.storage, [CORE, ...AREAS])
+    // The trusted start: the guard's tables, recursive triggers, the
+    // migrations (each holding the marker), then every guard trigger put
+    // back and checked, before anything is served.
+    enableRecursiveTriggers(migrations)
+    installGuardTables(migrations)
+    managementScope(ctx.storage).ready = true
+    applyMigrations(migrations, ctx.storage, [CORE, ...AREAS], true)
+    installGuardTriggers(migrations)
     this.context = this.makeContext()
+    clearLeftoverMarker(this.context)
   }
+
+  // Before anything else touches the object's storage, on the raw SQL:
+  // WorkspaceVault checks its storage generation here.
+  protected initialiseStorage(_sql: SqlStorage): void {}
 
   private tenant(): string {
     const name = this.ctx.id.name
@@ -165,6 +202,10 @@ export class TenantVault extends DurableObject<Env> {
       storage: this.ctx.storage,
       get storageWrites() {
         return self.storageWrites
+      },
+      accessRevision() {
+        const n = one(sql.exec<{ n: number }>(`SELECT n FROM ${REVISION_TABLE} WHERE id=1`))?.n ?? 0
+        return `${n}:${self.rollbacks}`
       },
       now: () => Date.now(),
       async sealField(ref, plaintext) {
@@ -218,6 +259,7 @@ export class TenantVault extends DurableObject<Env> {
 
   async invoke(invocation: Invocation | WorkspaceInvocation): Promise<InvocationResult> {
     try {
+      if (!managedPurged(this.ctx.storage)) clearLeftoverMarker(this.context)
       if (restoreAwaitingRestart(this.ctx.storage) && !invocation.op.startsWith("vaultbackup.")) throw new VaultError("conflict", "This workspace is being restored. Try again in a few minutes.")
       const workspaceSpec = [...this.areas.values()].map((area) => area.workspaceOps?.[invocation.op]).find((spec) => spec !== undefined)
       if (invocation.auth.kind === "account" || workspaceSpec) {
@@ -273,6 +315,7 @@ export class TenantVault extends DurableObject<Env> {
 
   override async alarm(): Promise<void> {
     if (managedPurged(this.ctx.storage)) return
+    clearLeftoverMarker(this.context)
     const now = Date.now()
     const due = this.sql
       .exec<{ area: string; key: string; attempts: number }>("SELECT area, key, attempts FROM schedule WHERE due_at <= ? ORDER BY due_at LIMIT ?", now, ALARM_BATCH)

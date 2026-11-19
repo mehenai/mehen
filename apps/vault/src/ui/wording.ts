@@ -1078,6 +1078,10 @@ export function auditLine(event: AuditEventInput, ctx: AuditActorContext): Audit
       return line([plain(" tried to use "), ...(target !== null ? [code(target)] : [plain("a credential")]), ...(method !== null && host !== null ? [plain(" for "), code(`${method} ${host}`)] : []), plain(". "), { text: "Refused", as: "danger" as const }, plain(`: it would need a person, and ${APPROVAL_DIAL_CHOICES.work.name} refuses instead of asking.`)], target !== null ? { href: itemPath(target), label: "Open the credential" } : null)
     case "posture.nudge_quiet":
       return line([plain(" chose not to be reminded about "), ...(target !== null ? [code(target)] : [plain("a credential")]), plain(" for 7 days")])
+    // The management guard's marker found at a request or a start, where no
+    // transaction should leave one (areas/management-guard.ts).
+    case "management_guard.leftover":
+      return line([plain(" found and removed a management guard marker that a write had left behind; tell the vault's operator")])
     // What a machine may do without asking (areas/mandates-workspace.ts).
     // A mandate row names its machine; a use row names the credential.
     case "mandate.propose":

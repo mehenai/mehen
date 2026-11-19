@@ -73,7 +73,7 @@ describe("a bundle's requests", () => {
     await inAccess(f.tenant, async (ctx) => {
       await seedCredential(ctx, "hook-key")
       await seedCredential(ctx, "open-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='hook-key'", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='hook-key'", JSON.stringify({ default: "approve", rules: [] }))
       const open = vi.spyOn(ctx, "openField"), send = vi.spyOn(globalThis, "fetch")
       const answer = await bundle(ctx, { reason: "Set up the databases", requests: [
         { item: "hook-key", method: "POST", url: "https://api.example.com/v1/databases", headers: [["Content-Type", "application/json"]], body: body('{"name":"one"}') },
@@ -106,7 +106,7 @@ describe("a bundle's requests", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedCredential(ctx, "hook-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='hook-key'", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='hook-key'", JSON.stringify({ default: "approve", rules: [] }))
       const request = { item: "hook-key", method: "POST", url: "https://api.example.com/v1/databases", headers: [], body: body('{"name":"one"}') }
       let earlier = ""
       try { await authoriseWorkspaceRelay(ctx, devicePrincipal(), request, await deviceInvocation(ctx)) } catch (error) { if (!(error instanceof VaultError) || error.code !== "approval_required") throw error; earlier = error.extra.approval as string }
@@ -122,7 +122,7 @@ describe("a bundle's requests", () => {
     await inAccess(f.tenant, async (ctx) => {
       registerCredentialServices()
       await seedCredential(ctx, "second-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='second-key'", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='second-key'", JSON.stringify({ default: "approve", rules: [] }))
       ctx.sql.exec("INSERT INTO vars(project,env,name,item,field,updated_by,updated_at) VALUES('prj_a','dev','OTHER','second-key','key','member:mem_owner',?)", ctx.now())
       const principal = devicePrincipal("dev_owner"), invocation = await deviceInvocation(ctx, "dev_owner")
       const run = await workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...PROJECT_RUN_INPUT, env: "dev", vars: ["TOKEN", "OTHER"] }, invocation) as WorkspaceRunCreated
@@ -146,7 +146,7 @@ describe("a bundle's requests", () => {
     await inAccess(f.tenant, async (ctx) => {
       registerCredentialServices()
       await seedCredential(ctx, "deny-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='deny-key'", JSON.stringify({ default: "deny", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='deny-key'", JSON.stringify({ default: "deny", rules: [] }))
       const principal = devicePrincipal("dev_owner"), invocation = await deviceInvocation(ctx, "dev_owner")
       const run = await workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...PROJECT_RUN_INPUT, env: "dev" }, invocation) as WorkspaceRunCreated
       const placeholder = run.vars.flatMap((v) => v.delivery === "placeholder" ? [v.value] : [])[0]!
@@ -175,7 +175,7 @@ describe("a bundle's requests", () => {
     const privateHeld = async (ctx: import("../src/vault/core.ts").VaultContext) => {
       await seedCredential(ctx, "hook-key")
       await seedCredential(ctx, "own-key", { kind: "member", member: "mem_member" })
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug IN ('hook-key','own-key')", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug IN ('hook-key','own-key')", JSON.stringify({ default: "approve", rules: [] }))
       ctx.sql.exec("UPDATE devices SET scope=json_set(scope,'$.privateCredentials',json('true')) WHERE id='dev_member'")
     }
     const bundleRows = (ctx: import("../src/vault/core.ts").VaultContext) => ctx.sql.exec<{ detail: string }>("SELECT detail FROM audit WHERE action='approval.bundle'").toArray().map((row) => JSON.parse(row.detail) as unknown)
@@ -220,7 +220,7 @@ describe("a held relay request's floor and shape", () => {
   const stored = (ctx: import("../src/vault/core.ts").VaultContext, id: string) => ctx.sql.exec<{ floor: string; shape: string }>("SELECT floor,shape FROM approvals WHERE id=?", id).toArray()[0]!
   const held = async (ctx: import("../src/vault/core.ts").VaultContext) => {
     await seedCredential(ctx, "hook-key")
-    ctx.sql.exec("UPDATE items SET policy=? WHERE slug='hook-key'", JSON.stringify({ default: "approve", rules: [] }))
+    fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='hook-key'", JSON.stringify({ default: "approve", rules: [] }))
   }
   const body = (text: string) => Buffer.from(text).toString("base64url")
 
@@ -416,7 +416,7 @@ describe("a posture in the approve hook", () => {
       const guarded = vi.spyOn(projects, "isProtectedItem").mockReturnValue(true)
       expect((await relayAs(ctx, "dev_owner", OPEN_ISSUE)).error?.code).toBe("approval_required")
       guarded.mockRestore()
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='github-work'", JSON.stringify({ default: "allow", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='github-work'", JSON.stringify({ default: "allow", rules: [] }))
       const allowed = await relayAs(ctx, "dev_owner", OPEN_ISSUE)
       expect(allowed.error).toBeNull()
       expect(allowed.material).not.toHaveProperty("postures")
@@ -430,7 +430,7 @@ describe("a posture in the approve hook", () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
       registerCredentialServices()
-      ctx.sql.exec("UPDATE items SET binding=?,ceiling='lease' WHERE slug='key-workspace'", JSON.stringify({ hosts: ["api.github.com"] }))
+      fixtureSql(ctx).exec("UPDATE items SET binding=?,ceiling='lease' WHERE slug='key-workspace'", JSON.stringify({ hosts: ["api.github.com"] }))
       await setPosture(ctx, "owner", "key-workspace", { level: "trust", machines: null })
       const principal = devicePrincipal("dev_owner"), invocation = await deviceInvocation(ctx, "dev_owner")
       const run = await workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...PROJECT_RUN_INPUT, env: "dev" }, invocation) as WorkspaceRunCreated

@@ -234,6 +234,10 @@ export class LocalNamespace<E, C extends object> {
     try {
       db.run("PRAGMA journal_mode = WAL")
       db.run("PRAGMA foreign_keys = ON")
+      // Rows a REPLACE deletes fire their delete triggers, the vault's
+      // management guard's among them, as the Worker's object sets it too.
+      db.run("PRAGMA recursive_triggers = ON")
+      if ((db.query("PRAGMA recursive_triggers").get() as { recursive_triggers: number } | null)?.recursive_triggers !== 1) throw new Error("recursive_triggers did not turn on")
       // A new object's first writes (its migrations, its generation marker)
       // are one transaction, as Cloudflare commits a turn's writes together:
       // a crash part-way leaves the object as it was.

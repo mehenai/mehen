@@ -656,6 +656,7 @@ function createProject(ctx: VaultContext, principal: WorkspaceRuntimePrincipal, 
       throw new VaultError("conflict", "That name is in use by another project.")
     }
     if (count(ctx, "SELECT count(*) AS count FROM projects") >= heldManagedPlatform(ctx).platform.limits.projectsPerSubject) throw overLimit()
+    beforeManagementChange(ctx)
     ctx.sql.exec("INSERT INTO projects(id,slug,default_env,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)", id, input.slug, input.defaultEnv, `member:${member.memberId}`, ctx.now(), ctx.now())
     for (const e of input.environments) ctx.sql.exec("INSERT INTO environments(project,name,protected,fences,four_eyes) VALUES(?,?,0,'[]',0)", id, e.name)
     setProjectShare(ctx, { id: randomId("shr"), project: id, subject: { kind: "member", member: member.memberId }, level: "manage", protected: true, expiresAt: null }, null)

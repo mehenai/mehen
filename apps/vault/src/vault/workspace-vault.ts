@@ -1,4 +1,3 @@
-import type { Env } from "../env.ts"
 import { WORKSPACE_GENERATION } from "../directory/workspace-cutover.ts"
 import { TenantVault } from "./tenant-vault.ts"
 
@@ -16,9 +15,8 @@ export function initialiseWorkspaceGeneration(sql: SqlStorage): void {
 }
 
 export class WorkspaceVault extends TenantVault {
-  constructor(ctx: DurableObjectState, env: Env) {
-    initialiseWorkspaceGeneration(ctx.storage.sql)
-    super(ctx, env)
+  protected override initialiseStorage(sql: SqlStorage): void {
+    initialiseWorkspaceGeneration(sql)
   }
 
   cutoverGeneration(): string { return WORKSPACE_GENERATION }

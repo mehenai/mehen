@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { accessState, authorise, setSetting, digest, newMember } from "../src/vault/areas/workspace-runtime.ts"
 import { can } from "../src/vault/access.ts"
 import { installTestIdentity, beginAccessSideEffectChecks, finishAccessSideEffectChecks, accessFixture, accessSnapshot, accountAuth, inAccess, registerFixtureLifecycleHooks, workspaceInvoke } from "./access-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
@@ -48,7 +49,7 @@ describe("access first-release identity gate", () => {
     await inAccess(tenant, (ctx) => {
       registerFixtureLifecycleHooks()
       setSetting(ctx, "identity_rule", { provider: "google", domains: ["example.com"], roles: ["owner", "admin", "member"] })
-      ctx.sql.exec("UPDATE members SET pending_role='owner' WHERE id='mem_admin'")
+      fixtureSql(ctx).exec("UPDATE members SET pending_role='owner' WHERE id='mem_admin'")
       newMember(ctx, "acc_second", "Second owner", "owner", "active", "mem_second")
     })
     const action = { type: "member.role", member: "mem_admin", before: "admin", after: "member" } as const

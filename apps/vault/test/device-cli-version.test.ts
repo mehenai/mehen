@@ -24,6 +24,7 @@ import { authoriseWorkspaceRelay } from "../src/vault/areas/relay-workspace.ts"
 import { registerWorkspacePendingProvider, workspacePendingOps } from "../src/vault/areas/pending-workspace.ts"
 import type { PendingList } from "@mehen/protocol/api"
 import { credentialsFixture, deviceInvocation, devicePrincipal, inAccess, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 async function setup() {
   const f = await workJourney()
@@ -179,7 +180,7 @@ describe("a superseded approval's status", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedCredential(ctx, "cli-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='cli-key'", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='cli-key'", JSON.stringify({ default: "approve", rules: [] }))
       const relay = async (body: string, replaces?: string): Promise<string> => {
         try { await authoriseWorkspaceRelay(ctx, devicePrincipal(), { item: "cli-key", method: "POST", url: "https://api.example.com/v1/databases", headers: [], body: Buffer.from(body).toString("base64url"), ...(replaces ? { replaces } : {}) }, await deviceInvocation(ctx)) } catch (error) { if (error instanceof VaultError && error.code === "approval_required") return error.extra.approval as string; throw error }
         throw new Error("Expected approval_required")
@@ -208,7 +209,7 @@ describe("an approval_required answer's review group", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedCredential(ctx, "cli-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='cli-key'", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='cli-key'", JSON.stringify({ default: "approve", rules: [] }))
       const refusal = async (body: string, cliVersion: string | null | undefined, on: typeof ctx = ctx): Promise<Record<string, unknown>> => {
         const invocation = await deviceInvocation(ctx)
         if (invocation.auth.kind !== "device") throw new Error("Expected a device")
@@ -237,7 +238,7 @@ describe("an approval_required answer's review group", () => {
     await inAccess(f.tenant, async (ctx) => {
       registerWorkspacePendingProvider("credentials", () => [])
       const item = await seedCredential(ctx, "cli-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='cli-key'", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='cli-key'", JSON.stringify({ default: "approve", rules: [] }))
       const invocation = await deviceInvocation(ctx)
       if (invocation.auth.kind !== "device") throw new Error("Expected a device")
       const at = { ...invocation, auth: { ...invocation.auth, cliVersion: "0.3.17" } }

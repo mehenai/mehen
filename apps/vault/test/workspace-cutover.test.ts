@@ -6,6 +6,7 @@ import { initialiseWorkspaceGeneration } from "../src/vault/workspace-vault.ts"
 import { WORKSPACE_GENERATION } from "../src/directory/workspace-cutover.ts"
 import { freshTenant } from "./helpers.ts"
 import { createWorkspaceFixture,resetWorkspaceDatabase } from "./workspace-fixtures.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 const refusal = { error: "upstream_failed",message: "Workspaces are unavailable until the fresh-start cutover completes.",retryAfter: 60 }
 it("P3-14: the default-on Worker refuses every route and cron before the legacy D1 wipe, with no writes or workspace RPC",async () => {
@@ -46,7 +47,7 @@ it("P3-14: the fresh class rejects legacy SQL storage without migration or adopt
   expect(await stub.cutoverGeneration()).toBe(WORKSPACE_GENERATION)
   await runInDurableObject(stub,instance => {
     const sql = instance.context.sql
-    sql.exec("DROP TABLE _workspace_generation")
+    withTrustedSchema(instance.context, () => sql.exec("DROP TABLE _workspace_generation"))
     sql.exec("INSERT INTO tenant_state(key,value) VALUES ('legacy-sentinel','old')")
     const before = sql.exec("SELECT * FROM tenant_state").toArray()
     expect(() => initialiseWorkspaceGeneration(sql)).toThrow("Legacy vault storage cannot serve workspaces")
@@ -66,12 +67,12 @@ it("workspace freeze and exact owner unfreeze roll back completely on audit fail
   const { accessFixture,accessSnapshot,inAccess,workspaceInvoke,accountAuth } = await import("./access-test-support.ts")
   const { tenant } = await accessFixture()
   for (const change of ["freeze","unfreeze"] as const) {
-    await inAccess(tenant,ctx => ctx.sql.exec(`CREATE TRIGGER cutover_freeze_audit BEFORE INSERT ON audit WHEN NEW.action='workspace.${change}' BEGIN SELECT RAISE(ABORT,'audit-fault'); END`))
+    await inAccess(tenant,ctx => withTrustedSchema(ctx, () => ctx.sql.exec(`CREATE TRIGGER cutover_freeze_audit BEFORE INSERT ON audit WHEN NEW.action='workspace.${change}' BEGIN SELECT RAISE(ABORT,'audit-fault'); END`)))
     const before = await accessSnapshot(tenant)
     const auth = change === "unfreeze" ? accountAuth("owner",{ type: "workspace.unfreeze" }) : accountAuth("member")
     expect(await workspaceInvoke(tenant,`access.${change}`,{},auth)).toEqual({ ok: false,error: { status: 500,vaultError: { error: "internal",message: "Something went wrong inside the vault." } } })
     expect(await accessSnapshot(tenant)).toBe(before)
-    await inAccess(tenant,ctx => ctx.sql.exec("DROP TRIGGER cutover_freeze_audit"))
+    await inAccess(tenant,ctx => withTrustedSchema(ctx, () => ctx.sql.exec("DROP TRIGGER cutover_freeze_audit")))
     expect(await workspaceInvoke(tenant,`access.${change}`,{},auth)).toEqual({ ok: true,value: {} })
   }
 })
@@ -82,8 +83,10 @@ it("the fresh class accepts Cloudflare-internal SQL tables before creating its m
   await runInDurableObject(stub,async (instance,state) => {
     await state.storage.put("guard-test",true)
     const sql = instance.context.sql
-    for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '__cf_*'").toArray()) sql.exec(`DROP TABLE "${name}"`)
-    sql.exec("CREATE TABLE IF NOT EXISTS __cf_kv(key TEXT PRIMARY KEY,value BLOB)")
+    withTrustedSchema(instance.context, () => {
+      for (const { name } of sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '__cf_*' AND name NOT GLOB '_mehen_*'").toArray()) sql.exec(`DROP TABLE "${name}"`)
+      sql.exec("CREATE TABLE IF NOT EXISTS __cf_kv(key TEXT PRIMARY KEY,value BLOB)")
+    })
     // workerd reserves and hides _cf_METADATA from user SQL. Overlay that
     // internal catalogue row while retaining real SQL filtering and storage.
     const catalogue = new Proxy(sql,{ get(target,key) {
@@ -91,7 +94,7 @@ it("the fresh class accepts Cloudflare-internal SQL tables before creating its m
       return Reflect.get(target,key)
     } })
     expect(catalogue.exec("SELECT name FROM sqlite_master WHERE name IN ('__cf_kv','_cf_METADATA') ORDER BY name").toArray()).toEqual([{ name: "__cf_kv" },{ name: "_cf_METADATA" }])
-    expect(() => initialiseWorkspaceGeneration(catalogue)).not.toThrow()
+    expect(() => withTrustedSchema(instance.context, () => initialiseWorkspaceGeneration(catalogue))).not.toThrow()
     expect(sql.exec("SELECT generation FROM _workspace_generation").toArray()).toEqual([{ generation: WORKSPACE_GENERATION }])
   })
 })

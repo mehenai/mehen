@@ -8,6 +8,7 @@ import { authoriseWorkspaceRelay, workspaceRelayOps } from "../src/vault/areas/r
 import type { ApprovalBundleCreated, ApprovalBundleStatus } from "@mehen/protocol/api"
 import type { VaultContext } from "../src/vault/core.ts"
 import { credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 afterEach(() => setUpstreamFetch(null))
 
@@ -57,7 +58,7 @@ describe("the relay's upstream User-Agent", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedCredential(ctx, "ua-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='ua-key'", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='ua-key'", JSON.stringify({ default: "approve", rules: [] }))
       const id = await approvalFor(ctx, request([]))
       expect(workspaceApproval(ctx, id)!.presentation).not.toContain("mehen-relay")
       await approve(ctx, id)
@@ -72,7 +73,7 @@ describe("the relay's upstream User-Agent", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedCredential(ctx, "ua-key")
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='ua-key'", JSON.stringify({ default: "approve", rules: [] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='ua-key'", JSON.stringify({ default: "approve", rules: [] }))
       const op = async <T>(name: string, input: unknown) => await workspaceRelayOps[name]!.handler(ctx, devicePrincipal(), input, await deviceInvocation(ctx)) as T
       for (const named of [true, false]) {
         const planned = await op<ApprovalBundleCreated>("approvals.bundle", { requests: [request([])] })

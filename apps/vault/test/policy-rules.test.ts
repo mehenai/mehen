@@ -37,6 +37,7 @@ import { registerCredentialProvider } from "../src/vault/areas/items-workspace.t
 import { workspaceRunOps } from "../src/vault/areas/runs-workspace.ts"
 import { credentialInput, credentialsFixture, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
 import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 afterEach(() => setUpstreamFetch(null))
 
@@ -702,7 +703,7 @@ describe("a proposal waiting for its co-signer", () => {
       const proposal = (await op(ctx, "approvals.status", asker, { id: approval })).ruleProposal.id
       const decision = { id: proposal, decision: "approve", effective: { path: "/graphql", ttlSeconds: 604_800 } }
       const action = await op(ctx, "policy.action", "owner", decision)
-      ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='linear-work'")
+      fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='linear-work'")
       expect((await op(ctx, "policy.status", "owner", { id: proposal })).proposal).toMatchObject({ status: "stale", canApprove: false })
       await expect(op(ctx, "policy.decide", "owner", decision, action)).rejects.toMatchObject({ code: "conflict" })
       expect(count(ctx, "policy_rules")).toBe(0)
@@ -858,11 +859,11 @@ describe("the request bytes the vault keeps", () => {
       const approval = await held(ctx, linearCall(comment("First")))
       const first = policyArea.migrations.indexOf(WORKSPACE_POLICY_RULES_MIGRATION)
       expect(first).toBe(policyArea.migrations.indexOf(WORKSPACE_POLICY_RULE_ANCHORS_MIGRATION) - 1)
-      ctx.sql.exec("DROP INDEX policy_rules_kind")
-      for (const column of ["kind", "max_uses", "receipt"]) ctx.sql.exec(`ALTER TABLE policy_rules DROP COLUMN ${column}`)
-      ctx.sql.exec("DROP INDEX policy_rule_anchors_created")
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP INDEX policy_rules_kind"))
+      for (const column of ["kind", "max_uses", "receipt"]) withTrustedSchema(ctx, () => ctx.sql.exec(`ALTER TABLE policy_rules DROP COLUMN ${column}`))
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP INDEX policy_rule_anchors_created"))
       ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='policy'", first + 1)
-      applyMigrations(ctx.sql, ctx.storage, [policyArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [policyArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='policy'").toArray()[0]!.applied).toBe(policyArea.migrations.length)
       expect(bytesOf(ctx, approval)).toBe(1)
       expect(ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT source FROM policy_rule_anchors WHERE created_at<=?", 0).toArray().map((r) => r.detail).join(" ")).toContain("policy_rule_anchors_created")
@@ -878,10 +879,10 @@ describe("the request bytes the vault keeps", () => {
       expect(grants).toBe(policyArea.migrations.length - 1)
       expect(policyArea.migrations.indexOf(WORKSPACE_POLICY_RULE_ANCHORS_MIGRATION)).toBe(grants - 1)
       // The schema as it was before task grants.
-      ctx.sql.exec("DROP INDEX policy_rules_kind")
-      for (const column of ["kind", "max_uses", "receipt"]) ctx.sql.exec(`ALTER TABLE policy_rules DROP COLUMN ${column}`)
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP INDEX policy_rules_kind"))
+      for (const column of ["kind", "max_uses", "receipt"]) withTrustedSchema(ctx, () => ctx.sql.exec(`ALTER TABLE policy_rules DROP COLUMN ${column}`))
       ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='policy'", grants)
-      applyMigrations(ctx.sql, ctx.storage, [policyArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [policyArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='policy'").toArray()[0]!.applied).toBe(policyArea.migrations.length)
       expect(ctx.sql.exec("SELECT kind,max_uses,receipt FROM policy_rules").toArray()).toEqual([{ kind: null, max_uses: null, receipt: null }])
       const [rule] = await rulesOf(ctx)
@@ -1088,7 +1089,7 @@ describe("a rule ends when an exact grant would", () => {
       const scope = JSON.parse(ctx.sql.exec<{ scope: string }>("SELECT scope FROM devices WHERE id='dev_owner'").toArray()[0]!.scope) as Record<string, unknown>
       ctx.sql.exec("UPDATE devices SET scope=? WHERE id='dev_owner'", JSON.stringify({ ...scope, modes: ["relay"] }))
     }],
-    ["the credential is edited", "credential-changed", (ctx) => { ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='linear-work'") }],
+    ["the credential is edited", "credential-changed", (ctx) => { fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='linear-work'") }],
     ["a protected reference is added", "access-changed", (ctx) => {
       const id = ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug='linear-work'").toArray()[0]!.id
       editAccessFixture(ctx, (state) => { state.projects[0]!.environments[1]!.references.push({ variable: "LINEAR", field: "key", item: id, home: { kind: "workspace" }, revision: 1 }) })

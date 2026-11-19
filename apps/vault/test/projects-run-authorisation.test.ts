@@ -94,7 +94,7 @@ describe("workspace run final-await boundaries", () => {
   it("share loss during decryption loses the race: no run, value release, exposure or upstream send", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
       const invocation = await projectDeviceInvocation(ctx, "dev_member"), principal = { kind: "device" as const, deviceId: "dev_member" }
       let entered!: () => void, release!: () => void
       const opening = new Promise<void>((resolve) => { entered = resolve }), barrier = new Promise<void>((resolve) => { release = resolve })
@@ -115,7 +115,7 @@ describe("workspace run final-await boundaries", () => {
   it("a lease audit failure rolls all capability and exposure writes back", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
       const invocation = await projectDeviceInvocation(ctx, "dev_member"), principal = { kind: "device" as const, deviceId: "dev_member" }
       const originalAudit = ctx.audit.bind(ctx), audit = vi.spyOn(ctx, "audit").mockImplementation((event) => { if (event.action === "run.lease") throw new Error("lease audit failed"); originalAudit(event) })
       await expect(workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...INPUT, env: "dev" }, invocation)).rejects.toThrow("lease audit failed")
@@ -158,7 +158,7 @@ describe("workspace lease-only runs", () => {
   it("uses and renews a lease-only run without granting metadata or losing exposure attribution", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
       ctx.sql.exec("UPDATE devices SET scope=json_set(scope,'$.modes',json('[\"lease\"]')) WHERE id='dev_member'")
       const invocation = await projectDeviceInvocation(ctx, "dev_member"), principal = { kind: "device" as const, deviceId: "dev_member" }
       const result = await workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...INPUT, env: "dev" }, invocation) as import("@mehen/protocol").WorkspaceRunCreated

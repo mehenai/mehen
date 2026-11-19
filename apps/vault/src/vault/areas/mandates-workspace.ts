@@ -581,7 +581,7 @@ export function settleShareExpiries(ctx: VaultContext): void {
     if (end !== null && Number.isFinite(end) && end <= now) due.add(row.id)
   }
   if (due.size === 0) return
-  ctx.sql.exec("DELETE FROM share_ends_settled WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=share_ends_settled.share AND s.value=share_ends_settled.terms)")
+  ctx.sql.exec(PRUNE_STALE_ENDS)
   const state = accessState(ctx)
   for (const share of state.shares) {
     if (!due.has(share.id)) continue
@@ -591,6 +591,7 @@ export function settleShareExpiries(ctx: VaultContext): void {
     ctx.sql.exec("INSERT OR IGNORE INTO share_ends_settled(share,terms) SELECT id,value FROM project_shares WHERE id=?", share.id)
   }
 }
+const PRUNE_STALE_ENDS = "DELETE FROM share_ends_settled WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=share_ends_settled.share AND s.value=share_ends_settled.terms)"
 const UNSETTLED_MANAGE_ENDS = "SELECT s.id,s.value FROM project_shares s WHERE json_extract(s.value,'$.level')='manage' AND json_extract(s.value,'$.expiresAt') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM share_ends_settled e WHERE e.share=s.id AND e.terms=s.value)"
 // Whether a manage share's end has passed and is not yet settled.
 export function shareExpiryDue(ctx: VaultContext): boolean {
@@ -889,6 +890,10 @@ export function sweepMandates(ctx: VaultContext): void {
   ctx.storage.transactionSync(() => {
     for (const { device } of rows(ctx.sql.exec<{ device: string }>("SELECT m.device FROM mandates m JOIN devices d ON d.id=m.device WHERE m.state IN ('active','paused','tripped') AND d.revoked_at IS NOT NULL"))) endRevokedMachine(ctx, device)
     settleShareExpiries(ctx)
+    // A settled end whose share's terms changed since is no longer one; its
+    // record goes here whether or not anything is due, so it never keeps the
+    // sweep waking.
+    ctx.sql.exec(PRUNE_STALE_ENDS)
     noticeEnding(ctx)
     for (const row of rows(ctx.sql.exec<MandateRow>("SELECT * FROM mandates WHERE state IN ('active','paused','tripped') AND expires_at<=?", now))) endRow(ctx, row, "expired", "expired", "system")
     ctx.sql.exec("UPDATE mandate_proposals SET closed_at=? WHERE closed_at IS NULL AND (expires_at<=? OR device IN (SELECT id FROM devices WHERE revoked_at IS NOT NULL))", now, now)

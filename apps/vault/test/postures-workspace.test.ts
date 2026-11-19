@@ -16,6 +16,7 @@ import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal,
 import { OPEN_ISSUE, UNREVIEWED, postureAction, postureRow, relayAs, seedGithub, setPosture } from "./postures-test-support.ts"
 import { decideBatch } from "./approvals-batch-support.ts"
 import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 const DAY = 86_400_000
 const at = (ctx: VaultContext, ms: number): VaultContext => Object.assign(Object.create(ctx) as VaultContext, { now: () => ms })
@@ -106,7 +107,7 @@ describe("setting how careful a credential is", () => {
       // The admin is demoted and the hosts change after the action is checked and before it is applied.
       const storage = Object.assign(Object.create(ctx.storage) as DurableObjectStorage, { transactionSync: <T>(fn: () => T): T => {
         fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_admin'")
-        ctx.sql.exec("UPDATE items SET binding=? WHERE slug='github-work'", JSON.stringify({ hosts: ["api.example.com"] }))
+        fixtureSql(ctx).exec("UPDATE items SET binding=? WHERE slug='github-work'", JSON.stringify({ hosts: ["api.example.com"] }))
         return ctx.storage.transactionSync(fn)
       } })
       const racing = Object.assign(Object.create(ctx) as VaultContext, { storage })
@@ -381,9 +382,9 @@ describe("the posture tables", () => {
     await inAccess(f.tenant, async (ctx) => {
       expect(itemsArea.migrations.at(-1)).toBe(ITEM_POSTURES_MIGRATION)
       const item = await seedGithub(ctx)
-      for (const table of ["posture_nudge_quiet", "posture_ask_counts", "item_postures"]) ctx.sql.exec(`DROP TABLE ${table}`)
+      for (const table of ["posture_nudge_quiet", "posture_ask_counts", "item_postures"]) withTrustedSchema(ctx, () => ctx.sql.exec(`DROP TABLE ${table}`))
       ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='items'", itemsArea.migrations.length - 1)
-      applyMigrations(ctx.sql, ctx.storage, [itemsArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [itemsArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='items'").toArray()[0]!.applied).toBe(itemsArea.migrations.length)
       expect(checkedCredential(ctx, "github-work")?.id).toBe(item.id)
       expect(describeAs(ctx, "owner").posture).toMatchObject({ level: "ask", rev: 0 })

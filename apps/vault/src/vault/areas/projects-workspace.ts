@@ -323,6 +323,7 @@ function workspaceProjectOperations(runtime: ProjectRuntime): Record<string, Pro
       ctx.storage.transactionSync(() => {
         const decision = runtime.authorise(ctx, invocation, { type: principal.kind === "device" ? "project.init" : "project.create" }, {}, ctx.now())
         if (principal.kind === "member") runtime.requireStepUp(ctx, decision, { type: "project.create", slug: input.slug, remote: input.remote, environments: input.environments }, invocation)
+        beforeManagementChange(ctx)
         ctx.sql.exec("INSERT INTO projects(id,slug,default_env,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)", id, input.slug, input.defaultEnv, actor(principal), ctx.now(), ctx.now())
         if (remote !== null) ctx.sql.exec("INSERT INTO remotes(remote,project) VALUES(?,?)", remote, id)
         for (const e of envs) ctx.sql.exec("INSERT INTO environments(project,name,protected,fences,four_eyes) VALUES(?,?,?,'[]',?)", id, e.name, e.protected ? 1 : 0, e.fourEyes ? 1 : 0)

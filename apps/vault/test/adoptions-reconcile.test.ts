@@ -16,6 +16,7 @@ import { ADOPTION_HOLDER_GONE } from "../src/adoption-words.ts"
 import type { ApiError } from "@mehen/protocol/api"
 import { assertCredentialNameFree, checkedCredential, prepareCredential, registerCredentialServices, storeCredential } from "../src/vault/areas/items-workspace.ts"
 import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 // seedCredential's value.
 const STORED = "test-secret-never-returned"
@@ -36,15 +37,15 @@ describe("adoptions migration 2", () => {
   it("a workspace built on the first adoptions schema migrates, keeps its rows, and approves a batch staged before with the digest a store-only page signs", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async ctx => {
-      for (const table of ["adoption_batches", "adoption_items", "adoption_secrets", "adoption_machines", "adoption_indexes", "adoption_compare_counts"]) ctx.sql.exec(`DROP TABLE ${table}`)
+      for (const table of ["adoption_batches", "adoption_items", "adoption_secrets", "adoption_machines", "adoption_indexes", "adoption_compare_counts"]) withTrustedSchema(ctx, () => ctx.sql.exec(`DROP TABLE ${table}`))
       ctx.sql.exec("DELETE FROM _migrations WHERE area='adoptions'")
-      applyMigrations(ctx.sql, ctx.storage, [{ ...adoptionsArea, migrations: adoptionsArea.migrations.slice(0, 1) }])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [{ ...adoptionsArea, migrations: adoptionsArea.migrations.slice(0, 1) }]))
       const columns = (table: string) => ctx.sql.exec<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`).toArray().map(c => c.name)
       expect([columns("adoption_items"), columns("adoption_secrets"), columns("adoption_indexes")]).toEqual([expect.not.arrayContaining(["compare"]), expect.not.arrayContaining(["match"]), []])
       const { adoption } = await start(ctx)
       await firstSchemaRow(ctx, adoption, "a001", "kept-row", SENTINEL)
       const before = { items: ctx.sql.exec("SELECT adoption,ref,item_id,slug,status FROM adoption_items").toArray(), secrets: ctx.sql.exec("SELECT adoption,ref,field,fingerprint,dup_tag FROM adoption_secrets").toArray() }
-      applyMigrations(ctx.sql, ctx.storage, [adoptionsArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [adoptionsArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='adoptions'").toArray()[0]!.applied).toBe(2)
       expect({ items: ctx.sql.exec("SELECT adoption,ref,item_id,slug,status FROM adoption_items").toArray(), secrets: ctx.sql.exec("SELECT adoption,ref,field,fingerprint,dup_tag FROM adoption_secrets").toArray() }).toEqual(before)
       expect(ctx.sql.exec("SELECT compare,holder,holder_version,action,decided_slug,repoint FROM adoption_items").toArray()).toEqual([{ compare: 0, holder: null, holder_version: null, action: null, decided_slug: null, repoint: null }])
