@@ -13,6 +13,10 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
+### 19 November 2026: a relayed write the upstream did not answer no longer says retry later
+
+When the vault could not get an answer from the upstream for a relayed request with a method other than `GET`, `HEAD` or `OPTIONS`, `upstream_failed` now says the request may have reached the service and to check whether it took effect before sending it again, and carries no `retryAfter`. A read still says to retry later, with `retryAfter: 5`. See [`upstream_failed`](reference/errors.md#upstream_failed).
+
 ### 19 November 2026: choose how often Mehen asks
 
 A workspace's Settings page has a new choice, **How often Mehen asks**: Ask on writes (as before, the default) or Let it work. At Let it work, a request within a credential's destinations that the workspace owner's trust would cover goes through without asking, and anything that would still need a person is refused at once with the reason, so an agent never waits. It never covers protected environments, browser fill, pushes into other services, the policy floor or machines the owner's trust does not reach, and it follows Mehen's reviewed templates as they are updated. An owner or admin chooses Let it work with a passkey; going back needs none, and every change is in the activity. It is on in a local vault and off on Mehen Cloud for now. See [How often Mehen asks](concepts/approvals.md#how-often-mehen-asks).

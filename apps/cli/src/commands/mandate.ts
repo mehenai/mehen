@@ -9,7 +9,7 @@ import { openSession } from "../session.ts"
 import { segments } from "../tty.ts"
 
 const HELP = "mehen mandate --help"
-const PROPOSED_THEN = "mehen mandate ls shows it again while it is open, and the mandate once it is signed"
+const proposedThen = (id: string) => `mehen wait ${id} --timeout 60 waits until a person signs it; mehen mandate ls shows it again while it is open`
 const PROPOSE_FLAGS = ["items", "classes", "days", "caps", "schedule", "note", "reason"]
 // The flags each action takes; anything else of this command's is refused.
 const ACTION_FLAGS: Record<string, readonly string[]> = { propose: PROPOSE_FLAGS, ls: [], show: [], uses: ["since"], pause: [] }
@@ -75,7 +75,7 @@ export const mandateCommand: Command = {
       if (json) printJson({ ...result, terms: proposal.terms })
       else {
         if (result.existing) printLine("These terms are already waiting for the person to sign; this is the same link.")
-        printAsk(result.ask, { env, noQr: args.bool("no-qr"), then: PROPOSED_THEN })
+        printAsk(result.ask, { env, noQr: args.bool("no-qr"), then: proposedThen(result.proposal) })
       }
       return EXIT.ok
     }

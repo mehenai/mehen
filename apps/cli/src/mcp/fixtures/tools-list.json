@@ -573,7 +573,7 @@
             "type": "string"
           },
           "timeoutSeconds": {
-            "description": "stop waiting after this many seconds (a network error; the request may still have reached the upstream)",
+            "description": "stop waiting after this many seconds: a read is then a network error, a write outcome_unknown",
             "type": "integer",
             "minimum": 1,
             "maximum": 600
@@ -1019,13 +1019,13 @@
     {
       "name": "vault_wait",
       "title": "Wait for a human",
-      "description": "Wait for a human to finish an intake (int_), an approval (apr_), an OAuth connection (con_), a policy proposal (pol_), an adoption batch (adp_), a bundle from vault_plan (bnd_: done when every request in it is approved; a denial is an error that names the approved ones, which stay usable) or an enrolment this machine started at its terminal (enr_). The id is found in the one workspace this server may use that recorded it; pass workspace only when the call should be held to one. Returns the outcome; a human who has not acted yet is a `timeout` error: call it again, and remind the human of the link if needed. Default 45 s, at most 600 s. Decides nothing itself.",
+      "description": "Wait for a human to finish an intake (int_), an approval (apr_), an OAuth connection (con_), a policy proposal (pol_), an adoption batch (adp_), a bundle from vault_plan (bnd_: done when every request in it is approved; a denial is an error that names the approved ones, which stay usable), a mandate proposal (mdp_: done once signed) or an enrolment this machine started at its terminal (enr_). The id is found in the one workspace this server may use that recorded it; pass workspace only when the call should be held to one. Returns the outcome; a human who has not acted yet is a `timeout` error: call it again, and remind the human of the link if needed. Default 45 s, at most 600 s. Decides nothing itself.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
-            "description": "int_..., apr_..., con_..., pol_..., adp_..., bnd_... or enr_..."
+            "description": "int_..., apr_..., con_..., pol_..., adp_..., bnd_..., mdp_... or enr_..."
           },
           "timeoutSeconds": {
             "type": "integer",
@@ -1051,7 +1051,7 @@
     {
       "name": "vault_pending",
       "title": "Open asks",
-      "description": "Everything this machine has asked a human for that is still open, across every workspace this server may use (or the one named): intakes, connections, approvals, policy proposals and enrolments it started. Approvals a human can review together carry `group`, listed in `groups`. Each has an ask with its checked link, so a conversation that lost the link can hand it over again. Member-only policy reviews are not included. Creates and extends nothing.",
+      "description": "Everything this machine has asked a human for that is still open, across every workspace this server may use (or the one named): intakes, connections, approvals, policy proposals and enrolments it started. Approvals a human can review together carry `group`, listed in `groups`. Each has an ask with its checked link, so a conversation that lost the link can hand it over again. Asks from an unreachable vault carry `stale: true`, never handed over. Member-only policy reviews are not included. Creates and extends nothing.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -84,8 +84,8 @@ When the vault holds a request from a machine whose owner could sign a mandate, 
 
 | State | Meaning | What the agent does |
 | --- | --- | --- |
-| `none` | The machine has no mandate | The third time the same kind of ask carries it, propose one with those kinds |
-| `unticked` | Its mandate does not name this kind or this credential | The third time, propose wider terms |
+| `none` | The machine has no mandate | When more asks like it will follow, propose one with that credential and those kinds only |
+| `unticked` | Its mandate does not name this kind or this credential | When more asks like it will follow, propose its terms again with only those added |
 | `paused`, `tripped` | Its mandate is paused or tripped | Hand the person the page; its signer can resume it |
 | `ended` | Its mandate has ended | Hand the person the page; its signer can sign it again |
 | `outside_schedule` | It is outside the mandate's hours | Wait for its hours, or let the ask go to the person as usual |

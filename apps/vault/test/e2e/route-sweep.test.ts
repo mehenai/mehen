@@ -109,6 +109,7 @@ it("fresh schema route sweep: every /v1 route called by the CLI and its real wor
     const proposed = await body<{ id: string; url: string }>(await call("POST", "/v1/mandates/proposals", "/v1/mandates/proposals", { terms: { items: "all", classes: ["read"], caps: { read: 100, change: 0, send: 0, delete: 0 }, ttlDays: 7, schedule: null, note: "Smoke test" }, reason: "Smoke test" }), 201)
     expect(proposed.url).toBe(`${f.env.VAULT_ORIGIN}/w/northwind/sign-mandate?proposal=${proposed.id}`)
     expect(await body(await call("GET", "/v1/mandates"))).toEqual({ mandates: [], proposals: [expect.objectContaining({ id: proposed.id, url: proposed.url, classes: ["read"], items: "all" })] })
+    expect(await body(await call("GET", "/v1/mandates/proposals/:id", `/v1/mandates/proposals/${proposed.id}?wait=1`))).toEqual({ proposal: proposed.id, state: "open", mandate: null, expiresAt: expect.any(String) })
     expect((await call("GET", "/v1/mandates/:id", "/v1/mandates/mdt_missing123")).status).toBe(404)
     expect((await call("GET", "/v1/mandates/:id/uses", "/v1/mandates/mdt_missing123/uses")).status).toBe(404)
     expect((await call("POST", "/v1/mandates/:id/pause", "/v1/mandates/mdt_missing123/pause", { rev: 1 })).status).toBe(404)

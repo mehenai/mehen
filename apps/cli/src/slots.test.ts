@@ -461,7 +461,7 @@ describe("fail-closed selection", () => {
     await enrolSlot(config({ vault: OTHER_ORIGIN, device: "dev_other00000001" }))
     const refused = await failure(() => selectSlot(env))
     expect(refused.code).toBe("context_ambiguous")
-    expect(refused.message).toContain("dev_other00000001")
+    expect(refused.message).toContain(OTHER_ORIGIN)
     const twin = join(slot(config()) + ".duplicate-dev_twin00000001")
     await enrol(twin, config({ device: "dev_twin00000001" }))
     expect((await listActive(env)).map((c) => c.config.device)).not.toContain("dev_twin00000001")

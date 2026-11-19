@@ -69,6 +69,10 @@ describe("mehen ls", () => {
     const all = await runJv(["ls", "--json"], env)
     expect(all.code).toBe(EXIT.ok)
     expect((json(all).items as { slug: string }[]).map((i) => i.slug)).toEqual(["openai-personal", "github-work"])
+    for (const listed of json(all).items as Record<string, unknown>[]) {
+      expect(Object.values(listed).filter((value) => value === null || value === false)).toEqual([])
+      expect(listed.workspace).toEqual(MOCK_WORKSPACE)
+    }
     const tagged = await runJv(["ls", "--tag", "code", "--json"], env)
     expect((json(tagged).items as { slug: string }[]).map((i) => i.slug)).toEqual(["github-work"])
     expect(vault.seen.at(-1)?.search).toBe("?tag=code")
@@ -147,15 +151,15 @@ describe("mehen ls", () => {
     expect((await runJv(["ls", "--kind", "nonsense"], env)).code).toBe(EXIT.usage)
   })
 
-  test("--json: the summary fields and the workspace each item is in, nothing more, no colour", async () => {
+  test("--json: the summary fields and the workspace each item is in, nothing more, null and false fields left out, no colour", async () => {
     await enrolled()
     vault.items.push(gmailAlex({ review: { reason: "r", since: "2026-10-23T10:00:00.000Z" } }))
     const result = await runJv(["ls", "--json"], { ...env, FORCE_COLOR: "1" })
     expect(result.stdout).not.toContain(ESC)
     expect(json(result)).toEqual({
       items: [
-        { slug: "openai-personal", kind: "api-key", provider: "openai", account: null, accountVerified: false, tags: ["ai"], ceiling: "placeholder", hosts: ["api.openai.com"], status: "active", updatedAt: "2026-10-24T00:00:00.000Z", workspace: MOCK_WORKSPACE },
-        { slug: "github-work", kind: "bearer-token", provider: "github-pat", account: null, accountVerified: false, tags: ["code"], ceiling: "placeholder", hosts: ["api.github.com"], status: "active", updatedAt: "2026-10-24T00:00:00.000Z", workspace: MOCK_WORKSPACE },
+        { slug: "openai-personal", kind: "api-key", provider: "openai", tags: ["ai"], ceiling: "placeholder", hosts: ["api.openai.com"], status: "active", updatedAt: "2026-10-24T00:00:00.000Z", workspace: MOCK_WORKSPACE },
+        { slug: "github-work", kind: "bearer-token", provider: "github-pat", tags: ["code"], ceiling: "placeholder", hosts: ["api.github.com"], status: "active", updatedAt: "2026-10-24T00:00:00.000Z", workspace: MOCK_WORKSPACE },
         {
           slug: "gmail-alex",
           kind: "oauth-connection",

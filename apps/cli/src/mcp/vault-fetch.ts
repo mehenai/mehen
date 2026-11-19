@@ -45,7 +45,7 @@ export const vaultFetch = tool({
     replaces: z.string().optional().describe("your open apr_ ask this corrected request supersedes; for several writes use vault_plan"),
     context: z.object({ project: z.string().describe("the project id (prj_...)"), environment: z.string().describe("the environment name") }).optional().describe("the project environment the credential is used for; needed for a protected, team or guest credential. Never changes the workspace."),
     select: z.string().optional().describe('one part of a JSON response, by keys and indexes: data.0.id, .items[2]["display name"], or . for all; returned as `selected` instead of `body`, from the whole response however large'),
-    timeoutSeconds: z.number().int().min(1).max(FETCH_MAX_TIME_SECONDS).optional().describe("stop waiting after this many seconds (a network error; the request may still have reached the upstream)"),
+    timeoutSeconds: z.number().int().min(1).max(FETCH_MAX_TIME_SECONDS).optional().describe("stop waiting after this many seconds: a read is then a network error, a write outcome_unknown"),
     workspace: WORKSPACE_ARG,
   }),
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -83,7 +83,7 @@ export const vaultFetch = tool({
       }
       return await fetchOutput(head, response)
     } catch (error) {
-      if (timeout?.aborted && !call.signal.aborted && args.timeoutSeconds !== undefined) throw timedOut(args.timeoutSeconds)
+      if (timeout?.aborted && !call.signal.aborted && args.timeoutSeconds !== undefined) throw timedOut(args.timeoutSeconds, request.method)
       throw replacingRefused(ruleEnded(await mandateCapped(api, error, signal)), request, "mcp")
     }
   },

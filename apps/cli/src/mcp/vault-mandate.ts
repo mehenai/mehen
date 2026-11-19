@@ -67,7 +67,7 @@ export const vaultMandate = tool({
     if (args.action === "propose") {
       const proposal = mandateProposal({ items: args.items ?? null, classes: args.classes ?? null, days: args.days ?? null, caps: Object.fromEntries(Object.entries(args.caps ?? {}).filter(([, n]) => n !== undefined)) as Record<string, number>, schedule: args.schedule ?? null, note: args.note, reason: args.reason ?? null }, "mcp", HELP)
       const result = await proposeMandate(await deps.session(workspace), proposal, deps.env, "mcp")
-      return handing({ ...result, terms: proposal.terms }, result.ask, result.warning, `${result.existing ? "these terms are already waiting for the person to sign; this is the same link. " : ""}vault_mandate { "action": "list" } shows it again while it is open, and the mandate once it is signed`)
+      return handing({ ...result, terms: proposal.terms }, result.ask, result.warning, `${result.existing ? "these terms are already waiting for the person to sign; this is the same link. " : ""}vault_wait { "id": ${JSON.stringify(result.proposal)} } waits until a person signs it; vault_mandate { "action": "list" } shows it again while it is open`)
     }
     const since = args.action === "uses" && args.since !== undefined ? parseSince(args.since, "since", HELP) : null
     const session = await deps.session(workspace)

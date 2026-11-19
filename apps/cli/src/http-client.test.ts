@@ -2,11 +2,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { ERROR_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
 import { type ProofSigner, parseProof } from "@mehen/protocol/proof"
 import { readConfig } from "./config.ts"
+import { errorBody, toCliError } from "./errors.ts"
 import { loadDeviceKey } from "./device-key.ts"
 import { HttpVaultApi } from "./http-client.ts"
 import { MOCK_TENANT, MockVault, vaultError } from "./testing/mock-vault.ts"
 import { tempDir } from "./testing/run-mehen.ts"
-import { VaultApiError, VaultNetworkError } from "./vault-api.ts"
+import { RelayOutcomeUnknownError, RelayUnmarkedAnswerError, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 
 let vault: MockVault
 let dir: { path: string; remove(): Promise<void> }
@@ -139,6 +140,20 @@ describe("HttpVaultApi errors", () => {
     expect(dropped.body).not.toHaveProperty("expiresAt")
   })
 
+  test("approval_required keeps deciders, a list of names, through to the CLI error; other shapes and codes drop it", async () => {
+    const api = await client()
+    vault.overrides.set("GET /v1/me", () => vaultError("approval_required", "Needs approval.", { approval: "apr_1", deciders: ["Alex", "Sam"] }))
+    const kept = (await api.request("GET", "/v1/me").catch((e: unknown) => e)) as VaultApiError
+    expect(kept.body.deciders).toEqual(["Alex", "Sam"])
+    expect(errorBody(toCliError(kept))).toMatchObject({ error: "approval_required", deciders: ["Alex", "Sam"] })
+    for (const [code, deciders] of [["approval_required", [1]], ["approval_required", "Alex"], ["forbidden", ["Alex"]]] as const) {
+      vault.overrides.set("GET /v1/me", () => vaultError(code, "No.", { deciders } as unknown as object))
+      const dropped = (await api.request("GET", "/v1/me").catch((e: unknown) => e)) as VaultApiError
+      expect(dropped.body).not.toHaveProperty("deciders")
+      expect(errorBody(toCliError(dropped))).not.toHaveProperty("deciders")
+    }
+  })
+
   test("a terminal renew refusal keeps its settled enrolment, the full active answer included; malformed ones are dropped", async () => {
     const api = await client()
     const workspace = { id: "tn_work0001", slug: "northwind", name: "Northwind" }
@@ -188,6 +203,43 @@ describe("HttpVaultApi errors", () => {
 })
 
 describe("HttpVaultApi relay", () => {
+  // A write relayed over a connection that broke may have gone upstream; a
+  // read, or a connection never made, did not do anything twice.
+  test("a broken connection is RelayOutcomeUnknownError for a write only, and never when nothing connected", async () => {
+    const reset = Object.assign(new Error("The socket connection was closed unexpectedly"), { code: "ECONNRESET" })
+    const refused = Object.assign(new Error("Unable to connect"), { code: "ConnectionRefused" })
+    const signer = await enrolledSigner()
+    const relay = (failure: Error, method: string) => new HttpVaultApi({ vaultUrl: vault.url, tenant: MOCK_TENANT, signer, fetch: async () => { throw failure } }).relay({ item: "gmail", method, url: "https://gmail.googleapis.com/x", headers: [] }).catch((e: unknown) => e)
+    for (const method of ["POST", "PATCH", "PUT", "DELETE"]) expect(await relay(reset, method)).toBeInstanceOf(RelayOutcomeUnknownError)
+    for (const method of ["GET", "HEAD"]) {
+      const error = await relay(reset, method)
+      expect(error).toBeInstanceOf(VaultNetworkError)
+      expect(error).not.toBeInstanceOf(RelayOutcomeUnknownError)
+    }
+    expect(await relay(refused, "POST")).not.toBeInstanceOf(RelayOutcomeUnknownError)
+  })
+
+  test("upstream_failed keeps retry later for a read, and says to check before sending again for a write", async () => {
+    const api = await client()
+    vault.overrides.set("POST /v1/relay", () => vaultError("upstream_failed", "Could not get an answer from gmail.googleapis.com."))
+    const failed = async (method: string) => errorBody(toCliError(await api.relay({ item: "gmail", method, url: "https://gmail.googleapis.com/x", headers: [] }).catch((e: unknown) => e)))
+    const read = await failed("GET")
+    expect(read.error).toBe("upstream_failed")
+    expect(read.next?.say).toContain("retry later")
+    const write = await failed("POST")
+    expect(write.error).toBe("upstream_failed")
+    expect(write.next?.say).toContain("Do not send it again until you have checked")
+    expect(write.next?.say).not.toContain("retry later")
+  })
+
+  test("a write's upstream_failed loses any retryAfter the vault sent, as its next says to check first", async () => {
+    const api = await client()
+    vault.overrides.set("POST /v1/relay", () => Response.json({ error: "upstream_failed", message: "Could not get an answer.", retryAfter: 5 }, { status: 502, headers: { [ERROR_HEADER]: "1" } }))
+    const failed = async (method: string) => (await api.relay({ item: "gmail", method, url: "https://gmail.googleapis.com/x", headers: [] }).catch((e: unknown) => e)) as VaultApiError
+    expect((await failed("POST")).body.retryAfter).toBeUndefined()
+    expect((await failed("GET")).body.retryAfter).toBe(5)
+  })
+
   test("returns the streamed upstream response", async () => {
     const api = await client()
     const response = await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/models", headers: [] })
@@ -246,12 +298,16 @@ describe("HttpVaultApi relay", () => {
     expect(error.body.error).toBe("binding_refused")
   })
 
-  test("an answer with neither Mehen-Upstream nor Mehen-Error is not passed off as the upstream's", async () => {
+  test("an answer with neither Mehen-Upstream nor Mehen-Error is not passed off as the upstream's, and is RelayUnmarkedAnswerError with its status", async () => {
     const api = await client()
     vault.overrides.set("POST /v1/relay", () => new Response("hello", { status: 200 }))
     const error = (await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e)) as VaultApiError
     expect(error).toBeInstanceOf(VaultApiError)
     expect(error.body.error).toBe("internal")
+    vault.overrides.set("POST /v1/relay", () => new Response("Bad Gateway", { status: 502 }))
+    const proxied = await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e)
+    expect(proxied).toBeInstanceOf(RelayUnmarkedAnswerError)
+    expect((proxied as RelayUnmarkedAnswerError).status).toBe(502)
   })
 })
 

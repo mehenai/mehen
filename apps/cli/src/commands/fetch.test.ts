@@ -3,6 +3,7 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { type ErrorCode, EXIT, EXIT_FOR_ERROR, ITEM_HEADER, MANDATE_HEADER, POSTURE_HEADER, RULE_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
 import { clockText } from "../ask.ts"
+import { OUTCOME_UNKNOWN_SAY } from "../errors.ts"
 import { grantView, ruleView } from "../testing/policy-rules-fixtures.ts"
 import { mandateView } from "../testing/mandate-fixtures.ts"
 import { base64UrlDecode, fromUtf8 } from "@mehen/protocol/bytes"
@@ -165,7 +166,8 @@ describe("mehen fetch", () => {
       expect(body).toEqual({
         error: code,
         message: `refused: ${code}`,
-        next: { url: link, command: "mehen wait apr_1", say: "Ask the human." },
+        // A write the upstream did not answer may have reached it: the next step is outcome_unknown's.
+        next: code === "upstream_failed" ? { say: OUTCOME_UNKNOWN_SAY } : { url: link, command: "mehen wait apr_1", say: "Ask the human." },
         approval: "apr_1",
         bindingCode: "K7Q2",
       })
@@ -180,7 +182,7 @@ describe("mehen fetch", () => {
       expect(human.code).toBe(exit)
       expect(human.stdout).toBe("")
       expect(human.stderr).toContain(`mehen: refused: ${code}`)
-      expect(human.stderr).toContain(link)
+      expect(human.stderr).toContain(code === "upstream_failed" ? OUTCOME_UNKNOWN_SAY : link)
       expect(human.stderr).not.toMatch(/\u001b\[/)
       if (ask) {
         expect(human.stderr).toContain("Human needed: ")
@@ -510,22 +512,32 @@ describe("mehen fetch for agents: --output, --select, -i and --max-time", () => 
     expect(result.stderr).toContain("  mehen-item: openai-personal (alex@example.com)")
   })
 
-  test("--max-time stops waiting with a network error (exit 7) that says the request may have been sent", async () => {
+  const stalled = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("partial"))
+        },
+      }),
+      { status: 200, headers: { [UPSTREAM_HEADER]: "1" } },
+    )
+
+  test("--max-time on a read stops waiting with a network error (exit 7) that says to send it again", async () => {
     await enrolled()
-    vault.relay = () =>
-      new Response(
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode("partial"))
-          },
-        }),
-        { status: 200, headers: { [UPSTREAM_HEADER]: "1" } },
-      )
+    vault.relay = stalled
     const started = Date.now()
     const result = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/slow", "--max-time", "1", "--json"], env)
     expect(Date.now() - started).toBeLessThan(10_000)
     expect(result.code).toBe(EXIT.transient)
-    expect(json(result)).toMatchObject({ error: "network", next: { say: expect.stringContaining("may still have reached the upstream") } })
+    expect(json(result)).toMatchObject({ error: "network", next: { say: expect.stringContaining("send it again") } })
+  })
+
+  test("--max-time on a write is outcome_unknown (exit 7): check before sending again, never retry blind", async () => {
+    await enrolled()
+    vault.relay = stalled
+    const result = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/slow", "-d", "{}", "--max-time", "1", "--json"], env)
+    expect(result.code).toBe(EXIT.transient)
+    expect(json(result)).toMatchObject({ error: "outcome_unknown", next: { say: expect.stringContaining("Do not send it again until you have checked") } })
   })
 })
 
@@ -693,7 +705,8 @@ describe("mehen fetch when this machine's mandate allowed the request, or a cap 
     expect(json(foreign)).toMatchObject({ mandateCover: { url: page } })
     expect(foreign.stdout).not.toContain("evil.example")
     vault.overrides.set("POST /v1/relay", cover({ state: "none", mandate: null, url: null }))
-    expect((await runJv(send, env)).stderr).toContain('mandate: A mandate could let this machine make requests like this without asking. If this kind of ask keeps coming, propose one: `mehen mandate propose --classes read,send --note "<why>"`.')
+    expect((await runJv(send, env)).stderr).toContain('mandate: A mandate could let this machine make requests like this without asking. If this kind of ask keeps coming, propose one for only this credential and these kinds: `mehen mandate propose --items openai-personal --classes read,send --note "<why>"`.')
+    expect(json(await runJv([...send, "--json"], env))).toMatchObject({ mandateCover: { state: "none", items: ["openai-personal"] } })
     vault.overrides.set("POST /v1/relay", cover({ state: "lapsed" }))
     const unknown = await runJv([...send, "--json"], env)
     expect(json(unknown)).not.toHaveProperty("mandateCover")

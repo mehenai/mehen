@@ -23,7 +23,7 @@ Mandates are switched on workspace by workspace, and never in a managed workspac
 Say `build-box` is a server you enrolled as your own machine, running an agent that triages the support inbox each night and files issues.
 
 1. **Let it ask first.** Run the work once with no mandate. Each held request comes to you as an ask; approve or deny them as usual. An ask a mandate could cover carries `mandateCover` with state `none` to the agent, and its page offers you "Let build-box carry on with requests like this".
-2. **The agent proposes.** The third time the same kind of ask carries `mandateCover` with state `none` or `unticked`, an agent following the Mehen skill proposes a mandate with the kinds the hint names:
+2. **The agent proposes.** When asks carrying `mandateCover` with state `none` or `unticked` will keep coming, an agent following the Mehen skill proposes a mandate with only the credentials and kinds those hints name:
 
    ```sh
    mehen mandate propose --note "Nightly triage of the support inbox" --items gmail-support,linear-work --classes read,change,send --caps send=20 --days 30 --schedule "Europe/Paris daily 01:00-05:00" --json

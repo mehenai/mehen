@@ -22,6 +22,7 @@ import {
   RelayRequest,
   type RelayRequestInput,
 } from "@mehen/protocol/api"
+import type { MandateProposalStatus } from "@mehen/protocol/mandate-terms"
 import type { PolicyProposalStatus, PolicyRuleProposalStatus } from "@mehen/protocol/policy-mode"
 import { type PushDestination, type PushProvider, type PushRecordView, type PushResult, parsePushDestination, pushDestinationWords } from "@mehen/protocol/push"
 import { type AdoptionStatus, AdoptionStatusSchema } from "@mehen/protocol/adopt"
@@ -31,6 +32,7 @@ import { OAUTH_PROVIDERS, type OAuthProviderTemplate, getOAuthProvider, getTempl
 import type { z } from "zod"
 import { relativeExpiry } from "./ask.ts"
 import { CliError, usageError } from "./errors.ts"
+import { MANDATES_OFF_LINE } from "./mandate-operations.ts"
 import { type VaultApi, VaultApiError } from "./vault-api.ts"
 
 export function zodMessage(error: z.ZodError): string {
@@ -432,7 +434,7 @@ export async function adoptionStatus(api: VaultApi, id: string): Promise<Adoptio
   }
 }
 
-export type WaitKind = "intake" | "approval" | "connect" | "enrol" | "policy" | "adoption" | "bundle"
+export type WaitKind = "intake" | "approval" | "connect" | "enrol" | "policy" | "adoption" | "bundle" | "mandate"
 
 export type EnrolActive = Extract<EnrolStatus, { status: "active" }>
 
@@ -444,6 +446,9 @@ export type WaitResult =
   | { kind: "policy"; status: PolicyProposalStatus | PolicyRuleProposalStatus }
   | { kind: "adoption"; status: AdoptionStatus }
   | { kind: "bundle"; status: ApprovalBundleStatus }
+  // Signed, or settled by another mandate signed for this machine first
+  // (state expired, with that mandate).
+  | { kind: "mandate"; status: MandateProposalStatus & { mandate: string } }
 
 const WAIT_PREFIXES: Record<string, { kind: WaitKind; path: string; label: string }> = {
   int: { kind: "intake", path: "/v1/intakes/", label: "Intake" },
@@ -453,19 +458,23 @@ const WAIT_PREFIXES: Record<string, { kind: WaitKind; path: string; label: strin
   enr: { kind: "enrol", path: "/v1/enrol/", label: "Enrolment" },
   adp: { kind: "adoption", path: "/v1/adoptions/", label: "Adoption" },
   bnd: { kind: "bundle", path: "/v1/approvals/bundles/", label: "Bundle" },
+  mdp: { kind: "mandate", path: "/v1/mandates/proposals/", label: "Mandate proposal" },
 }
+
+// The id prefixes mehen wait follows, for the guide's test.
+export const WAIT_ID_PREFIXES = Object.keys(WAIT_PREFIXES)
 
 export type WaitTarget = { kind: WaitKind; path: string; label: string }
 
 export function waitTarget(id: string): WaitTarget {
-  const match = /^(int|apr|con|enr|pol|adp|bnd)_[A-Za-z0-9_-]{1,60}$/.exec(id)
+  const match = /^(int|apr|con|enr|pol|adp|bnd|mdp)_[A-Za-z0-9_-]{1,60}$/.exec(id)
   const target = match ? WAIT_PREFIXES[match[1] as string] : undefined
-  if (!target) throw usageError(`${JSON.stringify(id)} is not an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_), adoption (adp_) or bundle (bnd_) id.`, "mehen wait --help")
+  if (!target) throw usageError(`${JSON.stringify(id)} is not an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_), adoption (adp_), bundle (bnd_) or mandate proposal (mdp_) id.`, "mehen wait --help")
   return { ...target, path: target.path + id }
 }
 
 export function isWaitKind(value: unknown): value is WaitKind {
-  return value === "intake" || value === "approval" || value === "connect" || value === "enrol" || value === "policy" || value === "adoption" || value === "bundle"
+  return value === "intake" || value === "approval" || value === "connect" || value === "enrol" || value === "policy" || value === "adoption" || value === "bundle" || value === "mandate"
 }
 
 // Resolves after ms, or at once when the signal aborts (the caller then
@@ -502,6 +511,7 @@ const GENERIC_REISSUE: Record<WaitKind, string> = {
   adoption: "mehen adopt submit",
   enrol: "mehen enrol --workspace <slug>",
   bundle: "mehen plan submit <plan.json>",
+  mandate: "mehen mandate propose --items <slug> --classes <class> --note <why>",
 }
 
 function policyShow(item: string | undefined): string {
@@ -554,11 +564,29 @@ function settleBundle(id: string, value: unknown): WaitResult | null {
   throw new CliError("expired", message, { say: `${kept}The others expired before a decision; submit a plan of just those to ask again, and share the link sooner.` }, extras)
 }
 
+const MANDATE_ID = /^mdt_[A-Za-z0-9_-]{1,60}$/
+
+// A mandate proposal is done once a person signs it, or signs this machine
+// another mandate first, which settles it; one that expired with no
+// mandate signed changed nothing.
+function settleMandate(id: string, value: unknown): WaitResult | null {
+  const v = value as Partial<MandateProposalStatus>
+  if (v.proposal !== id || typeof v.expiresAt !== "string" || !(v.mandate === null || (typeof v.mandate === "string" && MANDATE_ID.test(v.mandate)))) {
+    throw new CliError("internal", `The vault's status for ${id} is not one mehen can read.`, { say: "Check the vault URL and try again; if it keeps failing, report it with this message." })
+  }
+  const status = { proposal: id, state: v.state, mandate: v.mandate, expiresAt: v.expiresAt }
+  if (v.state === "open") return null
+  if ((v.state === "signed" || v.state === "expired") && status.mandate) return { kind: "mandate", status: { ...status, state: v.state, mandate: status.mandate } }
+  if (v.state === "expired") throw new CliError("expired", `Mandate proposal ${id} expired before anyone signed it; nothing changed.`, { command: GENERIC_REISSUE.mandate, say: "Carry on asking for each request; propose again, with only what the asks name, if more asks like these will follow." }, { id, expiresAt: status.expiresAt })
+  throw unexpected(id, v.state)
+}
+
 // Every outcome as a sentence. Returns the result once decided, throws for
 // a decision against (the error's message is the sentence, its next the
 // way on), and null while a human still has to act.
 export function settle(kind: WaitKind, id: string, value: unknown, ledger: WaitLedger = NO_LEDGER): WaitResult | null {
   if (kind === "bundle") return settleBundle(id, value)
+  if (kind === "mandate") return settleMandate(id, value)
   const status = (value as { status?: unknown }).status
   const again = { command: `mehen wait ${id}` }
   const reissue = ledger.reissueCommand ?? GENERIC_REISSUE[kind]
@@ -721,7 +749,7 @@ export async function waitFor(api: VaultApi, id: string, options: WaitOptions): 
     } catch (error) {
       cancel?.throwIfAborted()
       if (pollTimeout?.aborted) break
-      throw error
+      throw error instanceof VaultApiError && error.body.error === "not_found" ? waitNotFound(target, id, error) : error
     }
     const result = settle(target.kind, id, value, options.ledger)
     if (result) return result
@@ -745,6 +773,22 @@ export async function waitFor(api: VaultApi, id: string, options: WaitOptions): 
     command: `mehen wait ${id}`,
     say: "A human has not acted yet; wait again, and remind them of the link if needed.",
   })
+}
+
+// An id the vault does not know, in the workspace asked: a typo, another
+// workspace's ask or one long gone. mehen pending lists this machine's
+// open asks, and mehen mandate ls its mandate proposals; a vault without
+// the route (or, for a mandate proposal, without mandates) says so instead.
+function waitNotFound(target: WaitTarget, id: string, error: VaultApiError): CliError {
+  const context = error.context ? { context: error.context } : {}
+  if (error.body.message === "No such route.") {
+    if (target.kind === "mandate") return new CliError("not_found", MANDATES_OFF_LINE, { say: "Carry on asking for each request as before; do not propose a mandate again." }, context)
+    return new CliError("not_found", `This vault cannot be asked about ${id}: it is older than this kind of ask.`, { command: "mehen pending", say: "List what is still waiting for a human with mehen pending." }, context)
+  }
+  if (target.kind === "mandate") {
+    return new CliError("not_found", `No such ${target.label.toLowerCase()} ${id} in this workspace.`, { command: "mehen mandate ls", say: "`mehen mandate ls` lists this machine's open mandate proposals in this workspace; wait on the id it shows, naming another workspace with --workspace when there are several." }, context)
+  }
+  return new CliError("not_found", `No such ${target.label.toLowerCase()} ${id} in this workspace.`, { command: "mehen pending", say: "mehen pending lists this machine's open asks, in every workspace; wait on the id it shows, naming its workspace with --workspace when there are several." }, context)
 }
 
 // "Approval apr_x is still waiting for a human after 10 min; the link

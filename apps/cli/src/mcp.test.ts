@@ -10,6 +10,7 @@ import { jwkThumbprint } from "@mehen/protocol/proof"
 import { OAUTH_PROVIDERS, TEMPLATES } from "@mehen/protocol/templates"
 import { type AskUrl, approvalAsk, askUrl, enrolAsk, intakeAsk, withContext } from "./ask.ts"
 import { readConfig } from "./config.ts"
+import { OUTCOME_UNKNOWN_SAY } from "./errors.ts"
 import { createDeviceKey } from "./device-key.ts"
 import { pendingSlotPath } from "./home.ts"
 import { addLedgerEntry, readLedger } from "./ledger.ts"
@@ -510,7 +511,7 @@ describe("mehen mcp tools", () => {
       const expected = withContext(intakeAsk({ id: "int_workspace", url: vaultLink("/i/int_workspace"), name: "workspace-key", kind: "api-key", provider: "openai", reason: null, expiresAt: "2030-01-01T00:00:00.000Z", requestedBy: { device: "workspace-machine", session: null } }), { origin: vault.url, workspace: MOCK_WORKSPACE, device: vault.lastDevice! })
       expect(result.isError).toBe(false)
       expect(result.structuredContent).toEqual({ pending: [expected], notices: [fixture.machine] })
-      expect(text(result)).toContain(`Machine added: workspace-machine (${vault.lastDevice}) in Mock Space (mock-space) at ${vault.url}. Open ${fixture.machine.url} to review this machine.`)
+      expect(text(result)).toContain(`Machine added on 2026-10-27: this machine, workspace-machine (${vault.lastDevice}), in Mock Space (mock-space) at ${vault.url}. Open ${fixture.machine.url} to review it.`)
       expect(text(result)).not.toMatch(/foreign|int_stopped|unknown|int_other|dev_other/)
       expectLinksMatchAsks(result)
       expect(resourceLinks(result)).toHaveLength(1)
@@ -734,7 +735,7 @@ describe("mehen mcp tools", () => {
     vault.overrides.set("POST /v1/relay", () => vaultError("approval_required", "This request needs a human's approval.", { next: { url: `${vault.url}/w/mock-space/a/apr_1`, say: "Ask the human." }, approval: "apr_1", ...({ mandateCover: { classes: ["read", "send"], state: "none", mandate: null, url: null } } as object) }))
     const none = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x" })
     const noneText = (none.content as { type: string; text?: string }[])[0]?.text ?? ""
-    expect(noneText).toContain('propose one: vault_mandate { "action": "propose", "classes": ["read", "send"], "note": "<why>" }.')
+    expect(noneText).toContain('propose one for only this credential and these kinds: vault_mandate { "action": "propose", "items": ["openai-personal"], "classes": ["read", "send"], "note": "<why>" }.')
     expect(noneText).not.toContain("mehen mandate propose")
   })
 
@@ -882,12 +883,16 @@ describe("mehen mcp tools", () => {
     expect(String((notJson.structuredContent as { message: string }).message)).toContain("so select has nothing to pick from")
   })
 
-  test("vault_fetch with timeoutSeconds stops waiting with a network error", async () => {
+  test("vault_fetch with timeoutSeconds stops waiting: a read with a network error safe to resend, a write with outcome_unknown", async () => {
     await vault.enrolSoftware(dir.path)
     vault.relay = () => new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
     const result = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/slow", timeoutSeconds: 1 })
     expect(result.isError).toBe(true)
-    expect(result.structuredContent).toMatchObject({ error: "network", next: { say: "The request may still have reached the upstream. Check whether it took effect before you send it again, or give `timeoutSeconds` more time." } })
+    expect(result.structuredContent).toMatchObject({ error: "network", next: { say: "A read changes nothing upstream: send it again, or give `timeoutSeconds` more time." } })
+    const write = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/slow", body: "{}", timeoutSeconds: 1 })
+    expect(write.isError).toBe(true)
+    expect(write.structuredContent).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+    expect(write.structuredContent).not.toHaveProperty("retryAfter")
   })
 
   // An approval-needed result stays an error result: the call did not do

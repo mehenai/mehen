@@ -33,7 +33,7 @@ generate: cli
 | Will this request be allowed? | `mehen check <slug> <METHOD> <url>` | `vault_check` |
 | Ask a human for a new credential | `mehen request <kind> --name <slug> --provider <template> --reason <why> [--home private\|project\|workspace]` | `vault_request` |
 | Connect an OAuth account | `mehen connect <provider> --name <slug> --reason <why> [--expect <account>] [--request-client]` | `vault_connect` |
-| Wait for an intake, connection, approval, enrolment, rule proposal, adoption or bundle | `mehen wait <id>` (`int_`, `con_`, `apr_`, `enr_`, `pol_`, `adp_`, `bnd_`) | `vault_wait` |
+| Wait for an intake, connection, approval, enrolment, rule proposal, adoption, bundle or mandate proposal | `mehen wait <id>` (`int_`, `con_`, `apr_`, `enr_`, `pol_`, `adp_`, `bnd_`, `mdp_`) | `vault_wait` |
 | Which links are still open? | `mehen pending [<id>]` | `vault_pending` |
 | Call an HTTP API | `mehen fetch <slug> <METHOD> <url> [--project <prj_id> --env <name>]` | `vault_fetch` |
 | Ask for several writes at once | `mehen plan submit <plan.json>`, then `mehen wait bnd_...`; `mehen check --plan <plan.json>` checks one first | `vault_plan` |

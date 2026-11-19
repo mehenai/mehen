@@ -739,6 +739,22 @@ describe("relay upstream forwarding", () => {
     })
     await expect(forwardRelay(material, null)).rejects.toMatchObject({ code: "upstream_failed" })
   })
+
+  it("says retry later for a read that failed upstream, and to check first for a write", async () => {
+    setUpstreamFetch(async () => {
+      throw new Error("reset")
+    })
+    const read = await forwardRelay(material, null).catch((error: unknown) => error)
+    expect(read).toBeInstanceOf(VaultError)
+    expect((read as VaultError).message).toContain("retry later")
+    expect((read as VaultError).extra.retryAfter).toBe(5)
+    const write = await forwardRelay({ ...material, method: "POST" }, null).catch((error: unknown) => error)
+    expect(write).toBeInstanceOf(VaultError)
+    expect((write as VaultError).code).toBe("upstream_failed")
+    expect((write as VaultError).message).not.toContain("retry later")
+    expect((write as VaultError).message).toContain("may have reached")
+    expect((write as VaultError).extra.retryAfter).toBeUndefined()
+  })
 })
 
 describe("relay route", () => {

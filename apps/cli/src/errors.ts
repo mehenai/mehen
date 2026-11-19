@@ -4,12 +4,14 @@
 import { type ApiError, type ApprovalStatus, type ErrorCode, EXIT, EXIT_FOR_ERROR, EXIT_FOR_LOCAL_ERROR, type ExitCode, type NextStep } from "@mehen/protocol/api"
 import type { PolicyAreaRefusal, PolicyProposalStatus, PolicyRuleRefusal } from "@mehen/protocol/policy-mode"
 import type { Ask } from "./ask.ts"
-import { type CallContext, VaultApiError, VaultNetworkError } from "./vault-api.ts"
+import type { MandateCover } from "./mandate-cover.ts"
+import { type CallContext, RelayOutcomeUnknownError, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 
 // Failures that start on this machine rather than in the vault.
 export const LOCAL_EXIT = {
   usage: EXIT.usage,
   network: EXIT.transient,
+  outcome_unknown: EXIT.transient, // a relayed write may have reached the upstream; never repeat it blind
   timeout: EXIT.human, // a human has not acted yet; wait again
   stale: EXIT.refused,
   superseded: EXIT.refused, // a newer ask from this machine to the same place replaced the approval
@@ -55,7 +57,7 @@ export type CliErrorCode = ErrorCode | LocalErrorCode
 // review group as the vault sent it: it reaches output only on the ask,
 // once askGroup has checked its link. `cleared` is mehen fill's: whether
 // it emptied a field it had typed into before giving up.
-export type ErrorExtras = Partial<ApprovalStatus | PolicyProposalStatus> & { kind?: "policy" | "approval"; id?: string } & Pick<ApiError, "approval" | "bindingCode" | "choices" | "retryAfter" | "providerStatus" | "mandate" | "mandateCover"> & { expiresAt?: string; ask?: Ask; request?: MissingClientRequest; setup?: MissingClientSetup; context?: CallContext; ruleRefused?: PolicyRuleRefusal; areaRefused?: PolicyAreaRefusal; group?: unknown; bundle?: string; approvals?: { id: string; status: ApprovalStatus["status"] }[]; cleared?: boolean }
+export type ErrorExtras = Partial<ApprovalStatus | PolicyProposalStatus> & { kind?: "policy" | "approval"; id?: string } & Pick<ApiError, "approval" | "bindingCode" | "choices" | "retryAfter" | "providerStatus" | "mandate" | "deciders"> & { mandateCover?: MandateCover; expiresAt?: string; ask?: Ask; request?: MissingClientRequest; setup?: MissingClientSetup; context?: CallContext; ruleRefused?: PolicyRuleRefusal; areaRefused?: PolicyAreaRefusal; group?: unknown; bundle?: string; approvals?: { id: string; status: ApprovalStatus["status"] }[]; cleared?: boolean }
 
 // Carried by client_missing: the exact `mehen request` / vault_request
 // arguments for the client, and what the human needs at the provider.
@@ -85,6 +87,13 @@ export function installedBinaryRequired(command: "setup" | "update"): CliError {
   return new CliError("usage", `${command === "setup" ? "Setup" : "Update"} needs an installed standalone mehen binary. Install with https://mehen.dev/install first.`, {
     say: `Install mehen with \`curl -fsSL https://mehen.dev/install | sh\`, then run \`mehen ${command}\` with the installed binary.`,
   })
+}
+
+export const OUTCOME_UNKNOWN_SAY = "The request may already have taken effect upstream. Do not send it again until you have checked: read it back, or ask the human. Sending it again could do it twice."
+
+// A relayed write that stopped without an answer: it may have taken effect.
+export function outcomeUnknown(message: string): CliError {
+  return new CliError("outcome_unknown", message, { say: OUTCOME_UNKNOWN_SAY })
 }
 
 export function exitCodeFor(code: CliErrorCode): ExitCode {
@@ -138,7 +147,7 @@ export const DEFAULT_NEXT: Record<ErrorCode, NextStep> = {
 export function toCliError(error: unknown): CliError {
   if (error instanceof CliError) return error
   if (error instanceof VaultApiError) {
-    const { approval, bindingCode, choices, retryAfter, providerStatus, group, mandateCover } = error.body
+    const { approval, bindingCode, choices, retryAfter, providerStatus, group, mandateCover, deciders } = error.body
     const { expiresAt } = error.body as { expiresAt?: unknown }
     const extras: ErrorExtras = {
       ...(approval ? { approval } : {}),
@@ -149,10 +158,12 @@ export function toCliError(error: unknown): CliError {
       ...(typeof expiresAt === "string" ? { expiresAt } : {}),
       ...(error.body.error === "approval_required" && group !== undefined ? { group } : {}),
       ...(error.body.error === "approval_required" && mandateCover !== undefined ? { mandateCover } : {}),
+      ...(error.body.error === "approval_required" && deciders !== undefined ? { deciders } : {}),
       ...(error.context ? { context: error.context } : {}),
     }
     return new CliError(error.body.error, error.body.message, error.body.next ?? DEFAULT_NEXT[error.body.error] ?? null, extras)
   }
+  if (error instanceof RelayOutcomeUnknownError) return outcomeUnknown(error.message)
   if (error instanceof VaultNetworkError) {
     return new CliError("network", error.message, { say: "Check the network connection and the vault URL (MEHEN_VAULT_URL), then retry." })
   }

@@ -21,7 +21,8 @@ import tls from "node:tls"
 import type { Duplex } from "node:stream"
 import { ERROR_HEADER, containsPlaceholder, hostMatches, parseDestination } from "@mehen/protocol"
 import type { ErrorCode, RelayRequestInput } from "@mehen/protocol/api"
-import { VaultApiError, type VaultApi } from "../vault-api.ts"
+import { errorBody, outcomeUnknown } from "../errors.ts"
+import { RelayOutcomeUnknownError, RelayUnmarkedAnswerError, VaultApiError, type VaultApi, retrySafeMethod } from "../vault-api.ts"
 import type { RunCa } from "./ca.ts"
 import {
   type HttpHead,
@@ -162,6 +163,15 @@ function errorResponse(refusal: Refusal): Response {
   })
 }
 
+// A failed write that may still have reached the upstream: the connection to
+// the vault broke, the vault got no answer (or one in a compression it cannot
+// check), or a 5xx came from something in front of the vault.
+function writeOutcomeUnknown(error: unknown): error is Error {
+  if (error instanceof RelayOutcomeUnknownError) return true
+  if (error instanceof RelayUnmarkedAnswerError) return error.status >= 500
+  return error instanceof VaultApiError && error.body.error === "upstream_failed"
+}
+
 async function writeResponse(socket: Duplex, method: string, response: Response, close: boolean): Promise<void> {
   let head = `HTTP/1.1 ${response.status} ${response.statusText || "Status"}\r\n`
   response.headers.forEach((value, name) => {
@@ -291,6 +301,14 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
     try {
       return await options.api.relay({ ...relay, ...(body.length > 0 ? { body: body.toString("base64url") } : {}) })
     } catch (error) {
+      // 424, not a 5xx, and both should-retry headers: SDKs retry a 5xx on
+      // their own, and repeating this write could do it twice.
+      if (!retrySafeMethod(relay.method) && writeOutcomeUnknown(error)) {
+        return new Response(JSON.stringify(errorBody(outcomeUnknown(error.message))), {
+          status: 424,
+          headers: { "content-type": "application/json", [ERROR_HEADER]: "1", "x-should-retry": "false", "stripe-should-retry": "false" },
+        })
+      }
       if (error instanceof VaultApiError) {
         return new Response(JSON.stringify(error.body), { status: error.status, headers: { "content-type": "application/json", [ERROR_HEADER]: "1" } })
       }

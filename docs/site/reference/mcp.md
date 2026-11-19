@@ -83,7 +83,7 @@ With an `enr_` id it finishes an enrolment `mehen enrol` started on this machine
 
 ### vault_pending
 
-The same as `mehen pending --json`, across every workspace: `{ pending: Ask[], groups?, notices?, warning? }` plus a `resource_link` per ask. An approval a human can review with others carries `group`, and `groups` lists each such group with its Review together page and the approvals in it; `notices` appears only when this machine has any, and `warning` when an entry came with a link mehen did not trust.
+The same as `mehen pending --json`, across every workspace: `{ pending: Ask[], groups?, notices?, warning? }` plus a `resource_link` per ask. An approval a human can review with others carries `group`, and `groups` lists each such group with its Review together page and the approvals in it; `notices` appears only when this machine has any, and `warning` when an entry came with a link mehen did not trust. When a workspace's vault cannot be reached, its recorded asks come with `stale: true`, `warning` names that vault, and a stale ask gets no `resource_link` or card: the vault may have settled it.
 
 ### vault_policy
 

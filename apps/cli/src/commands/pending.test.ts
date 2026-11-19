@@ -467,7 +467,7 @@ test("mehen pending displays only the own workspace ask and own machine notice, 
     expect(json(result)).toEqual({ pending: [expected], notices: [fixture.machine] })
     const human = await runJv(["pending"], env)
     expect(human.code).toBe(0)
-    expect(human.stdout.split("\n")[0]).toBe(`Machine added: workspace-machine (${vault.lastDevice}) in Mock Space (mock-space) at ${vault.url}. Open ${fixture.machine.url} to review this machine.`)
+    expect(human.stdout.split("\n")[0]).toBe(`Machine added on 2026-10-27: this machine, workspace-machine (${vault.lastDevice}), in Mock Space (mock-space) at ${vault.url}. Open ${fixture.machine.url} to review it.`)
     expect(human.stdout).not.toMatch(/foreign|int_stopped|unknown|int_other|dev_other/)
   } finally { vault.overrides.clear() }
 })
@@ -522,6 +522,45 @@ describe("mehen pending across workspaces", () => {
     expect(list.pending.map((p) => p.id)).toEqual([enrolment])
     expect(list.pending[0]).toMatchObject({ intent: { workspace: "personal", team: null }, context: { origin: vault.url, workspace: null, device: null } })
     expect(result.stderr).toContain(`the vault for ${vault.slotDir(dir.path)} could not be asked (device_revoked`)
+  })
+
+  test("offline, the asks this machine recorded are listed marked stale with a warning, not refused", async () => {
+    const shared = vault
+    vault = new MockVault()
+    try {
+      const offline = { ...env, MEHEN_VAULT_URL: vault.url }
+      await vault.enrolSoftware(dir.path)
+      await seedLedger()
+      vault.stop()
+      const result = await runJv(["pending", "--json"], offline)
+      expect(result.code).toBe(EXIT.ok)
+      const listed = (json(result) as { pending: { id: string; stale?: boolean }[] }).pending
+      expect(listed.map((p) => [p.id, p.stale])).toEqual([["int_3kQ9", true], ["apr_7Hq2", true]])
+      expect(result.stderr).toContain("could not be asked (network")
+      const human = await runJv(["pending"], offline)
+      expect(human.stdout.split("\n").filter((line) => line.includes("(stale)")).map((line) => line.split(/\s+/)[1])).toEqual(["int_3kQ9", "apr_7Hq2"])
+      expect(json(await runJv(["pending", "apr_7Hq2", "--json"], offline))).toMatchObject({ ask: { id: "apr_7Hq2", stale: true } })
+    } finally {
+      vault = shared
+    }
+  })
+
+  test("offline, mehen pending <id> hands a stale ask over as a check-first step, never as a live link", async () => {
+    const shared = vault
+    vault = new MockVault()
+    try {
+      const offline = { ...env, MEHEN_VAULT_URL: vault.url }
+      await vault.enrolSoftware(dir.path)
+      await seedLedger()
+      vault.stop()
+      const result = await runJv(["pending", "apr_7Hq2", "--json"], offline)
+      expect((json(result) as { next: unknown }).next).toEqual({ say: "The vault could not be asked; this link may already be settled. Check the network, then run mehen pending again." })
+      expect(result.stderr).toContain("the vault may have settled them")
+      const human = await runJv(["pending", "apr_7Hq2"], offline)
+      expect(human.stdout.split("\n")[0]).toBe("(stale: may be settled)")
+    } finally {
+      vault = shared
+    }
   })
 
   test("a workspace whose vault refuses is listed from its ledger with a warning; when every vault refuses, the refusal is the answer", async () => {

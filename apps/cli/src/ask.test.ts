@@ -481,10 +481,10 @@ describe("askUrl: the one way a link gets onto an Ask", () => {
     expect(askFromError("approval_required", { message: "m", next: { url: page, say: "x" }, approval: "apr_1" }, { requestedBy: by, vaultUrl: vault })).toEqual({ ask: null, refusedLink: true })
   })
 
-  test("a mandate ask carries the sign page, never a wait, and says nothing changes until the person signs", () => {
+  test("a mandate ask carries the sign page and its wait, and says nothing changes until the person signs", () => {
     const input = { id: "mdp_7Hq2", url: "https://vault.example/w/space/sign-mandate?proposal=mdp_7Hq2" as AskUrl, what: "Let test-machine read without asking you", expiresAt: null, requestedBy: by }
     const ask = mandateAsk(input)
-    expect(ask).toMatchObject({ kind: "mandate", title: "Trust this machine", wait: null, account: null })
+    expect(ask).toMatchObject({ kind: "mandate", title: "Trust this machine", wait: "mehen wait mdp_7Hq2 --timeout 60 --json", account: null })
     expect(askSay(ask)).toContain("Nothing changes until you sign it with your passkey.")
     expect(askSay(mandateAsk({ ...input, what: "Let test-machine read without asking you: Nightly triage." }))).toBe("Review what this machine asks to do without asking you at https://vault.example/w/space/sign-mandate?proposal=mdp_7Hq2: Let test-machine read without asking you: Nightly triage. Nothing changes until you sign it with your passkey.")
     expect(() => mandateAsk({ ...input, id: "mdp_a/b" })).toThrow()

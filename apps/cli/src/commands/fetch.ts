@@ -6,7 +6,7 @@ import { type FileHandle, lstat, open, readFile } from "node:fs/promises"
 import { EXIT } from "@mehen/protocol/api"
 import { type Bytes, utf8 } from "@mehen/protocol/bytes"
 import type { Command } from "../command.ts"
-import { CliError, usageError } from "../errors.ts"
+import { CliError, outcomeUnknown, usageError } from "../errors.ts"
 import {
   type UpstreamHead,
   bodyForJson,
@@ -26,7 +26,7 @@ import { mandateAllowed, mandateAllowedText, mandateCapped } from "../mandate-op
 import { note, printJson, writeStdout } from "../output.ts"
 import { postureAllowed, postureAllowedText, ruleAllowedText, ruleEnded, rulesAllowed } from "../policy-operations.ts"
 import { openSession, sessionLabel } from "../session.ts"
-import type { VaultApi } from "../vault-api.ts"
+import { type VaultApi, retrySafeMethod } from "../vault-api.ts"
 
 async function readData(data: string | null): Promise<Bytes | null> {
   if (data === null) return null
@@ -45,9 +45,12 @@ async function readData(data: string | null): Promise<Bytes | null> {
 // --max-time: at most ten minutes, like the vault's own long requests.
 export const FETCH_MAX_TIME_SECONDS = 600
 
-export function timedOut(seconds: number): CliError {
-  return new CliError("network", `No complete answer through the vault within ${seconds} s, so mehen stopped waiting.`, {
-    say: "The request may still have reached the upstream. Check whether it took effect before you send it again, or give --max-time more time.",
+// A read that timed out is safe to repeat; a write may have taken effect.
+export function timedOut(seconds: number, method: string): CliError {
+  const message = `No complete answer through the vault within ${seconds} s, so mehen stopped waiting.`
+  if (!retrySafeMethod(method)) return outcomeUnknown(message)
+  return new CliError("network", message, {
+    say: "A read changes nothing upstream: send it again, or give --max-time more time.",
   })
 }
 
@@ -141,6 +144,7 @@ export const fetchCommand: Command = {
     "The vault may already have decompressed or scrubbed the body and removed response headers; it is not a byte-for-byte copy of the original upstream response.",
     "Never set an auth header yourself: the vault injects the credential where the item says.",
     "--project and --env name the project environment the credential is used for; a protected, team or guest credential needs them. They never change the workspace.",
+    "--approval apr_... names the approval a human gave for exactly this request (exit 3 handed it over); after mehen wait returns approved, repeat the request byte for byte, optionally with --approval. A different method, URL, header or body asks again.",
     "--replaces apr_... marks this request as a corrected version of this machine's open ask to the same place: when it is held for approval, that ask reads superseded and the new one is the one to wait on. Without it, a second ask stays open beside the first; to ask for several writes at once, use mehen plan submit.",
   ],
   async run({ args, json, env }) {
@@ -211,7 +215,7 @@ export const fetchCommand: Command = {
       }
       return EXIT.ok
     } catch (error) {
-      if (controller.signal.aborted && maxTime !== null) throw timedOut(maxTime)
+      if (controller.signal.aborted && maxTime !== null) throw timedOut(maxTime, request.method)
       throw replacingRefused(ruleEnded(api ? await mandateCapped(api, error, controller.signal) : error), request, "cli")
     } finally {
       if (timer) clearTimeout(timer)

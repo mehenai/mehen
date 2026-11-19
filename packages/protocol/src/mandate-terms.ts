@@ -204,6 +204,9 @@ export type MandateCappedAsk = { mandate: string; capped: { class: MandateClass;
 // machine's live mandate paused or tripped (mandate names it), or "sign"
 // for anything else, a mandate to sign covering these classes.
 export type MandateCoverAsk = { device: { id: string; name: string }; classes: MandateClass[]; state: "sign" | "paused" | "tripped"; mandate: string | null }
+// GET /v1/mandates/proposals/:id: the machine's own proposal as its wait
+// reads it, mandate as on MandateProposalView.
+export type MandateProposalStatus = { proposal: string; state: "open" | "signed" | "expired"; mandate: string | null; expiresAt: string }
 // mandate: for a signed one, the mandate signed from it; for an expired
 // one, the mandate signed for its machine since that closed it, if any.
 export type MandateProposalView = {

@@ -1,4 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test"
+import { approvalAsk, askUrlFor } from "../ask.ts"
+import { addLedgerEntry } from "../ledger.ts"
 import { MockVault } from "../testing/mock-vault.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
 
@@ -108,4 +110,27 @@ test("vault_pending carries each ask's group and the top-level groups, and says 
   expect(result.structuredContent.groups).toEqual([{ id: "grp_Q2mX9", url: groupUrl, approvals: ["apr_g1", "apr_g2"], bundle: false }])
   expect(result.structuredContent.pending.map((a) => a.group)).toEqual([{ id: "grp_Q2mX9", url: groupUrl, open: 2 }, { id: "grp_Q2mX9", url: groupUrl, open: 2 }])
   expect(result.content[0]?.text).toStartWith(`2 asks from sam-mac-mini: review together at ${groupUrl}`)
+})
+
+test("offline, vault_pending marks each recorded ask stale, warns from the unreachable vault and hands none over", async () => {
+  const shared = vault
+  vault = new MockVault()
+  await dir.remove()
+  dir = await tempDir()
+  try {
+    env = { MEHEN_CONFIG_DIR: dir.path, MEHEN_VAULT_URL: vault.url }
+    await vault.enrolSoftware(dir.path)
+    const slot = vault.slotDir(dir.path)
+    const url = askUrlFor(vault.askVault(), "approval", "apr_7Hq2")!.url
+    await addLedgerEntry(slot, vault.ledgerScope(), { ask: approvalAsk({ id: "apr_7Hq2", url, summary: "Send an email", bindingCode: "K7Q2MX", expiresAt: new Date(Date.now() + 3_600_000).toISOString(), requestedBy: { device: "test-machine", session: null } }) })
+    vault.stop()
+    const result = await pending()
+    expect(result.structuredContent.pending).toMatchObject([{ id: "apr_7Hq2", stale: true }])
+    expect(result.structuredContent.warning).toContain(`the vault for ${slot} could not be asked (network`)
+    expect(result.structuredContent.warning).toContain("marked stale")
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(false)
+    expect(result.content.map((c) => c.text ?? "").join("\n")).not.toContain('vault_wait { "id": "apr_7Hq2" }')
+  } finally {
+    vault = shared
+  }
 })

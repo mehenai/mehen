@@ -23,7 +23,7 @@ type ApiError = {
   expiresAt?: string   // when next.url is a link that expires
   deciders?: string[]  // only with approval_required: who may decide, by name
   mandate?: { id: string; capped: ("read" | "change" | "send" | "delete")[] } // only with approval_required: the caps that held it
-  mandateCover?: { classes: ("read" | "change" | "send" | "delete")[]; state: string; mandate: string | null; url: string | null } // only with approval_required, to a machine
+  mandateCover?: { classes: ("read" | "change" | "send" | "delete")[]; state: string; mandate: string | null; url: string | null; items?: string[] } // only with approval_required, to a machine; items is added by the CLI
   transition?: ...     // only with account_pending: the account security change in flight
 }
 ```
@@ -94,7 +94,7 @@ Never guess around a refusal. Do not retry it with a different host, a different
 
 **Meaning.** Transient
 
-**What you do.** Network, upstream or rate limit. Retry, after `retryAfter` seconds when given. No connection to the vault at all is also 7, and so is a `mehen run` that stopped its child at the run's maximum life: start it again.
+**What you do.** Network, upstream or rate limit. Retry once, after `retryAfter` seconds when given, unless the error is `outcome_unknown` or `upstream_failed`: then the request may already have taken effect, so check before you send it again. No connection to the vault at all is also 7, and so is a `mehen run` that stopped its child at the run's maximum life: start it again.
 
 ### `bad_request`
 
@@ -180,7 +180,7 @@ Never guess around a refusal. Do not retry it with a different host, a different
 
 **What you do.** Tell the human in one message what you are trying to do, then write the block from `ask`; the check is the binding code. Run `mehen wait <approval>`, and when it is approved repeat exactly the same request from the same machine (the same item, method, URL, headers and body). If it is denied or expires, stop and ask the human what they want instead; do not retry in a loop.
 
-Where [mandates](../concepts/mandates.md) are on, two more fields may come with it. `mandate: { id, capped }` means this machine's mandate would have let the request through but for the caps named; `mehen fetch` says which in words, "This machine's mandate has used today's 50 sends.", and the request can go through on trust again the next UTC day. `mandateCover` means a mandate could let requests like this through: `classes` are the kinds it would need, and `state` (`none`, `unticked`, `paused`, `tripped`, `ended`, `outside_schedule` or `not_covering`) says where this machine's mandate stands, with its id and page in `mandate` and `url`. Only a machine whose owner could sign a mandate gets it, never a workload, and never beside `mandate`. Propose a mandate only for `none` or `unticked`, the third time the same kind of ask carries it; for the other states, hand the person `url` ([Agent reference](agent-reference.md#when-a-request-asks-mandatecover)).
+Where [mandates](../concepts/mandates.md) are on, two more fields may come with it. `mandate: { id, capped }` means this machine's mandate would have let the request through but for the caps named; `mehen fetch` says which in words, "This machine's mandate has used today's 50 sends.", and the request can go through on trust again the next UTC day. `mandateCover` means a mandate could let requests like this through: `classes` are the kinds it would need, and `state` (`none`, `unticked`, `paused`, `tripped`, `ended`, `outside_schedule` or `not_covering`) says where this machine's mandate stands, with its id and page in `mandate` and `url`; `mehen` adds `items`, the credential the request used. Only a machine whose owner could sign a mandate gets it, never a workload, and never beside `mandate`. Propose a mandate only for `none` or `unticked`, when more asks like it will follow, and only for the credential and classes it names; for the other states, hand the person `url` ([Agent reference](agent-reference.md#when-a-request-asks-mandatecover)).
 
 ### `forbidden`
 
@@ -238,15 +238,15 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 ### `upstream_failed`
 
-**What it means.** The vault could not reach the upstream, or the upstream answered in a compression the vault cannot check for leaked credentials. In the compression case the request itself was sent.
+**What it means.** The vault could not reach the upstream, or the upstream answered in a compression the vault cannot check for leaked credentials. In the compression case the request itself was sent. For a request with a method other than `GET`, `HEAD` or `OPTIONS`, an upstream that did not answer may still have received it, so the message and `next` say to check, and there is no `retryAfter`. Through `mehen run`, the program gets such a request's failure as [`outcome_unknown`](#outcome_unknown) with HTTP 424, not a 502.
 
-**What you do.** Retry later; in the compression case, check whether the request took effect before sending it again.
+**What you do.** For a `GET`, `HEAD` or `OPTIONS`, retry later. For any other method, and in the compression case, check whether the request took effect before sending it again.
 
 ### `not_found`
 
 **What it means.** No such item, intake, approval, connection, project, run, mandate or route, or one outside this machine's reach: another member's private credential, a project not shared with your owner, a workspace credential from a guest's or a team's machine, another machine's mandate. Absent and out of reach answer the same, so nothing can be learnt by naming. Where mandates are off, every mandate route answers "No such route.", which `mehen mandate` turns into "This workspace has no mandates: they are not switched on here, or this vault is older than them."; do not propose one again. `mehen mandate pause` with no id, on a machine with no live mandate, answers that there is nothing to pause.
 
-**What you do.** Check the slug or id with `mehen ls`; ask for a missing credential with `mehen request`.
+**What you do.** Check the slug or id with `mehen ls`; ask for a missing credential with `mehen request`. For an ask that `mehen wait` does not find, `mehen pending` lists this machine's open asks, and `mehen mandate ls` its mandate proposals.
 
 ### `conflict`
 
@@ -324,7 +324,13 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 **What it means.** The vault could not be reached.
 
-**What you do.** Check the network connection and the vault URL (`MEHEN_VAULT_URL`), then retry. With `mehen fetch --max-time`, the request may still have reached the upstream: check before sending it again.
+**What you do.** Check the network connection and the vault URL (`MEHEN_VAULT_URL`), then retry. A read that `mehen fetch --max-time` stopped is `network` too: send it again, or give it more time.
+
+### `outcome_unknown`
+
+**What it means.** A request relayed with a method other than `GET`, `HEAD` or `OPTIONS` stopped without an answer: `mehen fetch --max-time` or `vault_fetch` `timeoutSeconds` ran out, or the connection to the vault broke after the request may have reached it. The vault may have sent it on, so it may already have taken effect upstream. Through `mehen run`, the local relay answers the program with HTTP 424, this body and the headers `x-should-retry: false` and `stripe-should-retry: false`, so its SDK does not send it again on its own. It does the same for such a request the vault answered with [`upstream_failed`](#upstream_failed), and for one answered with a 5xx that carries neither `Mehen-Upstream` nor `Mehen-Error` (something in front of the vault, such as a proxy, sent it).
+
+**What you do.** Do not send it again blind: that could send the email, create the issue or take the payment twice. Check first (read it back with a `GET`, or ask the human), and send it again only if it did not happen.
 
 ### `timeout`
 
@@ -516,7 +522,7 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 **What it means.** Several workspaces could serve and nothing selects one. Also a bare entry of `MEHEN_WORKSPACES` that matches workspaces at two vaults.
 
-**What you do.** Name one with `--workspace <slug>`; `next.say` lists them. Never pick a workspace on the human's behalf. For the `MEHEN_WORKSPACES` case, the human writes the entry as `<vault>/<slug>`.
+**What you do.** Name one with `--workspace <slug>`; `next.say` lists them. For a credential, the workspace it is in is `items[].workspace.slug` in `mehen ls --json`. Never pick a workspace on the human's behalf. For the `MEHEN_WORKSPACES` case, the human writes the entry as `<vault>/<slug>`.
 
 ### `workspace_not_allowed`
 

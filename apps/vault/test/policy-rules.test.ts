@@ -601,6 +601,15 @@ describe("a machine's proposal that needs a second person", () => {
     })
   })
 
+  it("answers a machine's wait on an id that names no proposal as not_found, and as switched off only with rules off", async () => {
+    const f = await credentialsFixture()
+    await inRules(f.tenant, async (ctx) => {
+      const asker = { device: "dev_member" }
+      await expect(op(ctx, "policy.status", asker, { id: "pol_madeup123", wait: false })).rejects.toMatchObject({ code: "not_found", message: "No such policy proposal.", extra: { next: { command: "mehen pending" } } })
+      await expect(op(switchedOff(ctx), "policy.status", asker, { id: "pol_madeup123", wait: false })).rejects.toMatchObject({ code: "forbidden", message: "Policy widening is not available yet." })
+    })
+  })
+
   it("moves to stage co-sign when its machine's owner approves, and becomes a rule when a manager co-signs", async () => {
     const f = await credentialsFixture()
     await inRules(f.tenant, async (ctx) => {

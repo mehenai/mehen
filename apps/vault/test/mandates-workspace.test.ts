@@ -277,6 +277,12 @@ describe("signing a mandate", () => {
       const signed = (await signMandate(ctx, "owner", terms(), a.id)).mandate
       expect(await mandateOp(ctx, "mandates.proposal", "owner", { id: a.id })).toMatchObject({ state: "signed", mandate: signed.id })
       expect(await mandateOp(ctx, "mandates.proposal", "owner", { id: b.id })).toMatchObject({ state: "expired", mandate: signed.id })
+      // The machine's own wait reads the same states, and nobody else's proposal.
+      expect(await machineOp(ctx, "mandates.mine_proposal", "dev_owner", { id: a.id })).toEqual({ proposal: a.id, state: "signed", mandate: signed.id, expiresAt: a.expiresAt })
+      expect(await machineOp(ctx, "mandates.mine_proposal", "dev_owner", { id: b.id })).toMatchObject({ state: "expired", mandate: signed.id })
+      expect(await machineOp(ctx, "mandates.mine_proposal", "dev_member", { id: theirs.id })).toEqual({ proposal: theirs.id, state: "open", mandate: null, expiresAt: theirs.expiresAt })
+      expect(await refusal(() => machineOp(ctx, "mandates.mine_proposal", "dev_owner", { id: theirs.id }))).toMatchObject({ code: "not_found", message: "No such proposal." })
+      expect(await refusal(() => machineOp(ctx, "mandates.mine_proposal", "dev_owner", { id: "mdp_madeup123" }))).toMatchObject({ code: "not_found", message: "No such proposal." })
       expect(await mandateOp(ctx, "mandates.proposal", "member", { id: theirs.id })).toMatchObject({ state: "open", mandate: null })
       expect((await machineOp(ctx, "mandates.mine", "dev_owner") as MandateList).proposals).toEqual([])
       const plain = (await signMandate(ctx, "member", terms({ device: "dev_member" }))).mandate
