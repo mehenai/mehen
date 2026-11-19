@@ -296,13 +296,13 @@ export function mandateProposal(input: MandateRequest, surface: MandateSurface, 
   const wanted: readonly string[] = input.classes ?? asked?.classes ?? []
   const classes = MANDATE_CLASSES.filter((c) => c === "read" || wanted.includes(c))
   const days = input.days ?? MANDATE_PROPOSAL_DEFAULT_TTL_DAYS
-  if (!(MANDATE_TTL_DAYS as readonly number[]).includes(days)) throw usageError(`${flag("days")} takes 1, 7, 30 or 90.`, help)
+  if (!(MANDATE_TTL_DAYS as readonly number[]).includes(days)) throw usageError(`${flag("days")} takes 1, 7 or 30.`, help)
   const caps = { read: 0, change: 0, send: 0, delete: 0 }
   for (const [name, value] of Object.entries(input.caps)) {
     const cls = MandateClassSchema.safeParse(name)
     if (!cls.success) throw usageError(`${flag("caps")} names read, change, send or delete; ${JSON.stringify(name)} is none of them.`, help)
     if (!classes.includes(cls.data)) throw usageError(`A cap on ${name} needs ${name} in ${flag("classes")}.`, help)
-    if (!Number.isInteger(value) || value < 1 || value > MANDATE_CAP_MAX[cls.data]) throw usageError(`${flag("caps")} ${name} takes a whole number from 1 to ${MANDATE_CAP_MAX[cls.data]} requests a day.`, help)
+    if (!Number.isInteger(value) || value < 1 || value > MANDATE_CAP_MAX[cls.data]) throw usageError(`${flag("caps")} ${name} takes a whole number from 1 to ${MANDATE_PROPOSAL_CAP_DEFAULTS[cls.data]} requests a day.`, help)
   }
   for (const c of classes) caps[c] = input.caps[c] ?? MANDATE_PROPOSAL_CAP_DEFAULTS[c]
   const note = input.note.trim()

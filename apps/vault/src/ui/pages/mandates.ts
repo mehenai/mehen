@@ -6,7 +6,7 @@
 // only for who may press them (5.2), the vault deciding every press; the
 // browser side is client/pages/mandates.ts and client/mandate-sign.ts.
 
-import { MANDATE_CAP_DEFAULTS, MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_DEFAULT_TTL_DAYS, MANDATE_ENDING_NOTICE_MS, MANDATE_LIVE_STATES, MANDATE_NOTE_MAX, MANDATE_TTL_DAYS, type MandateCandidates, type MandateClass, type MandateList, type MandateOpenProposal, type MandateProposalView, type MandateReceiptView, type MandateReceiptsPage, type MandateSchedule, type MandateTtlDays, type MandateView } from "@mehen/protocol/mandate-terms"
+import { MANDATE_CAP_DEFAULTS, MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MANDATE_ENDING_NOTICE_MS, MANDATE_LIVE_STATES, MANDATE_NOTE_MAX, MANDATE_TTL_DAYS, type MandateCandidates, type MandateClass, type MandateList, type MandateOpenProposal, type MandateProposalView, type MandateReceiptView, type MandateReceiptsPage, type MandateSchedule, type MandateTtlDays, type MandateView } from "@mehen/protocol/mandate-terms"
 import type { WorkspaceDeviceView } from "@mehen/protocol/workspace"
 import { spellCardText } from "../../relay/spelling.ts"
 import { cardText, emptyState, kv, notice, pageHead, pill, row, timeTag } from "../components.ts"
@@ -16,7 +16,7 @@ import type { PageInput } from "../layout.ts"
 import { type WorkspaceShell, workspaceHref } from "../shell.ts"
 import {
   MANDATE_ALL_CREDENTIALS, MANDATE_ALWAYS_WORDS, MANDATE_CANDIDATES_UNREAD_WORDS, MANDATE_CAPS_LABEL, MANDATE_CAPS_WORDS, MANDATE_CARD_LEAD, MANDATE_CARD_TITLE, MANDATE_CLASS_CHOICES, MANDATE_CLASSES_LABEL, MANDATE_HIDDEN_CREDENTIAL, MANDATE_ITEMS_LABEL,
-  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS,
+  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, mandateProposalUnboundWords,
   MANDATE_RECEIPTS_EMPTY, MANDATE_RECEIPTS_LEAD, MANDATE_RECEIPTS_OLDER, MANDATE_RECEIPTS_TITLE, MANDATE_RENEW_LINK, MANDATE_SIGN_AGAIN_LINK, MANDATE_REPLACED_WORDS, MANDATE_REPLACES_WORDS, MANDATE_RESUME_BUTTON, MANDATE_RESUME_HINT, MANDATE_SCHEDULE_HINT, MANDATE_SCHEDULE_LABELS,
   MANDATE_SCHEDULE_TICK, MANDATE_SIGN_BUTTON, MANDATE_SIGN_EYEBROW, MANDATE_SIGN_LEAD, MANDATE_STATE_PILLS, MANDATE_STATE_WORDS, MANDATE_STOP_BUTTON, MANDATE_STOP_TITLE, MANDATE_STOP_WORDS, MANDATE_SUMMARY_TITLE, MANDATE_TEAM_MACHINE_WORDS, MANDATE_TERM_LABELS,
   MANDATE_TRUST_BUTTON, MANDATE_TTL_LABEL, MANDATE_UNREVIEWED_ENTRY, MANDATE_WAITING_LEAD, MANDATE_WAITING_OPEN, MANDATE_WAITING_TITLE, type MandateSummaryInput, machinesCarryingOnWords, machinesNeedResumeWords, mandateAllItemsWords, mandateCapHint, mandateClassWords, mandateDayWords, mandateDefaultNote, mandateEndsInWords, mandateHiddenItemsWords, mandateLapsedWords, mandateNotOwnerWords, mandatePauseAllConfirmWords, mandateSignSameWords,
@@ -304,13 +304,14 @@ export function mandateStrip(shell: WorkspaceShell, machines: number | null, res
 // ---------------------------------------------------------------- the sign page
 
 // What the form opens on: a proposal's terms, a renewed mandate's, or the
-// defaults, read alone ticked, every cap at its default, 90 days.
+// defaults: read alone ticked, every cap at its default, 30 days.
 export type MandateSignStart = { classes: MandateClass[]; caps: Record<MandateClass, number>; items: "all" | string[]; ttlDays: MandateTtlDays; schedule: MandateSchedule | null; note: string }
 
-// Without a proposal: every class at its default cap, no credential
-// ticked, and a note naming the machine, which the signer may change.
+// Without a proposal: the narrowest terms, read alone ticked, no
+// credential, 30 days, and a note naming the machine. Every other kind,
+// every credential and a longer term are the signer's own choice.
 export function mandateSignDefaults(machine: string): MandateSignStart {
-  return { classes: ["change", "delete", "read", "send"], caps: { ...MANDATE_CAP_DEFAULTS }, items: [], ttlDays: MANDATE_DEFAULT_TTL_DAYS, schedule: null, note: mandateDefaultNote(machine).slice(0, MANDATE_NOTE_MAX) }
+  return { classes: ["read"], caps: { ...MANDATE_CAP_DEFAULTS }, items: [], ttlDays: MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, schedule: null, note: mandateDefaultNote(machine).slice(0, MANDATE_NOTE_MAX) }
 }
 
 // `from`: the proposal or the mandate renewed, if any; `candidates`: the
@@ -414,7 +415,7 @@ export function mandateSignPage(shell: WorkspaceShell, data: MandateSignData): P
     current: "machines",
     boot: { page: "mandate-sign", device: data.device.device, machine: name, signer: data.viewer.member, proposal: open ? proposal.id : null },
     body: html`${head}
-      ${proposal !== null ? html`<div data-region="mandate-proposed">${notice("info", cardText(mandateProposedWords(name)), open ? cardText(proposal.reason) : proposal.state === "expired" && proposal.mandate !== null ? html`${MANDATE_PROPOSAL_SUPERSEDED_WORDS} <a href="${mandateHref(shell, proposal.mandate)}">${MANDATE_OPEN_LINK}</a>` : MANDATE_PROPOSAL_CLOSED_WORDS)}</div>` : ""}
+      ${proposal !== null ? html`<div data-region="mandate-proposed">${notice("info", cardText(mandateProposedWords(name)), open ? cardText(proposal.reason) : proposal.closedReason === "unbound" ? mandateProposalUnboundWords(proposal.unbound ?? []) : proposal.state === "expired" && proposal.mandate !== null ? html`${MANDATE_PROPOSAL_SUPERSEDED_WORDS} <a href="${mandateHref(shell, proposal.mandate)}">${MANDATE_OPEN_LINK}</a>` : MANDATE_PROPOSAL_CLOSED_WORDS)}</div>` : ""}
       ${data.replaces !== null ? html`<div data-region="mandate-replaces">${notice("warn", MANDATE_REPLACES_WORDS, html`<a href="${mandateHref(shell, data.replaces.id)}">${MANDATE_OPEN_LINK}</a>`)}</div>` : ""}
       <form class="card stack" data-form="mandate-sign" novalidate>
         <fieldset class="field" data-region="mandate-classes"><legend class="label">${MANDATE_CLASSES_LABEL}</legend>${ticked([...MANDATE_CLASSES]).map((c) => classTick(c, data.start))}</fieldset>

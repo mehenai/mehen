@@ -33,7 +33,7 @@ Say `build-box` is a server you enrolled as your own machine, running an agent t
 3. **You review and sign.** Open the link, or **Waiting for you** on the mandates page. The sign page starts on the proposed terms and you may change any of them. Untick what it does not need: if triage never deletes, leave delete off. Keep the caps near what a night's work takes, so a runaway agent hits a cap before it does much. Before your passkey, the page says in plain words what you are signing. Signing always asks for your passkey.
 4. **Read what went through.** The mandate's page lists every request it let through, newest first, under **Went through on trust**, with today's counts against the caps. The agent can read the same with `mehen mandate uses <mdt_id> --since 12h`.
 
-Without a proposal, open the machine's page and press **Trust this machine**. The sign page then starts with all four kinds ticked at their default caps, 90 days and no credential ticked, so you choose each credential yourself.
+Without a proposal, open the machine's page and press **Trust this machine**. The sign page then starts on the narrowest terms, whatever its address says: read alone ticked, no credential ticked and 30 days, so you choose each credential, each other kind and a longer term yourself.
 
 ## Your own agent, while you watch
 

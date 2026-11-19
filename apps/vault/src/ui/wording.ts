@@ -1617,6 +1617,11 @@ export function mandateProposedWords(machine: string): string {
   return `${machine} asked for this. You may change any of it before you sign.`
 }
 export const MANDATE_PROPOSAL_CLOSED_WORDS = "This proposal was signed or has expired. You may still sign these terms as a new mandate."
+// A proposal closed on upgrade: it named credentials by slug before the
+// vault kept which credential each meant.
+export function mandateProposalUnboundWords(slugs: readonly string[]): string {
+  return `Mehen closed this proposal when it was updated: it was made before Mehen kept which credential each name meant${slugs.length ? ` (it named ${slugs.join(", ")})` : ""}, so it cannot be signed. The machine can propose again.`
+}
 export const MANDATE_PROPOSAL_SUPERSEDED_WORDS = "This proposal closed because a mandate was signed for this machine since. You may still sign these terms to replace it."
 export function mandateNotOwnerWords(owner: string): string {
   return `Only ${owner} can let this machine carry on without asking.`

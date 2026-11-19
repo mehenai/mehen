@@ -70,7 +70,14 @@ CREATE INDEX mandate_asked_device ON mandate_asked(device, at);
 INSERT INTO mandate_asked(approval,device,item_id,cls,at) SELECT c.approval, c.device, COALESCE(json_extract(a.ask,'$.credential'), (SELECT i.id FROM items i WHERE i.slug=a.item)) AS item_id, j.value, c.at FROM mandate_cover_asks c JOIN approvals a ON a.id=c.approval, json_each(c.classes) j WHERE item_id IS NOT NULL;`
 // The credential id each slug a proposal named stood for when it was made:
 // signing refuses a slug that now names another credential.
-export const MANDATE_PROPOSALS_ITEMS_MIGRATION = "ALTER TABLE mandate_proposals ADD COLUMN item_ids TEXT;"
+// An open proposal from before this is bound to the credentials its slugs
+// name now when each was made before it; any other (one naming every
+// credential, a slug gone, or one made again since) closes as unbound, and
+// its machine may propose again.
+export const MANDATE_PROPOSALS_ITEMS_MIGRATION = `ALTER TABLE mandate_proposals ADD COLUMN item_ids TEXT;
+ALTER TABLE mandate_proposals ADD COLUMN closed_reason TEXT;
+UPDATE mandate_proposals SET item_ids=(SELECT json_group_object(j.value, i.id) FROM json_each(json_extract(mandate_proposals.terms,'$.items')) j JOIN items i ON i.slug=j.value) WHERE closed_at IS NULL AND json_type(terms,'$.items')='array' AND NOT EXISTS (SELECT 1 FROM json_each(json_extract(mandate_proposals.terms,'$.items')) j WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.slug=j.value AND i.created_at<=mandate_proposals.created_at));
+UPDATE mandate_proposals SET closed_at=CAST(strftime('%s','now') AS INTEGER)*1000, closed_reason='unbound' WHERE closed_at IS NULL AND item_ids IS NULL;`
 
 // Whether mandates are on in this workspace (its tn_ id), read as
 // workspaceSwitchOn reads every switch.
@@ -103,7 +110,7 @@ type PausedBy = "signer" | "machine" | "admin"
 // cover, for good: undoing the change does not restore it, only the
 // signer's passkey resume does.
 type MandateRow = { id: string; device: string; signer_member: string; terms: string; digest: string; state: MandateState; rev: number; basis: string; created_at: number; expires_at: number; stopped_at: number | null; ended_reason: MandateView["endedReason"]; paused_by: PausedBy | null; ending_noticed_at: number | null; lapsed_at: number | null }
-type ProposalRow = { id: string; device: string; terms: string; reason: string; created_at: number; expires_at: number; closed_at: number | null; mandate_id: string | null; closed_by: string | null; item_ids: string | null }
+type ProposalRow = { id: string; device: string; terms: string; reason: string; created_at: number; expires_at: number; closed_at: number | null; mandate_id: string | null; closed_by: string | null; item_ids: string | null; closed_reason?: string | null }
 // slug -> credential id when proposed; null on a row from before item_ids.
 const proposalItemIds = (row: ProposalRow): Record<string, string> | null => (row.item_ids === null ? null : (JSON.parse(row.item_ids) as Record<string, string>))
 type UseRow = { id: string; mandate_id: string; at: number; item_id: string; item_private: number; classes: string; method: string; host: string; entry: string; run: string | null }
@@ -288,8 +295,9 @@ function refuseBroad(ctx: VaultContext, state: AccessState, machine: AccessPrinc
   const asked = askedBy(ctx, state, machine, device, now)
   const askedSlugs = sortedSlugs(state, asked.items)
   // The same proposal cut to what a machine may propose, for next.command.
-  const named = terms.items === "all" ? [] : terms.items.filter((slug) => askedSlugs.includes(slug))
-  const items = named.length ? named : askedSlugs
+  // Every asked-for credential stands in only for "all": an explicit list
+  // keeps what it shares with them, never others.
+  const items = terms.items === "all" ? askedSlugs : terms.items.filter((slug) => askedSlugs.includes(slug))
   const classes = MANDATE_CLASSES.filter((c) => terms.classes.includes(c) && (c === "read" || asked.classes.has(c)))
   const days = Math.min(terms.ttlDays, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS)
   const caps = classes.map((c) => `${c}=${Math.min(terms.caps[c], MANDATE_PROPOSAL_CAP_DEFAULTS[c])}`).join(",")
@@ -298,7 +306,7 @@ function refuseBroad(ctx: VaultContext, state: AccessState, machine: AccessPrinc
   const fits = items.length > 0 && items.length <= MANDATE_MAX_ITEMS
   const retry = fits ? `mehen mandate propose --items ${items.join(",")} --classes ${classes.join(",")} --days ${days} --caps ${caps}${schedule} --note <why>` : null
   const askedWords = askedSlugs.length > MANDATE_MAX_ITEMS ? `It asked for ${askedSlugs.length} credentials in the last 30 days` : askedSlugs.length ? `It asked for ${askedSlugs.join(", ")} in the last 30 days` : "It asked for nothing a mandate could cover in the last 30 days"
-  const otherwise = items.length > MANDATE_MAX_ITEMS ? `A mandate names at most ${MANDATE_MAX_ITEMS} credentials: choose at most ${MANDATE_MAX_ITEMS} of those this machine asked for with --items and propose again.` : "Ask for each request as usual; propose a mandate once more asks like them will follow."
+  const otherwise = terms.items !== "all" && items.length === 0 ? "None of the credentials this proposal names were asked for: choose from those this machine asked for with --items and propose again." : items.length > MANDATE_MAX_ITEMS ? `A mandate names at most ${MANDATE_MAX_ITEMS} credentials: choose at most ${MANDATE_MAX_ITEMS} of those this machine asked for with --items and propose again.` : "Ask for each request as usual; propose a mandate once more asks like them will follow."
   const refuse = (refusal: MandateProposalRefusal, message: string, say: string): never => { throw new VaultError("forbidden", `${message} ${askedWords}. A person can choose wider terms on the sign page.`, { next: { ...(retry ? { command: retry } : {}), say: retry ? say : otherwise }, mandateRefused: refusal }) }
   if (terms.items === "all") refuse("items_all", "A machine cannot propose a mandate for every credential: drop items all and name the credentials it asked for.", "Propose again naming only the credentials this machine asked for; the person signing can add others.")
   const unasked = (terms.items as string[]).filter((slug) => !askedSlugs.includes(slug))
@@ -351,15 +359,18 @@ function proposalView(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invoc
   if (!row || p.kind !== "member" || device?.owner.kind !== "member" || device.owner.id !== p.memberId) throw new VaultError("not_found", "No such proposal.")
   const terms = JSON.parse(row.terms) as MandateProposedTerms
   const ids = proposalItemIds(row)
-  const refs = terms.items === "all" ? null : terms.items.flatMap((slug) => {
+  // Without ids its slugs are text: never resolved against today's credentials.
+  const refs = ids === null ? [] : terms.items === "all" ? null : terms.items.flatMap((slug) => {
     const credential = state.credentials.find((c) => c.slug === slug)
     // A slug now on another credential than the one proposed names nothing.
-    if (credential && ids !== null && ids[slug] !== credential.id) return []
-    return credential && seesCredential(state, p, credential.id, now) ? [{ id: credential.id, slug }] : []
+    if (!credential || ids[slug] !== credential.id) return []
+    return seesCredential(state, p, credential.id, now) ? [{ id: credential.id, slug }] : []
   })
+  const unbound = ids === null && terms.items !== "all" ? { unbound: terms.items } : {}
   return {
     id: row.id, device: { id: row.device, name: deviceName(ctx, row.device) },
-    items: refs ?? "all", hiddenItems: terms.items === "all" || refs === null ? 0 : terms.items.length - refs.length,
+    items: refs ?? "all", hiddenItems: terms.items === "all" || refs === null || ids === null ? 0 : terms.items.length - refs.length, ...unbound,
+    ...(row.closed_reason === "unbound" ? { closedReason: "unbound" as const } : {}),
     classes: terms.classes, caps: terms.caps, ttlDays: terms.ttlDays, schedule: terms.schedule, note: terms.note, reason: row.reason,
     state: row.mandate_id !== null ? "signed" : row.closed_at !== null || now >= row.expires_at ? "expired" : "open", mandate: row.mandate_id ?? row.closed_by,
     createdAt: iso(row.created_at), expiresAt: iso(row.expires_at),
@@ -405,7 +416,8 @@ function checkSignable(ctx: VaultContext, invocation: WorkspaceInvocationContext
     if (!row || row.device !== device.id) throw new VaultError("bad_request", "That proposal is not this machine's.")
     if (row.closed_at !== null || now >= row.expires_at) throw new VaultError("bad_request", "That proposal has expired or was already signed.")
     const ids = proposalItemIds(row)
-    const moved = ids === null ? [] : Object.entries(ids).filter(([slug, id]) => (state.credentials.find((c) => c.slug === slug)?.id ?? id) !== id).map(([slug]) => slug)
+    if (ids === null) throw new VaultError("bad_request", "That proposal has expired or was already signed.")
+    const moved = Object.entries(ids).filter(([slug, id]) => (state.credentials.find((c) => c.slug === slug)?.id ?? id) !== id).map(([slug]) => slug)
     if (moved.length) throw new VaultError("conflict", `This proposal named ${moved.join(", ")}, which now ${moved.length === 1 ? "is" : "are"} another credential than the one proposed. Sign without the proposal, choosing the credentials yourself, or ask the machine to propose again.`)
   }
   return decision

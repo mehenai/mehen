@@ -23,7 +23,7 @@ const REFUSED_ACTIONS: Record<string, string> = {
 function days(args: ParsedArgs): number | null {
   const text = args.string("days")
   if (text === null) return null
-  if (!/^[0-9]{1,2}$/.test(text)) throw usageError("--days takes 1, 7, 30 or 90.", HELP)
+  if (!/^[0-9]{1,2}$/.test(text)) throw usageError("--days takes 1, 7 or 30.", HELP)
   return Number(text)
 }
 

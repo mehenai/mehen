@@ -23,7 +23,7 @@ const base = process.env.TMPDIR && process.env.TMPDIR !== "/tmp" ? tmpdir() : jo
 const made: string[] = []
 afterEach(() => { for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-test("a workspace database from before the mandate asked table gains it, filled from the held asks it kept, and its proposals gain item_ids", () => {
+test("a workspace database from before the mandate asked table gains it, filled from the held asks it kept, and its open proposals it cannot bind close as unbound", () => {
   const dir = mkdtempSync(join(base, "mehen-upgrade-"))
   made.push(dir)
   const db = new Database(join(dir, "workspace.sqlite"))
@@ -44,7 +44,10 @@ test("a workspace database from before the mandate asked table gains it, filled 
   approval("apr_denied", "denied", "mem_owner")
   db.run("INSERT INTO mandate_cover_asks(approval,device,classes,at) VALUES (?,?,?,?)", ["apr_open", "dev_box", JSON.stringify(["change", "send"]), now])
   db.run("INSERT INTO mandate_cover_asks(approval,device,classes,at) VALUES (?,?,?,?)", ["apr_denied", "dev_box", JSON.stringify(["delete"]), now])
-  db.run("INSERT INTO mandate_proposals(id,device,terms,reason,created_at,expires_at) VALUES (?,?,?,?,?,?)", ["mdp_old", "dev_box", "{}", "Old", now, now + 1])
+  const legacy = (id: string, items: unknown, closedAt: number | null) => db.run("INSERT INTO mandate_proposals(id,device,terms,reason,created_at,expires_at,closed_at) VALUES (?,?,?,?,?,?,?)", [id, "dev_box", JSON.stringify({ items, classes: ["change", "read"] }), "Old", now, now + 3_600_000, closedAt])
+  legacy("mdp_every", "all", null)
+  legacy("mdp_gone", ["gone-key"], null)
+  legacy("mdp_signed", ["gone-key"], now)
   applyMigrations(sql, storage, AREAS)
   // Each kept ask, by approval; a rejected one is copied too and left out
   // when the vault reads what the machine asked for.
@@ -53,7 +56,14 @@ test("a workspace database from before the mandate asked table gains it, filled 
     { approval: "apr_open", device: "dev_box", item_id: "itm_github", cls: "change", at: now },
     { approval: "apr_open", device: "dev_box", item_id: "itm_github", cls: "send", at: now },
   ])
-  expect(db.query("SELECT id,item_ids FROM mandate_proposals").all()).toEqual([{ id: "mdp_old", item_ids: null }])
+  // An open proposal it cannot bind to the credentials it meant closes as
+  // unbound; one already closed is left as it was.
+  const proposals = db.query("SELECT id,item_ids,closed_reason,closed_at FROM mandate_proposals ORDER BY id").all() as { id: string; item_ids: string | null; closed_reason: string | null; closed_at: number | null }[]
+  expect(proposals.map((p) => [p.id, p.item_ids, p.closed_reason, p.closed_at === null ? null : p.closed_at === now ? "before" : "on upgrade"])).toEqual([
+    ["mdp_every", null, "unbound", "on upgrade"],
+    ["mdp_gone", null, "unbound", "on upgrade"],
+    ["mdp_signed", null, null, "before"],
+  ])
   // Opening again changes nothing.
   applyMigrations(sql, storage, AREAS)
   expect(db.query("SELECT COUNT(*) AS n FROM mandate_asked").get()).toEqual({ n: 3 })

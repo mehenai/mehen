@@ -135,6 +135,14 @@ test("refusal/propose with more than 200 credentials asked for, and no --items, 
   expect((await propose("--items", "key-000", "--classes", "change", "--json")).code).toBe(EXIT.ok)
 })
 
+test("refusal/a length or cap out of range recommends only what a machine may propose", async () => {
+  for (const [args, words] of [[["--days", "2"], "--days takes 1, 7 or 30."], [["--days", "999"], "--days takes 1, 7 or 30."], [["--caps", "send=0"], "--caps send takes a whole number from 1 to 10 requests a day."], [["--items", "github-work", "--classes", "change", "--caps", "change=0"], "--caps change takes a whole number from 1 to 100 requests a day."]] as const) {
+    const result = await propose(...args, "--json")
+    expect(result.code, args.join(" ")).toBe(EXIT.usage)
+    expect(String(json(result).message), args.join(" ")).toBe(words)
+  }
+})
+
 test("refusal/--caps in the wrong shape names an example a machine may propose", async () => {
   const result = await propose("--caps", "send:5", "--json")
   expect(result.code).toBe(EXIT.usage)

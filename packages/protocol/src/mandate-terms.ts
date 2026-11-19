@@ -258,6 +258,11 @@ export type MandateProposalView = {
   mandate: string | null
   createdAt: string
   expiresAt: string
+  // A proposal from before the vault kept which credential each slug meant:
+  // the slugs it named, as text, never resolved to a credential now.
+  unbound?: string[]
+  // Why the vault closed it: "unbound", closed on upgrade for that reason.
+  closedReason?: "unbound"
 }
 
 // The before= cursor of a receipts page: the last receipt's time and id.
