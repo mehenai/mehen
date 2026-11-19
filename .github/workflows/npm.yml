@@ -1,0 +1,39 @@
+name: npm
+# Publishes the npm route (deploy/npm): @mehenai/cli, the launcher that runs
+# the signed mehen and installs it with mehen.dev/install when it is missing,
+# and create-mehen, for `npm create mehen`. Run it by hand once a CLI
+# release is out; both packages carry the CLI's version.
+#
+# It publishes with npm's trusted publishing (OpenID Connect from this
+# workflow), so no npm token is stored here: each package's settings on
+# npmjs.com name this repository and this workflow file as its trusted
+# publisher. npm adds provenance on its own.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun test ./deploy
+      - name: Publish @mehenai/cli
+        working-directory: deploy/npm/cli
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if npm view "@mehenai/cli@$version" version >/dev/null 2>&1; then echo "@mehenai/cli $version is already published"; else npm publish --access public; fi
+      - name: Publish create-mehen
+        working-directory: deploy/npm/create-mehen
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if npm view "create-mehen@$version" version >/dev/null 2>&1; then echo "create-mehen $version is already published"; else npm publish --access public; fi

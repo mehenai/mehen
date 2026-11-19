@@ -231,7 +231,7 @@ async function ensureSubject(ctx: VaultContext, invocation: WorkspaceInvocationC
 // answered revoked or ended. Those rows keep only their key and its
 // ending: step 4 scrubs a device's name and label and a workload's label
 // and scope.
-const DELETION_TABLES = ["protected_use_grants", "grants", "run_authorisations", "workspace_run_contexts", "run_placeholders", "runs", "consent_lineage", "approvals", "exposures", "removal_exposures", "notice_outbox", "item_secret_history", "item_secrets", "items", "workspace_oauth_connections", "workspace_oauth_client_rejections", "credential_dependencies", "workspace_credential_requests", "vars", "environments", "remotes", "project_shares", "projects", "overrides", "platform_connect_states", "oauth_connects", "oauth_connections", "oauth_clients"]
+const DELETION_TABLES = ["protected_use_grants", "grants", "run_authorisations", "workspace_run_contexts", "run_placeholders", "runs", "consent_lineage", "approvals", "exposures", "removal_exposures", "notice_outbox", "item_secret_history", "item_secrets", "items", "workspace_oauth_connections", "workspace_oauth_client_rejections", "credential_dependencies", "workspace_credential_requests", "vars", "environments", "remotes", "project_shares", "projects", "overrides", "platform_connect_states"]
 
 // Steps 2 to 4 of D0 1.9: every device revoked (ending its workloads, asks
 // and runs), every open intake and connect cancelled; then each connection's

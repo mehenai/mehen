@@ -44,7 +44,7 @@ jobs:
       # ends anything else well before the job's.
       - timeout-minutes: 25
         run: bun tools/ci/vitest-guard.ts -- bun run --cwd apps/vault test --maxWorkers=3 --reporter=default --reporter=./scripts/vitest-progress.ts
-      - run: bun test tools
+      - run: bun test tools ./deploy
       - run: bun run --cwd apps/web check
       # The docs site: generate, build, typecheck, the docs lint, its tests and a dry-run deploy.
       - run: bun run --cwd apps/docs check
