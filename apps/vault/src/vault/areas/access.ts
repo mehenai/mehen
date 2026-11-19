@@ -41,6 +41,11 @@ export const ACCESS_MIGRATIONS = [
   // registers beside it. One live machine per key stays finishEnrol's rule.
   `DROP INDEX workspace_enrolments_key;
    CREATE INDEX workspace_enrolments_thumbprint ON workspace_enrolments(thumbprint);`,
+  // Each manage share's end that mandates have settled (settleShareExpiries),
+  // by the share and its terms then, exactly as project_shares.value holds
+  // them. While the terms are unchanged the share counts as ended whatever
+  // the clock says; the row goes with the share.
+  `CREATE TABLE share_ends_settled(share TEXT NOT NULL REFERENCES project_shares(id) ON DELETE CASCADE,terms TEXT NOT NULL,PRIMARY KEY(share,terms));`,
 ]
 export const AccessInitInput = z.strictObject({ member: z.string().regex(/^mem_[A-Za-z0-9_-]{1,64}$/), workspace: z.string(), slug: WorkspaceRefSchema.shape.slug, name: WorkspaceRefSchema.shape.name, owner: z.strictObject({ account: z.string(), name: z.string().min(1).max(64) }) })
 export const AccessInitOutput = z.strictObject({ member: z.string() })

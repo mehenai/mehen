@@ -10,7 +10,7 @@ import { policyAreaGrantTermsDigest, policyRuleTermsDigest } from "@mehen/protoc
 import { VaultError } from "../src/http.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { can } from "../src/vault/access.ts"
-import { MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATE_SHARE_EXPIRIES_MIGRATION, MANDATES_MIGRATION, mandatesArea, scheduleMandateSweep, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
+import { MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATES_MIGRATION, mandatesArea, scheduleMandateSweep, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
 import { AREAS } from "../src/vault/registry.ts"
 import { auditLine } from "../src/ui/wording.ts"
 import { projects } from "../src/vault/areas/projects.ts"
@@ -1070,6 +1070,68 @@ describe("the signer at each use", () => {
       })
     })
 
+    // The re-review's rollback: a share's end settled, the clock set back
+    // before it. A settled end is final, so the share gives nothing to sign
+    // on, and an owner extending it later restores no mandate's cover.
+    it("counts a settled end as ended after the clock goes back: signing on it is refused, and extending the share covers nothing without a resume", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        const item = await seedGithub(ctx, "github-work", PROJECT)
+        const earlier = (await signMandate(ctx, "kim", terms({ device: "dev_kim", items: [item.id] }))).mandate
+        const { end, ending } = await endKims(ctx)
+        sweepMandates(at(ctx, end + 1))
+        expect(lapsedAt(ctx, earlier.id)).not.toBeNull()
+        const back = at(ctx, end - 1)
+        // Kim's machine reached the credential through that share alone.
+        expect(await refusal(() => signMandate(back, "kim", terms({ device: "dev_kim", items: [item.id] })))).toMatchObject({ code: "bad_request", message: "One of these credentials is not one this machine can use." })
+        expect(await covered(back)).toBe(false)
+        sweepMandates(at(ctx, end + 1))
+        await share(back, ending, { level: "manage", protected: false, expiresAt: new Date(end + DAY).toISOString() })
+        expect(await covered(back)).toBe(false)
+        expect(ctx.sql.exec<{ id: string }>("SELECT id FROM mandates WHERE state IN ('active','paused','tripped')").toArray()).toEqual([{ id: earlier.id }])
+        expect(lapsedAt(ctx, earlier.id)).not.toBeNull()
+      })
+    })
+
+    it("deletes a settled end with its share: a share removed, a team deleted, a member removed, a project deleted", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        const settled = () => ctx.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM share_ends_settled").toArray()[0]!.n
+        const current = (subject: typeof KIM | typeof ENGINEERING | { kind: "member"; member: string }): ShareTerms => {
+          const id = subject.kind === "member" ? subject.member : subject.team
+          const row = ctx.sql.exec<{ value: string }>("SELECT value FROM project_shares WHERE project='prj_a' AND subject_kind=? AND subject_id=?", subject.kind, id).toArray()[0]
+          if (!row) return null
+          const { level, protected: prot, expiresAt } = JSON.parse(row.value) as { level: "manage" | "use"; protected: boolean; expiresAt: string | null }
+          return { level, protected: prot, expiresAt }
+        }
+        let clock = ctx.now()
+        const endAndSettle = async (subject: typeof KIM | typeof ENGINEERING | { kind: "member"; member: string }) => {
+          const end = clock + DAY / 2, ending: ShareTerms = { level: "manage", protected: false, expiresAt: new Date(end).toISOString() }
+          const input = { project: "prj_a", subject, before: current(subject), after: ending }
+          await projectWorkspaceOps["projects.share"]!.handler(at(ctx, clock), memberPrincipal(ctx, "owner"), input, memberInvocation(ctx, "owner", { type: "project.share", ...input }))
+          sweepMandates(at(ctx, end + 1))
+          clock = end + 2
+          expect(settled()).toBe(1)
+          return ending
+        }
+        const ending = await endAndSettle(KIM)
+        const removal = { project: "prj_a", subject: KIM, before: ending, after: null }
+        await projectWorkspaceOps["projects.share"]!.handler(at(ctx, clock), memberPrincipal(ctx, "owner"), removal, memberInvocation(ctx, "owner", { type: "project.share", ...removal }))
+        expect(settled()).toBe(0)
+        await endAndSettle(ENGINEERING)
+        const remove = { team: "tm_engineering", change: "delete" as const, name: null, slug: null }
+        await memberOp(at(ctx, clock), "access.team.update", remove, { type: "team.update", ...remove })
+        expect(settled()).toBe(0)
+        await endAndSettle(KIM)
+        await memberOp(at(ctx, clock), "access.members.remove", { member: "mem_kim" }, { type: "member.remove", member: "mem_kim" })
+        expect(settled()).toBe(0)
+        await endAndSettle({ kind: "member", member: "mem_member" })
+        ctx.sql.exec("UPDATE items SET home_kind='workspace',home_id=NULL WHERE home_kind='project'")
+        await projectWorkspaceOps["projects.delete"]!.handler(at(ctx, clock), memberPrincipal(ctx, "owner"), { project: "prj_a" }, memberInvocation(ctx, "owner", { type: "project.delete", project: "prj_a" }))
+        expect(settled()).toBe(0)
+      })
+    })
+
     it.each([
       ["signed at the instant the share ends", 0, false],
       ["signed a millisecond before it ends", -1, true],
@@ -1815,6 +1877,6 @@ describe("the sweep", () => {
 
   it("is its own area after pushes, with its own migrations, each added after the last", () => {
     expect(AREAS.at(-1)).toBe(mandatesArea)
-    expect(mandatesArea.migrations).toEqual([MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATE_SHARE_EXPIRIES_MIGRATION])
+    expect(mandatesArea.migrations).toEqual([MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION])
   })
 })

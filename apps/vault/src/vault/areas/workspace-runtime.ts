@@ -112,7 +112,8 @@ function buildAccessState(ctx: VaultContext, now: number): { state: AccessState;
   const workloads = ctx.sql.exec<{ id: string; device: string; scope: string; expires_at: number; revoked_at: number | null }>("SELECT id,device,scope,expires_at,revoked_at FROM workloads WHERE ended_at IS NULL").toArray().map((w) => ({ id: w.id, device: w.device, scope: WorkloadScopeSchema.parse(JSON.parse(w.scope)), expiresAt: w.expires_at, revokedAt: w.revoked_at }))
   const credentials = providers.get("credentials")?.(ctx, []).credentials ?? []
   const projects = providers.get("projects")?.(ctx, credentials).projects ?? []
-  return { state: { accessRev: setting(ctx, "access_rev", 0), members, teams, shares, devices, workloads, projects, credentials }, until }
+  const endedShares = ctx.sql.exec<{ share: string }>("SELECT e.share FROM share_ends_settled e JOIN project_shares s ON s.id=e.share AND s.value=e.terms").toArray().map((row) => row.share)
+  return { state: { accessRev: setting(ctx, "access_rev", 0), members, teams, shares, devices, workloads, projects, credentials, endedShares }, until }
 }
 export function principalOf(ctx: VaultContext, auth: WorkspaceRuntimeAuth): WorkspaceRuntimePrincipal {
   if (auth.kind === "system") return { kind: "system" }

@@ -201,8 +201,9 @@ it("counts what the mandates list and an ask's page cost a full workspace with m
   // proposals for each of 40 mandates (over 16,000 rows). The ask page asks
   // whether a mandate could cover the ask only for the machine's owner, so
   // the reader of another's machine's ask costs one call less; for the
-  // owner, that call reads the ask too, to check they may see it.
-  expect(Object.fromEntries(Object.entries(costs).map(([read, c]) => [read, [c.invocations, c.accessStates, c.statements, c.d1]]))).toEqual({ mandates: [1, 1, 214, 4], ownAsk: [4, 0, 19, 11], othersAsk: [3, 0, 11, 11] })
+  // owner, that call reads the ask too, to check they may see it. Each
+  // access state built reads the shares whose end is settled, one join.
+  expect(Object.fromEntries(Object.entries(costs).map(([read, c]) => [read, [c.invocations, c.accessStates, c.statements, c.d1]]))).toEqual({ mandates: [1, 1, 215, 4], ownAsk: [4, 0, 19, 11], othersAsk: [3, 0, 11, 11] })
   expect(costs.mandates.rowsRead).toBeLessThan(2_500)
   const cover = async (approval: string) => (await (await page(`/w/northwind/a/${approval}`)()).text()).includes('data-region="mandate-cover"')
   expect([await cover(own), await cover(others)]).toEqual([true, false])

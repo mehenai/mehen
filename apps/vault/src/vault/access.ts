@@ -13,7 +13,9 @@ export type CredentialReference = { variable: string; field: string; item: strin
 export type AccessEnvironment = { name: string; protected: boolean; fourEyes: boolean; revision: number; protectionRevision: number; fences: string[]; references: CredentialReference[]; plainVariables?: Record<string, string> }
 export type AccessProject = { id: string; slug: string; environments: AccessEnvironment[] }
 export type AccessCredential = { id: string; slug?: string; home: CredentialHome; tags: string[] }
-export type AccessState = { accessRev: number; members: AccessMember[]; teams: { id: string; name: string; members: string[] }[]; shares: Share[]; projects: AccessProject[]; credentials: AccessCredential[]; devices: AccessDevice[]; workloads?: AccessWorkload[] }
+// endedShares: the shares whose end was settled with their terms as they
+// are (share_ends_settled), which count as ended whatever the clock says.
+export type AccessState = { accessRev: number; members: AccessMember[]; teams: { id: string; name: string; members: string[] }[]; shares: Share[]; projects: AccessProject[]; credentials: AccessCredential[]; devices: AccessDevice[]; workloads?: AccessWorkload[]; endedShares?: readonly string[] }
 export type AccessPrincipal = { kind: "member"; account: string; memberId: string; session: string; securityEpoch: number; sessionCheck: SessionIdentityCheck | null } | { kind: "device"; deviceId: string; workload?: string }
 // workload: the workload that asked, when one did; its scope narrows who may approve.
 // mode: "placeholder" when a run's placeholder asked to use the credential,
@@ -71,7 +73,10 @@ const PRIVATE_CREDENTIALS_OFF: AccessDecision = {
 }
 const rank = { use: 1, edit: 2, manage: 3 } as const
 const admin = (role: WorkspaceRole) => role === "owner" || role === "admin"
-const activeShare = (share: Share, now: number): boolean => share.expiresAt === null || Number.isFinite(Date.parse(share.expiresAt)) && Date.parse(share.expiresAt) > now
+// A share gives access until its end, and never once that end was settled
+// (a settled end is final, so a clock set back cannot revive it) until its
+// terms change.
+const activeShare = (state: AccessState, share: Share, now: number): boolean => !(state.endedShares?.includes(share.id) ?? false) && (share.expiresAt === null || Number.isFinite(Date.parse(share.expiresAt)) && Date.parse(share.expiresAt) > now)
 // Whether new terms give no more than a share gives now: no higher level, no
 // protected context it does not give, and an end no later than its own.
 function shareNarrows(current: ShareTerms, after: ShareTerms): boolean {
@@ -91,7 +96,7 @@ export function effectiveAccess(state: AccessState, subject: { kind: "member" | 
   const out = empty()
   if (member && admin(member.standing.effectiveRole)) return { level: "manage", runProtected: true, editProtected: true, sources: [{ kind: "role", role: member.standing.effectiveRole }] }
   for (const share of state.shares) {
-    if (share.project !== project || !activeShare(share, now)) continue
+    if (share.project !== project || !activeShare(state, share, now)) continue
     const direct = share.subject.kind === subject.kind && (share.subject.kind === "member" ? share.subject.member : share.subject.team) === subject.id
     const viaTeam = member && member.standing.effectiveRole !== "guest" && share.subject.kind === "team" && state.teams.some((t) => t.id === (share.subject.kind === "team" ? share.subject.team : "") && t.members.includes(member.id))
     if (!direct && !viaTeam) continue
@@ -285,7 +290,7 @@ function canKind(state: AccessState, principal: AccessPrincipal, action: AccessA
   const manageHome = (home: CredentialHome | undefined) => home?.kind === "member" ? home.member === m?.id : home?.kind === "workspace" ? elevated : home?.kind === "project" && has("manage", home.project)
   const createHome = (home: CredentialHome | undefined) => home?.kind === "member" ? home.member === m?.id : home?.kind === "workspace" ? elevated : home?.kind === "project" && has("edit", home.project)
   const lastOwner = (member: AccessMember | undefined) => member?.status === "active" && member.standing.effectiveRole === "owner" && !state.members.some((other) => other.id !== member.id && other.status === "active" && other.standing.effectiveRole === "owner")
-  const guestSharedOn = (project: string | undefined) => subjectMember?.status === "active" && subjectMember.standing.effectiveRole === "guest" && state.shares.some((share) => share.project === project && share.subject.kind === "member" && share.subject.member === subjectMember.id && activeShare(share, now))
+  const guestSharedOn = (project: string | undefined) => subjectMember?.status === "active" && subjectMember.standing.effectiveRole === "guest" && state.shares.some((share) => share.project === project && share.subject.kind === "member" && share.subject.member === subjectMember.id && activeShare(state, share, now))
   const guestShared = guestSharedOn(target.project)
   const guestAdmission = role === "member" && has("manage") && guestShared
   const beforeScope = admitsFor ? targetDevice?.scope : undefined
@@ -343,7 +348,7 @@ function canKind(state: AccessState, principal: AccessPrincipal, action: AccessA
       const shareAfter = target.shareAfter
       const givesProtected = shareAfter === undefined || shareAfter !== null && (shareAfter.level === "manage" || shareAfter.protected)
       const project = state.projects.find((p) => p.id === target.project)
-      const current = state.shares.find((s) => s.project === target.project && s.subject.kind === "team" && s.subject.team === target.team && activeShare(s, now))
+      const current = state.shares.find((s) => s.project === target.project && s.subject.kind === "team" && s.subject.team === target.team && activeShare(state, s, now))
       const narrowing = shareAfter !== undefined && shareAfter !== null && current !== undefined && shareNarrows(current, shareAfter)
       const teamDelegation = shareAfter !== null && !narrowing && state.devices.some((d) => d.status === "active" && d.owner.kind === "team" && d.owner.id === target.team) && !!project?.environments.some((e) => (!e.protected || givesProtected) && e.references.some((r) => r.home.kind === "workspace"))
       if (!human || role === "guest" || !has("manage")) return no()
@@ -360,7 +365,7 @@ function canKind(state: AccessState, principal: AccessPrincipal, action: AccessA
     case "variable.set": {
       if (!env || !has("edit") || (env.protected && (!human || !access().editProtected))) return no()
       if (c?.home.kind === "member" || (c?.home.kind === "project" && c.home.project !== target.project)) return no()
-      const sharedService = state.shares.some((s) => s.project === target.project && activeShare(s, now) && (s.subject.kind === "member" ? state.members.some((m) => m.id === (s.subject.kind === "member" ? s.subject.member : "") && m.standing.effectiveRole === "guest") : state.devices.some((d) => d.status === "active" && d.owner.kind === "team" && d.owner.id === (s.subject.kind === "team" ? s.subject.team : ""))))
+      const sharedService = state.shares.some((s) => s.project === target.project && activeShare(state, s, now) && (s.subject.kind === "member" ? state.members.some((m) => m.id === (s.subject.kind === "member" ? s.subject.member : "") && m.standing.effectiveRole === "guest") : state.devices.some((d) => d.status === "active" && d.owner.kind === "team" && d.owner.id === (s.subject.kind === "team" ? s.subject.team : ""))))
       if (c?.home.kind === "workspace" && (env.protected || sharedService) && (!human || !elevated)) return no()
       return yes(human ? "item.update" : null)
     }

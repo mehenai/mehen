@@ -58,11 +58,6 @@ export const MANDATE_COVER_ASKS_MIGRATION = "CREATE TABLE mandate_cover_asks (ap
 // The proposal each mandate in a list was signed from (mandateView), found
 // without reading every proposal, which the sweep closes but never deletes.
 export const MANDATE_PROPOSALS_MANDATE_MIGRATION = "CREATE INDEX mandate_proposals_mandate ON mandate_proposals(mandate_id);"
-// Each manage share's end that has lapsed what it took away, by the share's
-// id and its terms then (canonical JSON, the end among them): a change to
-// either is judged again when it ends, and a mandate resumed after one end
-// is never lapsed again for it (settleShareExpiries).
-export const MANDATE_SHARE_EXPIRIES_MIGRATION = "CREATE TABLE mandate_share_expiries (share TEXT NOT NULL, terms TEXT NOT NULL, PRIMARY KEY (share, terms));"
 
 // Whether mandates are on in this workspace (its tn_ id), read as
 // workspaceSwitchOn reads every switch.
@@ -556,32 +551,33 @@ export function lapseMandatesOnLostManagement(ctx: VaultContext, before: AccessS
 }
 const manageShareEnd = (share: Share): number | null => share.level === "manage" && share.expiresAt !== null ? Date.parse(share.expiresAt) : null
 // A manage share that expires takes management away as one lowered does:
-// each whose end has passed and has not lapsed what it took (by its id and
-// terms, never a clock watermark, so a share given an end below an earlier
-// sweep's clock still counts) lapses the mandates signed before it ended
-// whose signer managed a project through it and no longer does, so granting
-// it again does not restore cover. It reads management from access as it
-// is, so it runs before anything changes that: the sweep, a resume, and,
-// as the management guard (beforeManagementChange) or called directly,
-// before every change to who manages what (a team's members or the team
-// itself, a member's role or standing, a share, a credential's home, a
-// credential made or deleted, a project deleted), so the change can neither
-// hide a lapse nor restore management before the sweep reads it.
+// each whose end has passed and is not yet settled lapses the mandates
+// signed before it ended whose signer managed a project through it and no
+// longer does, so granting it again does not restore cover. Settling
+// records the share with its terms in share_ends_settled, never a clock
+// watermark, so an end set below an earlier sweep's clock still counts.
+// A settled end is final: access counts the share as ended whatever the
+// clock says until its terms change (activeShare), so a clock set back can
+// neither sign nor cover anything on it, and a mandate resumed after it is
+// never lapsed again for it. It reads management from access as it is, so
+// it runs before anything changes that: the sweep, a resume, and, as the
+// management guard (beforeManagementChange) or called directly, before
+// every change to who manages what (a team's members or the team itself, a
+// member's role or standing, a share, a credential's home, a credential
+// made or deleted, a project deleted), so the change can neither hide a
+// lapse nor restore management before the sweep reads it. A record goes
+// with its share (ON DELETE CASCADE); one whose share's terms changed since
+// is pruned here.
 export function settleShareExpiries(ctx: VaultContext): void {
-  const now = ctx.now(), state = accessState(ctx)
-  const key = (share: string, terms: string): string => `${share}\n${terms}`
-  const current = new Set(state.shares.map((share) => key(share.id, canonicalJson(share))))
-  const settled = new Set<string>()
-  for (const row of rows(ctx.sql.exec<{ share: string; terms: string }>("SELECT share,terms FROM mandate_share_expiries"))) {
-    if (current.has(key(row.share, row.terms))) settled.add(key(row.share, row.terms))
-    else ctx.sql.exec("DELETE FROM mandate_share_expiries WHERE share=? AND terms=?", row.share, row.terms)
-  }
+  const now = ctx.now()
+  ctx.sql.exec("DELETE FROM share_ends_settled WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=share_ends_settled.share AND s.value=share_ends_settled.terms)")
+  const state = accessState(ctx)
   for (const share of state.shares) {
-    const end = manageShareEnd(share), terms = canonicalJson(share)
-    if (end === null || !Number.isFinite(end) || end > now || settled.has(key(share.id, terms))) continue
+    const end = manageShareEnd(share)
+    if (end === null || !Number.isFinite(end) || end > now || (state.endedShares ?? []).includes(share.id)) continue
     const before = { ...state, shares: state.shares.map((s) => (s === share ? { ...s, expiresAt: null } : s)) }
     lapseMandatesOnLostManagement(ctx, before, state, "share", end)
-    ctx.sql.exec("INSERT OR IGNORE INTO mandate_share_expiries(share,terms) VALUES (?,?)", share.id, terms)
+    ctx.sql.exec("INSERT OR IGNORE INTO share_ends_settled(share,terms) SELECT id,value FROM project_shares WHERE id=?", share.id)
   }
 }
 // A revoked machine's mandate ends for good, as a stopped one, and its open
@@ -876,7 +872,10 @@ export function scheduleMandateSweep(ctx: VaultContext): void {
   const mandateDue = one(ctx.sql.exec<{ due: number | null }>("SELECT MIN(due) AS due FROM (SELECT MIN(expires_at) AS due FROM mandates WHERE state IN ('active','paused','tripped') UNION ALL SELECT MIN(expires_at-?) FROM mandates WHERE state IN ('active','paused','tripped') AND ending_noticed_at IS NULL AND expires_at-?>? UNION ALL SELECT MIN(expires_at) FROM mandate_proposals WHERE closed_at IS NULL)", MANDATE_ENDING_NOTICE_MS, MANDATE_ENDING_NOTICE_MS, now))?.due ?? Infinity
   const soonest = Math.min(mandateDue, shareDue)
   const due = soonest === Infinity ? null : soonest
-  const leftovers = one(ctx.sql.exec("SELECT 1 FROM mandate_uses UNION ALL SELECT 1 FROM mandate_counts UNION ALL SELECT 1 FROM mandate_rate UNION ALL SELECT 1 FROM mandate_capped_asks UNION ALL SELECT 1 FROM mandate_cover_asks LIMIT 1")) !== null
+  // A settled end whose share's terms changed since is pruned by the next
+  // sweep; one whose share went was deleted with it.
+  const staleEnd = one(ctx.sql.exec("SELECT 1 FROM share_ends_settled e WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=e.share AND s.value=e.terms) LIMIT 1")) !== null
+  const leftovers = staleEnd || one(ctx.sql.exec("SELECT 1 FROM mandate_uses UNION ALL SELECT 1 FROM mandate_counts UNION ALL SELECT 1 FROM mandate_rate UNION ALL SELECT 1 FROM mandate_capped_asks UNION ALL SELECT 1 FROM mandate_cover_asks LIMIT 1")) !== null
   const next = due === null ? (leftovers ? now + DAY_MS : null) : Math.min(due, now + DAY_MS)
   if (next === null) ctx.unschedule("mandates", MANDATE_SWEEP_KEY)
   else ctx.schedule("mandates", MANDATE_SWEEP_KEY, Math.max(next, now + 1))
@@ -951,7 +950,7 @@ export const workspaceMandateOps: NonNullable<Area["workspaceOps"]> = {
 
 export const mandatesArea: Area = {
   name: "mandates",
-  migrations: [MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATE_SHARE_EXPIRIES_MIGRATION],
+  migrations: [MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION],
   workspaceOps: workspaceMandateOps,
   async alarm(ctx, key) {
     if (key === MANDATE_SWEEP_KEY) sweepMandates(ctx)
