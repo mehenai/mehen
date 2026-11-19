@@ -11,7 +11,7 @@ import { APPROVAL_BUNDLE_MAX, type ApprovalBundleCreated, type NextStep, type Re
 import { type Bytes, utf8 } from "@mehen/protocol/bytes"
 import type { MandateCoverHint } from "@mehen/protocol/mandate-terms"
 import { z } from "zod"
-import { type Ask, type AskVault, askUrl, askUrlFor, bundleAsk, isAskId, refusedLinkWarning, requestedBy, withContext } from "./ask.ts"
+import { type Ask, type AskVault, GROUP_CODE, askUrl, askUrlFor, bundleAsk, isAskId, refusedLinkWarning, requestedBy, withContext } from "./ask.ts"
 import type { Env } from "./config.ts"
 import { CliError, usageError } from "./errors.ts"
 import { addLedgerEntry } from "./ledger.ts"
@@ -226,6 +226,7 @@ const CreatedSchema = z.object({
   bundle: z.string(),
   url: z.unknown(),
   expiresAt: z.string(),
+  code: z.string().optional(),
   results: z.array(
     z.object({
       index: z.number().int().nonnegative(),
@@ -324,7 +325,7 @@ export async function submitPlan(session: VaultSession, plan: ParsedPlan, env: E
   const asks = results.filter((r) => r.outcome === "ask")
   const codes = asks.every((r) => r.bindingCode !== undefined) ? asks.map((r) => r.bindingCode as string) : null
   const by = requestedBy(env, session.config.name ?? null)
-  const ask = link && asks.length ? withContext(bundleAsk({ id: created.bundle, url: link.url, codes, asks: asks.length, reason: plan.reason, expiresAt: created.expiresAt, requestedBy: by }), session.context) : null
+  const ask = link && asks.length ? withContext(bundleAsk({ id: created.bundle, url: link.url, codes, code: created.code !== undefined && GROUP_CODE.test(created.code) ? created.code : null, asks: asks.length, reason: plan.reason, expiresAt: created.expiresAt, requestedBy: by }), session.context) : null
   if (ask) await addLedgerEntry(session.configDir, scope, { ask, slug: null, command: options.command })
   return { bundle: created.bundle, url: link?.url ?? null, expiresAt: created.expiresAt, ask, results, refusedLink }
 }

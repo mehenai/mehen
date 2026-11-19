@@ -1465,6 +1465,11 @@ export function mandateTrippedWords(machine: string): string {
   return `${machine} sent too many requests in a minute, so its mandate stopped letting anything through until its signer resumes it. It would have ended`
 }
 
+// The notice a run refused project_unshared raises for the project's managers.
+export function shareRequestedWords(machine: string, member: string, project: string): string {
+  return `${machine} could not start a run in ${project}: the project is not shared with ${member}`
+}
+
 // The mandate pages (pages/mandates.ts), the machine page's card and the
 // home's strip. A class's plural, for caps and counts: "50 sends".
 export const MANDATE_CLASS_PLURALS: Readonly<Record<MandateClass, string>> = { read: "reads", change: "changes", send: "sends", delete: "deletes" }

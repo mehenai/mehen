@@ -58,13 +58,13 @@ When a task needs several writes the human must approve, ask for them together i
 
 1. `mehen check --plan plan.json` checks each request against its credential's policy first, as `mehen check` does: how many would go through, ask or be refused. It sends nothing upstream and creates no approval.
 2. `mehen plan submit plan.json --json` (MCP `vault_plan` with `action: "submit"`) sends the plan to the vault, which checks each request as `mehen fetch` would and sends none upstream. It holds those that need a human in one bundle, `bnd_...`, with one link. Each request comes back with its outcome (`ask`, `allowed` or `refused`) and `repeat`, the exact `mehen fetch` that sends it. At most 20 requests. `mehen plan submit`, `--replaces` and review groups in `mehen pending` need `mehen` 0.3.17 or later (`mehen version --json` says which you have; `mehen update --json` installs the latest release).
-3. Write the block. The check is every request's binding code, in the plan's order; the human ticks the codes against your message on the Review together page.
+3. Write the block. The check is the bundle's one code, which the Review together page shows and the human ticks. A vault that sends no bundle code gives every request's binding code instead, in the plan's order.
 4. `mehen wait bnd_... --timeout 60 --json` returns once none of the requests waits: exit 0 when all were approved, 5 when any was denied, stopped or replaced. The approved ones stay usable either way, and `next.say` names them.
 5. Send each approved request with its `repeat` (MCP: pass its `fetch` to `vault_fetch` as it is). Do not change a byte.
 
 The human may approve some and deny others, so treat each request on its own. A request the plan marked `refused` was refused by rule: do not retry it. Where deciding asks together is switched off, `mehen plan submit` answers `forbidden`, "Asking for several requests at once is not available yet.": send the requests one by one.
 
-Several asks you sent one at a time, from the same machine, task and credential, also come together: `mehen pending` follows them with one line per group, `3 asks from build-box: review together at <url>`, and `--json` adds `groups`. The human may decide them on that page with one passkey, or one by one. [Approvals](../concepts/approvals.md#deciding-several-together) says what is never decided together.
+Several asks you sent one at a time, from the same machine, task and credential, also come together: `mehen pending` follows them with one line per group, `3 asks from build-box: review together at <url>; the page shows code K7QM3P`, and `--json` adds `groups`, each with its `code`. A held request in a group prints the same link and code on its block's `group:` line. The human may decide them on that page with one passkey, or one by one. [Approvals](../concepts/approvals.md#deciding-several-together) says what is never decided together.
 
 ## The same request again and again
 

@@ -329,6 +329,15 @@ it("answers with no link, page or command, to the platform and to its devices", 
   answers.push(held)
   await keep(platform(f.tenant, "platform.approvals.list"))
   await keep(platform(f.tenant, "platform.items.list"))
+  // Four tasks with five open intakes each fill the machine's 20: a fifth
+  // task's intake is refused at the cap, and the platform decides, so it
+  // carries no link either.
+  for (let t = 0; t < 4; t++) {
+    const busy = await f.workload(machine)
+    for (let n = 0; n < 5; n++) await json(await signed(f.tenant, busy, "/v1/intakes", { kind: "api-key", slug: `cap-${t}-${n}`, provider: "openai", reason: "The agent needs OpenAI.", home: "workspace" }), 201)
+  }
+  const full = await keep(json<{ error: string; message: string; next?: { say: string } }>(await signed(f.tenant, await f.workload(machine), "/v1/intakes", { kind: "api-key", slug: "cap-over", provider: "openai", reason: "The agent needs OpenAI.", home: "workspace" }), 429))
+  expect(full).toEqual({ error: "rate_limited", message: "This machine already has 20 open asks.", next: { say: "The platform decides this machine's open asks; ask for the rest once some are settled." } })
   const text = JSON.stringify(answers)
   expect(text).not.toContain(ORIGIN)
   expect(text).not.toContain("mehen ")

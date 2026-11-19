@@ -115,7 +115,7 @@ it("bundles: POST /v1/approvals/bundles asks, and only the asking workload reads
   expect(await body(await f.workloadCall(f.as(a), "/v1/approvals/bundles", { requests: [{ ...request, env: "prod" }] }), 400)).toMatchObject({ error: "bad_request", message: "A relay request cannot select a policy mode or claim an environment." })
   const created = await body<ApprovalBundleCreated>(await f.workloadCall(f.as(a), "/v1/approvals/bundles", { requests: [request], reason: "Upload the files" }))
   const asked = created.results[0]!.approval!
-  expect(created).toEqual({ bundle: expect.stringMatching(/^bnd_/), url: `https://vault.test/w/northwind/g/${created.bundle}`, expiresAt: expect.any(String), results: [{ index: 0, outcome: "ask", approval: expect.stringMatching(/^apr_/), bindingCode: expect.any(String) }] })
+  expect(created).toEqual({ bundle: expect.stringMatching(/^bnd_/), url: `https://vault.test/w/northwind/g/${created.bundle}`, expiresAt: expect.any(String), code: expect.stringMatching(/^[A-Z2-9]{6}$/), results: [{ index: 0, outcome: "ask", approval: expect.stringMatching(/^apr_/), bindingCode: expect.any(String) }] })
   expect(await f.sql(f.work, "SELECT workload,bundle FROM approvals WHERE id=?", asked)).toEqual([{ workload: a.view.workload, bundle: created.bundle }])
   expect(await body(await f.workloadCall(f.as(a), `/v1/approvals/bundles/${created.bundle}`))).toEqual({ bundle: created.bundle, approvals: [{ id: asked, status: "pending" }] })
   const other = await f.enrolMachine(f.alex, f.work)

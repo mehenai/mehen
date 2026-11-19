@@ -5,7 +5,8 @@ import { accountSigninOptions,accountSigninVerify } from "../src/directory/works
 import { currentAccountAppSession } from "../src/directory/workspace-app-session.ts"
 import { currentAccountSession } from "../src/directory/account-session.ts"
 import { endOwnAccountSession } from "../src/directory/workspace-account-admin.ts"
-import { startAccountStepUp,requireAppAccountStepUp,requireAccountStepUp } from "../src/directory/workspace-stepup.ts"
+import { STEP_UP_GRACE_MS } from "@mehen/protocol"
+import { startAccountStepUp,requireAppAccountStepUp,requireAccountStepUp,stepUpGraceId } from "../src/directory/workspace-stepup.ts"
 import { insertAccountPasskey } from "../src/directory/account-store.ts"
 import { setPasskeyCeremonies,simpleWebAuthnCeremonies } from "../src/directory/webauthn.ts"
 import { createWorkspaceFixture,type WorkspaceTestFixture } from "./workspace-fixtures.ts"
@@ -48,6 +49,29 @@ describe("account web and native app sessions",() => {
     expect((await currentAccountSession(new Request(f.env.VAULT_ORIGIN,{ headers: { cookie: `__Host-mehen_session=${two.session.token}` } }),f.env))?.account).toBe(f.account)
     expect((await signin()).account).toBe(f.account)
     expect(await f.env.DB.prepare("SELECT security_epoch,security_transition FROM accounts WHERE id=?").bind(f.account).first()).toEqual({ security_epoch: 0,security_transition: null })
+  })
+  it("a browser passkey sign-in opens the window for its own session; an app sign-in or one while cooling off opens none",async () => {
+    f.env = { ...f.env,STEPUP_GRACE: "on" }
+    const windows = () => f.env.DB.prepare("SELECT id,challenge,factor,context,expires_at-CAST(challenge AS INTEGER) AS lasts FROM challenges WHERE kind='stepup-grace'").all().then(r => r.results)
+    await signin("app")
+    expect(await windows()).toEqual([])
+    const web = await signin()
+    expect(await windows()).toEqual([{ id: await stepUpGraceId(web.session.id),challenge: expect.stringMatching(/^\d+$/),factor: "pk_old",context: web.session.id,lasts: STEP_UP_GRACE_MS }])
+    await f.env.DB.prepare("UPDATE accounts SET restricted_until=?,restricted_reason='recovery' WHERE id=?").bind(Date.now()+86400000,f.account).run()
+    await signin()
+    expect(await windows()).toHaveLength(1)
+  })
+  it("a browser passkey sign-in while a security change is pending opens no window, and one after it settles does",async () => {
+    f.env = { ...f.env,STEPUP_GRACE: "on" }
+    const windows = () => f.env.DB.prepare("SELECT context FROM challenges WHERE kind='stepup-grace'").all().then(r => r.results)
+    const id = await reserveAccountSecurity(f.env,f.account,{ effect: { kind: "sessions.end" },revokedSessionIds: [],removedFactorIds: [] })
+    expect(await f.env.DB.prepare("SELECT security_transition,restricted_until FROM accounts WHERE id=?").bind(f.account).first()).toEqual({ security_transition: id,restricted_until: null })
+    const pending = await signin()
+    expect(pending.account).toBe(f.account)
+    expect(await windows()).toEqual([])
+    await retryAccountSecurity(f.env,id,successfulDirectoryClient())
+    const settled = await signin()
+    expect(await windows()).toEqual([{ context: settled.session.id }])
   })
   it("removed-factor signin refuses during pending while older-factor sessions survive cancel",async () => {
     const now = Date.now(),notice = "ntc_cancel"

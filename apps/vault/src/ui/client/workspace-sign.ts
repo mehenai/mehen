@@ -149,7 +149,7 @@ export async function decideRuleProposal<T>(shell: ShellState, boot: RuleProposa
 
 // ---------------------------------------------------------------- Review together
 
-export const REVIEW_CODES_NOT_TICKED: ApiError = { error: "bad_request", message: "Tick the box once you have checked the codes against the agent's message.", next: { say: "Nothing was signed." } }
+export const REVIEW_CODES_NOT_TICKED: ApiError = { error: "bad_request", message: "Tick the code box once you have checked the code against the agent's message.", next: { say: "Nothing was signed." } }
 export const REVIEW_NOTHING_TICKED: ApiError = { error: "bad_request", message: "Tick the asks to decide first.", next: { say: "Nothing was signed." } }
 export const REVIEW_BINDING_MISMATCH: ApiError = { error: "conflict", message: "A ticked request does not match what the vault stored for it.", next: { say: "Nothing was signed. Untick it and decide it on its own page, or reload and check the requests again." } }
 

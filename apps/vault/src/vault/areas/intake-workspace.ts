@@ -11,6 +11,7 @@ import { IntakeSubmission, MEMBER_REASON, assertProposedInjection } from "./inta
 import { assertBindingHosts, parseOpInput, stepUpDigest } from "./items.ts"
 import { assertCredentialCurrent, assertCredentialNameFree, assertCredentialReservation, assertNameBudget, unavailableName, assertItemRight, checkedCredential, credentialAccessState, credentialAudit, credentialCreationContext, creationHome, describeCredential, missingCredential, prepareCredential, storeCredential, visibleCredential, type CheckedCredential, type WorkspaceItemInput } from "./items-workspace.ts"
 import { askingWorkload, assertWorkloadAskRoom, assertWorkloadMayAsk, assertWorkloadMayFollow } from "./workloads.ts"
+import { MACHINE_MAX_OPEN_ASKS, machineAsksFull } from "./approvals-workspace.ts"
 import { heldManagedPlatform } from "../managed-platform.ts"
 import { waitForStorageWrite } from "../storage-waits.ts"
 import { FILL_MANAGED_REFUSAL, refuseFillUnlessOn } from "../fill-unavailable.ts"
@@ -172,8 +173,8 @@ export function createCredentialRequest(ctx: VaultContext, p: AccessPrincipal, i
     assertItemRight(ctx, invocation, { type: "credential.create" }, { destinationHome: input.home })
     assertCredentialNameFree(ctx, p, input.slug)
   }
-  if (p.kind === "device" && openAskCount(ctx, p.deviceId, ctx.now()) >= 20)
-    throw new VaultError("rate_limited", "This machine already has 20 open asks.")
+  if (p.kind === "device" && openAskCount(ctx, p.deviceId, ctx.now()) >= MACHINE_MAX_OPEN_ASKS)
+    throw machineAsksFull(ctx, { device: p.deviceId, ...(p.workload !== undefined ? { workload: p.workload } : {}) }, invocation.workspace.slug, "This machine already has 20 open asks.")
   if (p.kind === "device")
     assertWorkloadAskRoom(ctx, p.workload)
   const state = credentialAccessState(ctx)

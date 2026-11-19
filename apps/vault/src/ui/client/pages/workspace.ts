@@ -215,7 +215,12 @@ export function initWorkspaceProject(raw: Boot, maybe: ShellState | null): void 
       if (reach) reach.hidden = !guest
       if (teamReach) teamReach.hidden = who?.kind !== "team"
     }
+    // A share request's member (?share=): until the person changes the
+    // choice themselves, Share signs for that member or for no one.
+    const requested = share.dataset.requested ?? null
+    let chosenByPerson = false
     subject.addEventListener("change", () => {
+      chosenByPerson = true
       prefill()
       refresh()
       sayEnd()
@@ -229,6 +234,7 @@ export function initWorkspaceProject(raw: Boot, maybe: ShellState | null): void 
     onClick('[data-action="share"]', "Waiting for your passkey...", async () => {
       const who = chosen()
       if (who === null) return showProblems(["Choose who to share with."])
+      if (requested !== null && !chosenByPerson && !(who.kind === "member" && who.member === requested)) return showProblems(["Choose who to share with."])
       const built = terms()
       if (!built.ok) return showProblems(built.problems)
       sayEnd()

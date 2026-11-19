@@ -810,6 +810,8 @@ describe("Review together links", () => {
     expect(ask).toEqual({ kind: "bundle", id: "bnd_7Hq2", url, title: "Approve requests together", what: "Approve 3 requests together: Set up Contoso", check: { label: "codes", value: "K7Q2MX, 9PZ4QA, M3R8TW (3)" }, expiresAt: "2026-10-24T17:14:00Z", account: null, requestedBy: by, wait: "mehen wait bnd_7Hq2 --timeout 60 --json" })
     expect(askSay(ask, clock)).toContain("the page should show codes K7Q2MX, 9PZ4QA, M3R8TW (3)")
     expect(bundleAsk({ id: "bnd_7Hq2", url, codes: null, asks: 1, reason: null, expiresAt: null, requestedBy: by })).toMatchObject({ what: "Approve 1 request together", check: null })
+    // The bundle's group code, when the vault sent it, is the one check.
+    expect(bundleAsk({ id: "bnd_7Hq2", url, codes: ["K7Q2MX", "9PZ4QA"], code: "K7QM3P", asks: 2, reason: null, expiresAt: null, requestedBy: by }).check).toEqual({ label: "code", value: "K7QM3P" })
     expect(() => bundleAsk({ id: "grp_7Hq2", url, codes: null, asks: 1, reason: null, expiresAt: null, requestedBy: by })).toThrow(CliError)
   })
 
@@ -819,6 +821,12 @@ describe("Review together links", () => {
     const grouped = askFromError("approval_required", { message: "m", next, approval: "apr_1", group }, { requestedBy: by, vaultUrl: VAULT })
     expect(grouped).toEqual({ ask: expect.objectContaining({ kind: "approval", id: "apr_1", url: next.url, group }), refusedLink: false })
     expect(askFromError("approval_required", { message: "m", next, approval: "apr_1" }, { requestedBy: by, vaultUrl: VAULT }).ask).not.toHaveProperty("group")
+    // A group code in the binding codes' alphabet rides along, and the block prints it on a group: line.
+    const coded = askFromError("approval_required", { message: "m", next, approval: "apr_1", bindingCode: "ABC234", group: { ...group, code: "K7QM3P" } }, { requestedBy: by, vaultUrl: VAULT }).ask!
+    expect(coded.group).toEqual({ ...group, code: "K7QM3P" })
+    expect(askText(coded, clock).split("\n")).toContain(`  group:   ${group.url}; the page shows code K7QM3P`)
+    expect(askText(grouped.ask!, clock)).not.toContain("group:")
+    expect(askFromError("approval_required", { message: "m", next, approval: "apr_1", group: { ...group, code: "k7qm3p" } }, { requestedBy: by, vaultUrl: VAULT }).ask!.group).toEqual(group)
     // Only approval_required carries one.
     expect(askFromError("needs_reauth", { message: "m", next: { url: `${VAULT.vaultUrl}/w/personal/c/con_1`, say: "x" }, group }, { requestedBy: by, vaultUrl: VAULT }).ask).not.toHaveProperty("group")
   })

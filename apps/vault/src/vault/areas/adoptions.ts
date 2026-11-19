@@ -22,6 +22,7 @@ import { registerWorkspacePendingProvider } from "./pending-workspace.ts"
 import { loadProject, type ProjectRecord } from "./projects.ts"
 import { projectVarSource, storeProjectVar } from "./projects-workspace.ts"
 import { accessState, authorise, managedSetting, nameMiss, openAskCount, recordExposure, registerAccessChangeHook, registerOffboardingHook, registerOpenAskCounter, requireStepUp, setting, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
+import { MACHINE_MAX_OPEN_ASKS, machineAsksFull } from "./approvals-workspace.ts"
 
 const MIGRATION = `CREATE TABLE adoption_batches (
   id TEXT PRIMARY KEY, requester_member TEXT, requester_device TEXT NOT NULL,
@@ -176,12 +177,12 @@ function personBatch(ctx: VaultContext, p: AccessPrincipal, id: string, invocati
 // ---------------------------------------------------------------- create
 
 // Checked before the first await and again in the transaction that writes.
-function assertRoomForBatch(ctx: VaultContext, machine: Machine, now: number): void {
+function assertRoomForBatch(ctx: VaultContext, machine: Machine, now: number, slug: string): void {
   const open = machine.owner.kind === "member"
     ? one(ctx.sql.exec<{ count: number }>("SELECT count(*) AS count FROM adoption_batches WHERE requester_member=? AND status='open' AND expires_at>?", machine.owner.id, now))?.count ?? 0
     : one(ctx.sql.exec<{ count: number }>("SELECT count(*) AS count FROM adoption_batches WHERE requester_device=? AND status='open' AND expires_at>?", machine.deviceId, now))?.count ?? 0
   if (open >= ADOPTION_LIMITS.maxOpenPerMember) throw new VaultError("rate_limited", `There are already ${ADOPTION_LIMITS.maxOpenPerMember} open adoption batches.`, { next: { say: "Approve, cancel or let an open batch expire first, or upload into one with `mehen adopt submit --join <adp_id>`." } })
-  if (openAskCount(ctx, machine.deviceId, now) >= 20) throw new VaultError("rate_limited", "This machine already has 20 open asks.")
+  if (openAskCount(ctx, machine.deviceId, now) >= MACHINE_MAX_OPEN_ASKS) throw machineAsksFull(ctx, { device: machine.deviceId }, slug, "This machine already has 20 open asks.")
 }
 
 async function createAdoption(ctx: VaultContext, p: AccessPrincipal, input: unknown, invocation: WorkspaceInvocationContext): Promise<AdoptionCreated> {
@@ -191,11 +192,11 @@ async function createAdoption(ctx: VaultContext, p: AccessPrincipal, input: unkn
   assertNotFrozen(ctx)
   assertNotGuestMachine(accessState(ctx), machine)
   const now = ctx.now()
-  assertRoomForBatch(ctx, machine, now)
+  assertRoomForBatch(ctx, machine, now, invocation.workspace.slug)
   const id = randomId("adp")
   const sealKey = await sealPublicJwk(ctx.env)
   return ctx.storage.transactionSync(() => {
-    assertRoomForBatch(ctx, machine, now)
+    assertRoomForBatch(ctx, machine, now, invocation.workspace.slug)
     ctx.sql.exec("INSERT INTO adoption_batches(id,requester_member,requester_device,session,reason,status,created_at,expires_at) VALUES (?,?,?,?,?,'open',?,?)", id, machine.owner.kind === "member" ? machine.owner.id : null, machine.deviceId, raw.session ?? null, raw.reason ?? null, now, now + ADOPTION_LIMITS.ttlMs)
     ctx.sql.exec("INSERT INTO adoption_machines(adoption,device,name) VALUES (?,?,?)", id, machine.deviceId, raw.machine)
     ctx.schedule("adoptions", id, now + ADOPTION_LIMITS.ttlMs)

@@ -17,10 +17,10 @@ import { connectionNeedsReauth, workspaceTokenRead } from "./oauth-workspace.ts"
 import { assertApprovedUse, consumeApprovedUse, prepareApprovedUse, assertRunUse, type ProtectedSnapshot } from "./projects-workspace.ts"
 import { accessState, authorise, managedSetting, openAskCount, openWorkloadAskCount, setting, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 import { managedPolicyView } from "../managed-platform.ts"
-import { batchesHere, deviceSeesAsk, replacingUnavailable, workspaceApproval, workspaceApprovalStatus, type WorkspaceApprovalRow } from "./approvals-workspace.ts"
+import { MACHINE_MAX_OPEN_ASKS, batchesHere, deviceSeesAsk, machineAsksFull, replacingUnavailable, workspaceApproval, workspaceApprovalStatus, type WorkspaceApprovalRow } from "./approvals-workspace.ts"
 import { askGroupExtra } from "./pending-workspace.ts"
 import { assertAreaGrantCurrent, assertRuleCurrent, coveringAreaGrant, coveringRule, policyRulesOn, readsGrants, recordAreaGrantUse, recordRuleUse, storeRuleAnchor, type CoveringGrant, type HeldRequest } from "./policy-rules-workspace.ts"
-import { digestOf, parseOpInput } from "./approvals.ts"
+import { bindingCode, digestOf, parseOpInput } from "./approvals.ts"
 import { assertPostureCurrent, countPostureAsk, coveringPosture, recordPostureUse, type PostureUse } from "./postures-workspace.ts"
 import { assertDialCurrent, coveringDial, dialRefusal, recordDialUse, approvalDial, type DialUse } from "./approval-dial-workspace.ts"
 import { assertMandateCurrent, coveringMandate, mandateCoverHint, newMandateReservation, recordMandateCappedAsk, recordMandateCoverAsk, recordMandateUse } from "./mandates-workspace.ts"
@@ -287,10 +287,10 @@ async function createApprovalBundle(ctx: VaultContext, principal: AccessPrincipa
   const open = openAskCount(ctx, principal.deviceId, now)
   // Never a count of open asks: the machine's takes in asks a workload cannot
   // see, and a workload's own takes in asks it may no longer see.
-  if (open + count > 20) throw new VaultError("rate_limited", `This machine's open asks and these ${count} requests would pass its 20. Settle some, or send fewer at once.`)
+  if (open + count > MACHINE_MAX_OPEN_ASKS) throw machineAsksFull(ctx, { device: principal.deviceId, ...(principal.workload !== undefined ? { workload: principal.workload } : {}) }, invocation.workspace.slug, `This machine's open asks and these ${count} requests would pass its 20. Settle some, or send fewer at once.`)
   if (principal.workload !== undefined && openWorkloadAskCount(ctx, principal.workload, now) + count > WORKLOAD_MAX_OPEN_ASKS) throw new VaultError("rate_limited", `This task's workload's open asks and these ${count} requests would pass its own limit of ${WORKLOAD_MAX_OPEN_ASKS}. Settle some, or send fewer at once.`)
-  const bundle = randomId("bnd"), expiresAt = now + 3_600_000
-  ctx.sql.exec("INSERT INTO approval_bundles(id,device,workload,reason,created_at,expires_at) VALUES (?,?,?,?,?,?)", bundle, principal.deviceId, principal.workload ?? null, input.reason ?? null, now, expiresAt)
+  const bundle = randomId("bnd"), expiresAt = now + 3_600_000, code = bindingCode()
+  ctx.sql.exec("INSERT INTO approval_bundles(id,device,workload,reason,created_at,expires_at,code) VALUES (?,?,?,?,?,?,?)", bundle, principal.deviceId, principal.workload ?? null, input.reason ?? null, now, expiresAt, code)
   const results: ApprovalBundleCreated["results"] = []
   // The workspace's row counts only the requests its audit already shows.
   const shown: ApprovalBundleCreated["results"] = []
@@ -309,7 +309,7 @@ async function createApprovalBundle(ctx: VaultContext, principal: AccessPrincipa
   }
   const tally = (outcome: ApprovalBundleOutcome) => shown.filter((r) => r.outcome === outcome).length
   if (shown.length) ctx.audit({ actor: `device:${principal.deviceId}`, action: "approval.bundle", target: bundle, detail: { requests: shown.length, asked: tally("ask"), allowed: tally("allowed"), refused: tally("refused") } })
-  return { bundle, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/g/${bundle}`, expiresAt: new Date(expiresAt).toISOString(), results }
+  return { bundle, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/g/${bundle}`, expiresAt: new Date(expiresAt).toISOString(), code, results }
 }
 
 // approvals.bundle_status: the bundle's asks, oldest first, read only by the
