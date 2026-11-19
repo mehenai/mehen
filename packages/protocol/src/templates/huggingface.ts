@@ -9,6 +9,10 @@ const perRepo = (...suffixes: string[]): string[] => REPO_TYPES.flatMap((t) => s
 // (router.huggingface.co). Without a human: the named reads (the account,
 // repository listings and details, trees, revisions, commits and refs, and
 // file downloads), path lookups and chat completions through the router.
+// File downloads are a stated exemption: resolve answers with a redirect
+// to a short-lived signed URL, which grants a download of exactly the file
+// the allowed read already returns and nothing more, and downloading model
+// files is what most agents use the token for.
 // Every other read asks: JWTs, Xet read and write tokens, Space secrets
 // and variables, jobs, webhooks, service accounts, tokens and the registry
 // token are pinned to an approval. Commits, repositories, Spaces and
@@ -37,12 +41,13 @@ export const huggingface: Template = {
           "/api/datasets",
           "/api/spaces",
           ...perRepo("", "/revision/**", "/tree/**", "/refs", "/commits/*", "/compare/*"),
-          "/*/*/resolve/**",
-          "/datasets/*/*/resolve/**",
-          "/spaces/*/*/resolve/**",
           "/v1/models",
         ],
-        "reads of the account, repositories, their files and the router's models",
+        "reads of the account, repositories and the router's models",
+      ),
+      NAMED_READS(
+        ["/*/*/resolve/**", "/datasets/*/*/resolve/**", "/spaces/*/*/resolve/**"],
+        "file downloads, whose redirect is a short-lived signed URL for exactly the file asked for",
       ),
       { action: "allow", methods: ["POST"], paths: ["/v1/chat/completions", "/hf-inference/models/**"], note: MODEL_CALLS },
       { action: "allow", methods: ["POST"], paths: ["/api/models/*/*/paths-info/*", "/api/datasets/*/*/paths-info/*", "/api/spaces/*/*/paths-info/*"], note: "looks up file paths in a repository" },

@@ -85,7 +85,11 @@ export function describeRule(rule: PolicyInput["rules"][number]): string {
       ? " whose body is a GraphQL mutation or cannot be read as a query"
       : rule.body === "graphql-query"
         ? " whose body is a single read-only GraphQL query, with nothing in the URL's query string"
-        : ""
+        : rule.body === "json-remote-mcp"
+          ? " whose body names a remote MCP server or cannot be read"
+          : rule.body === "json-webhook"
+            ? " whose body names a webhook or cannot be read"
+            : ""
   const note = rule.note ? ` (${rule.note})` : ""
   return `${action} ${methods} requests${paths}${body}${note}`
 }

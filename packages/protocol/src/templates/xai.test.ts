@@ -30,13 +30,11 @@ describe("xai", () => {
   })
 
   it("lets reads and model calls through", () => {
-    expectAll([
-      ["GET", `${API}/v1/models`, "allow"],
-      ["POST", `${API}/v1/chat/completions`, "allow"],
-      ["POST", `${API}/v1/responses`, "allow"],
-      ["POST", `${API}/v1/images/generations`, "allow"],
-      ["POST", `${API}/v1/batches/b1/requests`, "allow"],
-    ])
+    const call = { model: "grok-4", input: "hi" }
+    expectAll([["GET", `${API}/v1/models`, "allow"]])
+    for (const path of ["/v1/chat/completions", "/v1/responses", "/v1/images/generations", "/v1/batches/b1/requests"]) {
+      expect({ path, action: decide("POST", `${API}${path}`, call) }).toEqual({ path, action: "allow" })
+    }
   })
 
   it("holds realtime client secrets, phone numbers and deletes for approval", () => {

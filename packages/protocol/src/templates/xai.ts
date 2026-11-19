@@ -2,12 +2,18 @@ import type { Template } from "../templates.ts"
 import { BEARER, MODEL_CALLS, NAMED_READS, READS, WRITES } from "./shared.ts"
 
 // xAI's inference API. The management API is another host with its own
-// key and is not bound. Without a human: the named reads (models,
-// responses, deferred completions, images, videos, batches and voices),
-// and model calls (chat, responses, images, video, speech, tokenising and
-// batches). The API key's details, realtime client secrets and phone
-// numbers are pinned to an approval; every other read asks, as do
-// deletes and anything else.
+// key and is not bound. Without a human: the named reads (models, deferred
+// completions, images, videos, batches and voices), and model calls (chat,
+// responses, images, video, speech, tokenising and batches). A model call
+// or batch whose body names a remote MCP server (a tool of type "mcp", or
+// any server_url), or that cannot be read, is pinned to an approval: xAI
+// calls that server itself, with whatever headers and authorization the
+// request names, and its MCP tools do not honour require_approval. Stored
+// responses are pinned to an approval too, since their tools carry those
+// headers and that authorization. The API key's details, realtime client
+// secrets and phone numbers are pinned to an approval; every other read
+// asks, as do deletes and anything else.
+// https://api.x.ai/api-docs/openapi.json
 // https://docs.x.ai/developers/rest-api-reference/inference
 export const xai: Template = {
   id: "xai",
@@ -27,7 +33,6 @@ export const xai: Template = {
           "/v1/language-models/**",
           "/v1/image-generation-models/**",
           "/v1/video-generation-models/**",
-          "/v1/responses/*",
           "/v1/chat/deferred-completion/*",
           "/v1/images/*",
           "/v1/videos/*",
@@ -35,8 +40,16 @@ export const xai: Template = {
           "/v1/tts/voices/**",
           "/v1/custom-voices/**",
         ],
-        "reads of models, responses, generated media, batches and voices",
+        "reads of models, generated media, batches and voices",
       ),
+      { action: "approve", methods: READS, paths: ["/v1/responses/*"], note: "a stored response, whose MCP tools carry their authorization and headers" },
+      {
+        action: "approve",
+        methods: ["POST"],
+        paths: ["/v1/responses", "/v1/chat/completions", "/v1/batches", "/v1/batches/*/requests"],
+        body: "json-remote-mcp",
+        note: "names a remote MCP server, which xAI calls itself, or cannot be read",
+      },
       { action: "approve", methods: READS, paths: ["/v1/api-key"], note: "the API key's own details" },
       {
         action: "allow",

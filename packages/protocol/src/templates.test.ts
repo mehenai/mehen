@@ -208,8 +208,11 @@ describe("every template and provider, checked the same way", () => {
           const path = samplePath(pattern)
           for (const method of rule.action === "allow" ? methods.slice(0, 1) : methods) {
             const request = `${s.id}: ${method} ${path}`
+            // An allowed write is sent with an empty JSON object, which a
+            // fail-closed JSON field matcher on the same route lets by.
+            const body = rule.action === "allow" && !READS.includes(method.toUpperCase()) ? {} : undefined
             expect({ request, inBinding: inBinding(s, method, path) }).toEqual({ request, inBinding: true })
-            expect({ request, action: decide(s.policy, method, urlOf(s, path)).action }).toEqual({ request, action: rule.action })
+            expect({ request, action: decide(s.policy, method, urlOf(s, path), body).action }).toEqual({ request, action: rule.action })
           }
         }
       }
