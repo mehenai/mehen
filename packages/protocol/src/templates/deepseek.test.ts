@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { deepseek } from "./deepseek.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -32,6 +33,7 @@ describe("deepseek", () => {
     expectAll([
       ["GET", `${API}/models`, "allow"],
       ["GET", `${API}/user/balance`, "allow"],
+      ["GET", `${API}/mehen-unlisted`, "approve"],
       ["POST", `${API}/chat/completions`, "allow"],
       ["POST", `${API}/beta/completions`, "allow"],
       ["POST", `${API}/anthropic/v1/messages`, "allow"],
@@ -40,5 +42,12 @@ describe("deepseek", () => {
 
   it("holds anything else for approval", () => {
     expectAll([["POST", `${API}/mehen-unlisted`, "approve"], ["DELETE", `${API}/models/x`, "approve"]])
+  })
+})
+
+describe("deepseek reads", () => {
+  it("allows only the model list and the balance among reads; DeepSeek documents no read that returns a secret", () => {
+    expect(deepseek.policy.rules.filter((r) => r.action === "allow" && r.methods?.includes("GET")).flatMap((r) => r.paths ?? ["(any)"])).toEqual(["/models", "/user/balance"])
+    expect(underBroadAllow(deepseek, "GET", `${API}/models`)).toBe("allow")
   })
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { planetscale } from "./planetscale.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -37,6 +38,8 @@ describe("planetscale", () => {
     expectAll([
       ["GET", `${API}/organizations/acme/databases`, "allow"],
       ["GET", `${BRANCH}/schema`, "allow"],
+      ["GET", `${API}/organizations/acme/databases/db/deploy-requests/7`, "allow"],
+      ["GET", `${API}/mehen-unlisted`, "approve"],
     ])
   })
 
@@ -64,5 +67,21 @@ describe("planetscale", () => {
       ["DELETE", `${API}/organizations/acme/databases/db`, "deny"],
       ["POST", `${API}/organizations/acme/Service-Tokens`, "deny"],
     ])
+  })
+})
+
+describe("planetscale review fixes", () => {
+  it("holds webhooks, roles, passwords, service and OAuth tokens and team members whatever the item's policy says", () => {
+    for (const path of [
+      "/organizations/acme/databases/db/webhooks",
+      "/organizations/acme/databases/db/webhooks/w1",
+      "/organizations/acme/databases/db/branches/main/roles",
+      "/organizations/acme/databases/db/branches/main/roles/default",
+      "/organizations/acme/databases/db/branches/main/passwords",
+      "/organizations/acme/service-tokens",
+      "/organizations/acme/service-tokens/t1",
+      "/organizations/acme/oauth-applications/app/tokens",
+      "/organizations/acme/teams/t/members",
+    ]) expect({ path, action: underBroadAllow(planetscale, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
   })
 })

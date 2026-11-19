@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { railway } from "./railway.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -32,5 +33,13 @@ describe("railway", () => {
   it("holds queries as well as mutations for approval, since a query can read service variables", () => {
     expect(decide("POST", API, { query: "query { variables(projectId: \"p\", environmentId: \"e\") }" })).toBe("approve")
     expect(decide("POST", API, { query: "mutation { apiTokenCreate(input: {name: \"x\"}) }" })).toBe("approve")
+  })
+})
+
+describe("railway review fixes", () => {
+  it("holds every request with an explicit rule, so a broad allow on the item cannot open queries", () => {
+    expect(railway.policy.rules).toEqual([expect.objectContaining({ action: "approve", paths: ["/graphql/v2"] })])
+    expect(underBroadAllow(railway, "POST", API, { query: "query { variables(projectId: \"p\", environmentId: \"e\") }" })).toBe("approve")
+    expect(underBroadAllow(railway, "POST", API, { query: "{ me { id } }" })).toBe("approve")
   })
 })

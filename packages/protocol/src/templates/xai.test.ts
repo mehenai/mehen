@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { xai } from "./xai.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -45,5 +46,25 @@ describe("xai", () => {
       ["DELETE", `${API}/v2/phone-numbers/n1`, "approve"],
       ["DELETE", `${API}/v1/responses/r1`, "approve"],
     ])
+  })
+})
+
+describe("xai reads", () => {
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${API}/v1/models/grok-4`, "allow"],
+      ["GET", `${API}/v1/language-models`, "allow"],
+      ["GET", `${API}/v1/responses/r1`, "allow"],
+      ["GET", `${API}/v1/batches/b1/results`, "allow"],
+      ["GET", `${API}/v1/api-key`, "approve"],
+      ["GET", `${API}/v2/phone-numbers`, "approve"],
+      ["GET", `${API}/v1/mehen-unlisted`, "approve"],
+    ])
+  })
+
+  it("holds the API key's details even when the item's own policy allows everything", () => {
+    for (const path of [
+      "/v1/api-key",
+    ]) expect({ path, action: underBroadAllow(xai, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
   })
 })

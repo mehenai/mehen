@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { render } from "./render.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -33,6 +34,9 @@ describe("render", () => {
       ["GET", `${API}/services`, "allow"],
       ["GET", `${API}/services/srv/deploys`, "allow"],
       ["GET", `${API}/logs?ownerId=o`, "allow"],
+      ["GET", `${API}/postgres/pg`, "allow"],
+      ["GET", `${API}/registrycredentials`, "approve"],
+      ["GET", `${API}/mehen-unlisted`, "approve"],
     ])
   })
 
@@ -58,5 +62,20 @@ describe("render", () => {
       ["POST", `${API}/sandboxes/sb/runs/exec/token`, "deny"],
       ["POST", `${API}/Webhooks`, "deny"],
     ])
+  })
+})
+
+describe("render review fixes", () => {
+  it("holds webhooks (they carry their signing secret), streams and other secret reads whatever the item's policy says", () => {
+    for (const path of [
+      "/webhooks",
+      "/webhooks/wh1",
+      "/logs/streams/owner/own",
+      "/metrics-stream/own",
+      "/services/srv/env-vars",
+      "/env-groups/evg",
+      "/postgres/pg/connection-info",
+      "/redis/r1/connection-info",
+    ]) expect({ path, action: underBroadAllow(render, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
   })
 })

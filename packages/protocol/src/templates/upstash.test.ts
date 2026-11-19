@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { upstash } from "./upstash.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -34,6 +35,9 @@ describe("upstash", () => {
       ["GET", `${API}/teams`, "allow"],
       ["GET", `${API}/redis/stats/db1`, "allow"],
       ["GET", `${API}/redis/list-backup/db1`, "allow"],
+      ["GET", `${API}/qstash/stats/q1`, "allow"],
+      ["GET", `${API}/redis/insights/db1`, "approve"],
+      ["GET", `${API}/mehen-unlisted`, "approve"],
     ])
   })
 
@@ -57,6 +61,34 @@ describe("upstash", () => {
       ["POST", `${API}/redis/move-to-team`, "deny"],
       ["POST", `${API}/vector/index/ix1/transfer`, "deny"],
       ["POST", `${API}/teams/%6dember`, "deny"],
+    ])
+  })
+})
+
+describe("upstash review fixes", () => {
+  it("defaults to the variable Upstash's tooling reads the API key from", () => {
+    expect(upstash.defaultEnvVar).toBe("UPSTASH_API_KEY")
+  })
+
+  it("holds Search, QStash, Blob, vector and Redis token reads whatever the item's policy says", () => {
+    for (const path of [
+      "/search",
+      "/search/s1",
+      "/qstash/users",
+      "/qstash/user/q1",
+      "/blob/b1",
+      "/vector/index/ix1",
+      "/redis/databases",
+      "/redis/database/db1",
+    ]) expect({ path, action: underBroadAllow(upstash, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
+  })
+
+  it("refuses moving Search and QStash to another team, and holds their token rotation", () => {
+    expectAll([
+      ["POST", `${API}/search/s1/transfer`, "deny"],
+      ["POST", `${API}/qstash/move-to-team`, "deny"],
+      ["POST", `${API}/search/s1/reset-password`, "approve"],
+      ["POST", `${API}/qstash/rotate-token/q1`, "approve"],
     ])
   })
 })

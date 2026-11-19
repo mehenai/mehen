@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { supabase } from "./supabase.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -34,6 +35,9 @@ describe("supabase", () => {
       ["GET", `${API}/projects`, "allow"],
       ["GET", `${API}/projects/ref/functions`, "allow"],
       ["GET", `${API}/projects/ref/database/migrations`, "allow"],
+      ["GET", `${API}/projects/ref/branches`, "allow"],
+      ["GET", `${API}/projects/ref/config/database/postgres`, "approve"],
+      ["GET", `${API}/mehen-unlisted`, "approve"],
     ])
   })
 
@@ -70,5 +74,22 @@ describe("supabase", () => {
       ["DELETE", `${API}/projects/ref`, "deny"],
       ["POST", `${API}/projects/ref/API-KEYS`, "deny"],
     ])
+  })
+})
+
+describe("supabase review fixes", () => {
+  it("holds branch details, pooler connection strings, the PostgREST JWT secret and other secret reads whatever the item's policy says", () => {
+    for (const path of [
+      "/branches/br1",
+      "/projects/ref/config/database/pooler",
+      "/projects/ref/config/database/pgbouncer",
+      "/projects/ref/postgrest",
+      "/projects/ref/api-keys",
+      "/projects/ref/api-keys/k1",
+      "/projects/ref/secrets",
+      "/projects/ref/config/auth",
+      "/projects/ref/pgsodium",
+      "/projects/ref/claim-token",
+    ]) expect({ path, action: underBroadAllow(supabase, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
   })
 })

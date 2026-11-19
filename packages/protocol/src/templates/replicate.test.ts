@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { replicate } from "./replicate.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -28,12 +29,12 @@ describe("replicate", () => {
     expect(reaches("GET", "https://api.replicate.com/v2/account")).toBe(false)
   })
 
-  it("lets reads, predictions and uploads through", () => {
+  it("lets named reads, cancels and uploads through", () => {
     expectAll([
       ["GET", `${API}/models/acme/model`, "allow"],
-      ["POST", `${API}/predictions`, "allow"],
-      ["POST", `${API}/models/acme/model/predictions`, "allow"],
-      ["POST", `${API}/deployments/acme/dep/predictions`, "allow"],
+      ["GET", `${API}/models/acme/model/versions/v1`, "allow"],
+      ["GET", `${API}/predictions/p1`, "allow"],
+      ["GET", `${API}/collections/super-resolution`, "allow"],
       ["POST", `${API}/predictions/p1/cancel`, "allow"],
       ["POST", `${API}/files`, "allow"],
     ])
@@ -48,5 +49,27 @@ describe("replicate", () => {
       ["DELETE", `${API}/models/acme/model`, "approve"],
       ["POST", `${API}/%64eployments`, "approve"],
     ])
+  })
+})
+
+describe("replicate review fixes", () => {
+  it("holds every prediction for approval, since its body can name a webhook that receives the output", () => {
+    expectAll([
+      ["POST", `${API}/predictions`, "approve"],
+      ["POST", `${API}/models/acme/model/predictions`, "approve"],
+      ["POST", `${API}/deployments/acme/dep/predictions`, "approve"],
+    ])
+    for (const path of [
+      "/predictions",
+      "/models/acme/model/predictions",
+      "/deployments/acme/dep/predictions",
+    ]) expect({ path, action: underBroadAllow(replicate, "POST", `${API}${path}`) }).toEqual({ path, action: "approve" })
+  })
+
+  it("holds any read it does not name, and the webhook secret whatever the item's policy says", () => {
+    expectAll([["GET", `${API}/mehen-unlisted`, "approve"]])
+    for (const path of [
+      "/webhooks/default/secret",
+    ]) expect({ path, action: underBroadAllow(replicate, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
   })
 })

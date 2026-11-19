@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { huggingface } from "./huggingface.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -56,6 +57,7 @@ describe("huggingface", () => {
   it("refuses webhooks, members, tokens, trusted publishers, moves, provider keys and billing", () => {
     expectAll([
       ["POST", `${HUB}/api/settings/webhooks`, "deny"],
+      ["POST", `${HUB}/api/models/acme/model/resource-group`, "deny"],
       ["POST", `${HUB}/api/settings/webhooks/abc/enable`, "deny"],
       ["PUT", `${HUB}/api/organizations/acme/members/bob/role`, "deny"],
       ["POST", `${HUB}/api/organizations/acme/scim/v2/Users`, "deny"],
@@ -78,5 +80,56 @@ describe("huggingface", () => {
       ["POST", `${HUB}/api/settings/%77ebhooks`, "deny"],
       ["POST", `${HUB}/api/Settings/Webhooks`, "deny"],
     ])
+  })
+})
+
+describe("huggingface reads and review fixes", () => {
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${HUB}/api/whoami-v2`, "allow"],
+      ["GET", `${HUB}/api/models/acme/model`, "allow"],
+      ["GET", `${HUB}/api/datasets/acme/data/tree/main/train`, "allow"],
+      ["GET", `${HUB}/api/spaces/acme/space/revision/main`, "allow"],
+      ["GET", `${HUB}/api/models/acme/model/commits/main`, "allow"],
+      ["GET", `${HUB}/datasets/acme/data/resolve/main/train.csv`, "allow"],
+      ["GET", `${HUB}/spaces/acme/space/resolve/main/app.py`, "allow"],
+      ["GET", `${ROUTER}/v1/models`, "allow"],
+      ["GET", `${HUB}/api/spaces/acme/space/secrets`, "approve"],
+      ["GET", `${HUB}/api/spaces/acme/space/variables`, "approve"],
+      ["GET", `${HUB}/api/jobs/acme`, "approve"],
+      ["GET", `${HUB}/api/organizations/acme/audit-log/export`, "approve"],
+      ["GET", `${HUB}/api/mehen-unlisted`, "approve"],
+    ])
+  })
+
+  it("holds token and secret reads even when the item's own policy allows everything", () => {
+    for (const path of [
+      "/api/models/acme/model/jwt",
+      "/api/spaces/acme/space/jwt",
+      "/api/datasets/acme/data/jwt",
+      "/api/models/acme/model/xet-read-token/main",
+      "/api/datasets/acme/data/xet-write-token/main",
+      "/api/spaces/acme/space/xet-read-token/main",
+      "/api/buckets/acme/bucket/xet-read-token",
+      "/api/containers/acme/box/xet-write-token",
+      "/api/registry/token",
+      "/api/spaces/acme/space/secrets",
+      "/api/jobs/acme/j1",
+      "/api/scheduled-jobs/acme",
+      "/api/settings/webhooks",
+      "/api/organizations/acme/service-accounts/sa1",
+      "/api/organizations/acme/settings/tokens",
+    ]) expect({ path, action: underBroadAllow(huggingface, "GET", `${HUB}${path}`) }).toEqual({ path, action: "approve" })
+  })
+
+  it("refuses putting a repository, bucket, container or collection in a resource group", () => {
+    for (const path of [
+      "/api/models/acme/model/resource-group",
+      "/api/datasets/acme/data/resource-group",
+      "/api/spaces/acme/space/resource-group",
+      "/api/buckets/acme/bucket/resource-group",
+      "/api/containers/acme/box/resource-group",
+      "/api/collections/acme/picks-1/resource-group",
+    ]) expect({ path, action: underBroadAllow(huggingface, "POST", `${HUB}${path}`) }).toEqual({ path, action: "deny" })
   })
 })

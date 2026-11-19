@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { digitalocean } from "./digitalocean.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -32,7 +33,9 @@ describe("digitalocean", () => {
     expectAll([
       ["GET", `${API}/droplets`, "allow"],
       ["GET", `${API}/kubernetes/clusters`, "allow"],
-      ["GET", `${API}/apps/a1/logs`, "allow"],
+      ["GET", `${API}/domains/example.com/records`, "allow"],
+      ["GET", `${API}/apps/a1/logs`, "approve"],
+      ["GET", `${API}/monitoring/alerts`, "approve"],
     ])
   })
 
@@ -61,6 +64,46 @@ describe("digitalocean", () => {
       ["POST", `${API}/microvms/m1/access_tokens`, "deny"],
       ["POST", `${API}/monitoring/sinks/destinations`, "deny"],
       ["POST", `${API}/account/%6beys`, "deny"],
+    ])
+  })
+})
+
+describe("digitalocean review fixes", () => {
+  it("holds Functions namespaces, database replicas, pools and log sinks, apps, GenAI and other secret reads whatever the item's policy says", () => {
+    for (const path of [
+      "/functions/namespaces",
+      "/functions/namespaces/ns1",
+      "/databases/db1/replicas",
+      "/databases/db1/replicas/r1",
+      "/databases/db1/pools",
+      "/databases/db1/pools/p1",
+      "/databases/db1/logsink",
+      "/databases/db1/logsink/s1",
+      "/databases",
+      "/databases/db1/users/admin",
+      "/kubernetes/clusters/c1/kubeconfig",
+      "/registry/docker-credentials",
+      "/apps/a1",
+      "/gen-ai/agents/ag1",
+      "/gen-ai/models/api_keys",
+      "/microvms/m1",
+      "/monitoring/sinks",
+      "/insights/notification-channels",
+      "/spaces/keys",
+    ]) expect({ path, action: underBroadAllow(digitalocean, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
+  })
+
+  it("refuses GenAI agent and model keys, and database log sinks", () => {
+    expectAll([
+      ["POST", `${API}/gen-ai/agents/ag1/api_keys`, "deny"],
+      ["PUT", `${API}/gen-ai/agents/ag1/api_keys/k1/regenerate`, "deny"],
+      ["POST", `${API}/gen-ai/models/api_keys`, "deny"],
+      ["PUT", `${API}/gen-ai/models/api_keys/k1/regenerate`, "deny"],
+      ["POST", `${API}/gen-ai/anthropic/keys`, "deny"],
+      ["PUT", `${API}/gen-ai/openai/keys/k1`, "deny"],
+      ["POST", `${API}/databases/db1/logsink`, "deny"],
+      ["PUT", `${API}/databases/db1/logsink/s1`, "deny"],
+      ["DELETE", `${API}/databases/db1/logsink/s1`, "deny"],
     ])
   })
 })
