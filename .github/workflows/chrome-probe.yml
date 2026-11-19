@@ -3,12 +3,11 @@ on: pull_request
 permissions:
   contents: read
 jobs:
-  first-start:
+  read-ahead:
     strategy:
       fail-fast: false
       matrix:
-        order: [fonts-first, chrome-first]
-        n: [1, 2, 3]
+        n: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -21,7 +20,8 @@ jobs:
             until [ -s "$p/DevToolsActivePort" ]; do sleep 0.02; [ "$(ms $s)" -gt 60000 ] && break; done
             echo "chrome $1: $(ms $s) ms"; kill $pid; wait $pid 2>/dev/null; sleep 0.3; rm -rf "$p"
           }
-          fonts() { s=$(date +%s%N); fc-list > /dev/null; echo "fc-list $1 ($(fc-list | wc -l) fonts): $(ms $s) ms; cache files $(ls ~/.cache/fontconfig 2>/dev/null | wc -l)"; }
-          echo "fontconfig cache files at start: $(ls ~/.cache/fontconfig 2>/dev/null | wc -l); uptime $(cut -d' ' -f1 /proc/uptime) s"
-          if [ "${{ matrix.order }}" = fonts-first ]; then fonts first; chrome after-fonts; else chrome first; fonts after-chrome; fi
+          s=$(date +%s%N); find -L /opt/google/chrome -type f -exec cat {} + > /dev/null 2>&1; echo "read-ahead of $(du -shL /opt/google/chrome | cut -f1): $(ms $s) ms"
+          s=$(date +%s%N); find -L /opt/google/chrome -type f -exec cat {} + > /dev/null 2>&1; echo "read-ahead again: $(ms $s) ms"
+          chrome first-after-read-ahead
           chrome warm
+          s=$(date +%s%N); cat /usr/lib/x86_64-linux-gnu/libLLVM*.so* > /dev/null 2>&1; echo "an unrelated large library never read: $(ms $s) ms for $(du -chL /usr/lib/x86_64-linux-gnu/libLLVM*.so* 2>/dev/null | tail -1 | cut -f1)"
