@@ -1,14 +1,31 @@
 // Mandates in direct-area tests (areas/mandates-workspace.ts): terms for a
 // machine, a mandate signed as the page signs it (the action planned, then
 // signed), and the rows a test reads back.
-import { MANDATE_CAP_DEFAULTS, type MandateActionAnswer, type MandateChanged, type MandateTerms, type WorkspaceStepUpAction } from "@mehen/protocol"
+import { MANDATE_CAP_DEFAULTS, MANDATE_PROPOSAL_CAP_DEFAULTS, type MandateActionAnswer, type MandateChanged, type MandateTerms, type WorkspaceStepUpAction } from "@mehen/protocol"
 import type { VaultContext } from "../src/vault/core.ts"
 import { workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
-import { memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
+import { memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
 
 export const terms = (overrides: Partial<MandateTerms> = {}): MandateTerms => ({
   device: "dev_owner", items: "all", classes: ["change", "delete", "read", "send"], caps: { ...MANDATE_CAP_DEFAULTS }, ttlDays: 30, schedule: null, note: "Building the release", ...overrides,
 })
+// A machine's proposal names credentials by slug; by default the one
+// askedFor seeds.
+export const ASKED_KEY = "asked-key"
+export function proposedTerms(overrides: Partial<Omit<MandateTerms, "items">> & { items?: "all" | string[] } = {}): Omit<MandateTerms, "device" | "items"> & { items: "all" | string[] } {
+  const { device: _device, ...rest } = terms({ caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS } })
+  return { ...rest, items: [ASKED_KEY], ...overrides }
+}
+// As if the machine's held requests on the credential, in these classes,
+// had carried a mandateCover hint at this moment: what a proposal of its own
+// may name.
+export async function askedFor(ctx: VaultContext, device: string, slug = ASKED_KEY, classes: string[] = ["change", "delete", "send"], at = ctx.now()): Promise<string> {
+  if (ctx.sql.exec("SELECT 1 FROM items WHERE slug=?", slug).toArray().length === 0) await seedCredential(ctx, slug)
+  const item = ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug=?", slug).toArray()[0]!.id
+  const approval = `apr_seed${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`
+  for (const cls of classes) ctx.sql.exec("INSERT INTO mandate_asked(approval,device,item_id,cls,at) VALUES (?,?,?,?,?)", approval, device, item, cls, at)
+  return approval
+}
 // The action a passkey signs, or { stepUp: null } for a resume without one.
 export async function mandateAction(ctx: VaultContext, role: string, input: Record<string, unknown>): Promise<MandateActionAnswer> {
   return await workspaceMandateOps["mandates.action"]!.handler(ctx, memberPrincipal(ctx, role), input, memberInvocation(ctx, role)) as MandateActionAnswer

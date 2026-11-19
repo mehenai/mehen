@@ -1622,6 +1622,26 @@ export function mandateProposedWords(machine: string): string {
   return `${machine} asked for this. You may change any of it before you sign.`
 }
 export const MANDATE_PROPOSAL_CLOSED_WORDS = "This proposal was signed or has expired. You may still sign these terms as a new mandate."
+// A proposal closed on upgrade: it named credentials by slug before the
+// vault kept which credential each meant.
+export function mandateProposalUnboundWords(slugs: readonly string[]): string {
+  return `Mehen closed this proposal when it was updated: it was made before Mehen kept which credential each name meant${slugs.length ? ` (it named ${slugs.join(", ")})` : ""}, so it cannot be signed. The machine can propose again.`
+}
+// A mandate renewed or copied: its terms are shown, not filled in.
+export const MANDATE_SOURCE_RENEW_WORDS = "You are signing again a mandate this machine had. The form starts on the narrowest terms; its old terms were:"
+export function mandateSourceFromWords(machine: string): string {
+  return `You are copying terms from ${machine}'s mandate. The form starts on the narrowest terms; those terms are:`
+}
+export const MANDATE_SOURCE_PROPOSAL_WORDS = "This proposal can no longer be signed as it stands. The form starts on the narrowest terms; it proposed:"
+// The credentials a renewed, copied or closed source named that the form
+// cannot offer now: the machine cannot reach them, or the reader does not
+// manage where they live. formerNames: a proposal's names from before Mehen kept
+// which credential each meant, never matched to today's credentials.
+export function mandateSourceUnavailableWords(unavailable: number, formerNames: readonly string[]): string {
+  if (formerNames.length > 0) return `It named ${joinWords(formerNames)} before Mehen kept which credential each name meant, so those are not matched to the credentials here now.`
+  return unavailable === 1 ? "One credential it named cannot be included in this mandate now." : `${unavailable} credentials it named cannot be included in this mandate now.`
+}
+export const MANDATE_USE_SOURCE_BUTTON = "Use these terms"
 export const MANDATE_PROPOSAL_SUPERSEDED_WORDS = "This proposal closed because a mandate was signed for this machine since. You may still sign these terms to replace it."
 export function mandateNotOwnerWords(owner: string): string {
   return `Only ${owner} can let this machine carry on without asking.`
@@ -1640,12 +1660,16 @@ export const MANDATE_PAUSE_ANYTIME_WORDS = "You can pause it from here or from t
 // timeZone: the reader's, when the page knows it.
 export type MandateSummaryInput = { machine: string; classes: readonly MandateClass[]; caps: Readonly<Record<MandateClass, number>>; items: "all" | readonly string[]; endsAt: string | number; schedule: MandateSchedule | null; timeZone?: string }
 const NAMED_ITEMS_MAX = 5
+function summaryItemWords(items: "all" | readonly string[]): string {
+  return items === "all" ? "every credential it can use whose home you manage, now and later"
+    : items.length === 0 ? "no credential that can be included now"
+    : items.length === 1 ? (items[0] ?? "")
+    : items.length <= NAMED_ITEMS_MAX ? `${items.length} credentials, ${joinWords(items)}`
+    : `${items.length} credentials`
+}
 export function mandateSummaryWords(input: MandateSummaryInput): string[] {
   const ticked = MANDATE_CLASS_ORDER.filter((c) => input.classes.includes(c))
-  const items = input.items === "all" ? "every credential it can use whose home you manage, now and later"
-    : input.items.length === 1 ? (input.items[0] ?? "")
-    : input.items.length <= NAMED_ITEMS_MAX ? `${input.items.length} credentials, ${joinWords(input.items)}`
-    : `${input.items.length} credentials`
+  const items = summaryItemWords(input.items)
   const caps = joinWords(ticked.map((c) => countWords(input.caps[c], c)))
   const when = input.schedule !== null ? `, only ${mandateScheduleWords(input.schedule)}` : ""
   return [

@@ -56,6 +56,10 @@ Kinds: api-key, bearer-token, basic-auth, custom-headers, oauth-client, oauth-co
 
 Some requests need a human's approval first (sending email, deleting things). The command exits 3 with the ask: the approval page for the human and a short binding code the page also shows. Share both, run `mehen wait <apr_id> --timeout 60 --json`, then repeat exactly the same request (you may add `--approval <apr_...>`; the vault matches the grant by the request's digest). You cannot approve anything yourself.
 
+## Mandates
+
+`mehen mandate propose --note "<why>" --json` asks a person to let this machine's held requests through without asking. By default it names the credentials and kinds this machine asked for in the last 30 days, with read, for 30 days at low caps. The vault refuses every credential, a credential or kind besides read not asked for in that time, more days or higher caps (`forbidden`, `mandateRefused`): drop what the message names. Only the person signing may widen the terms. Write the block and keep asking for each request as usual.
+
 ## What `next` means
 
 Refusals include a reason. The CLI adds a next step where it can: a command, a human link or advice. Some problems need a human to repair the setup. With `--json`, errors are printed to stdout as `{ "error", "message", "next", "ask"? }`; without it, a readable line, the next step and the ask block go to stderr. `next` has:

@@ -320,7 +320,7 @@ function cappedLine(capped: MandateCappedAsk | null): Html {
 function coverLine(slug: string, cover: MandateCoverAsk | null): Html {
   if (cover === null) return html``
   if (cover.state !== "sign" && cover.mandate !== null) return html`<p class="small" data-region="mandate-cover">${MANDATE_COVER_HELD_WORDS[cover.state]} <a href="${workspaceHref(slug, `/mandates/${encodeURIComponent(cover.mandate)}`)}">${MANDATE_OPEN_LINK}</a></p>`
-  return html`<p class="small" data-region="mandate-cover"><a href="${workspaceHref(slug, `/sign-mandate?device=${encodeURIComponent(cover.device.id)}&classes=${cover.classes.join(",")}`)}">${cardText(mandateCoverWords(cover.device.name))}</a></p>`
+  return html`<p class="small" data-region="mandate-cover"><a href="${workspaceHref(slug, `/sign-mandate?device=${encodeURIComponent(cover.device.id)}`)}">${cardText(mandateCoverWords(cover.device.name))}</a></p>`
 }
 
 function detailPage(view: ApprovalDetail, origin: string, viewer: Viewer, run: ReturnType<typeof runCredentials>, slugs: ReadonlyMap<string, string>, changed: boolean, now: number, pushedValue: PushedValueFacts | null, capped: MandateCappedAsk | null, cover: Html): { body: Html; bar: boolean; approving: boolean; rule: OfferedRule | null; area: OfferedArea | null } {

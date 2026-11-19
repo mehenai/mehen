@@ -105,10 +105,11 @@ it("fresh schema route sweep: every /v1 route called by the CLI and its real wor
     await body(await call("GET", "/v1/workloads/:id", `/v1/workloads/${workload.workload}`))
     await body(await call("POST", "/v1/workloads/:id/renew", `/v1/workloads/${workload.workload}/renew`, {}))
     await body(await call("DELETE", "/v1/workloads/:id", `/v1/workloads/${workload.workload}`))
-    // The CLI does not call the mandate routes yet; each still reaches its op.
-    const proposed = await body<{ id: string; url: string }>(await call("POST", "/v1/mandates/proposals", "/v1/mandates/proposals", { terms: { items: "all", classes: ["read"], caps: { read: 100, change: 0, send: 0, delete: 0 }, ttlDays: 7, schedule: null, note: "Smoke test" }, reason: "Smoke test" }), 201)
-    expect(proposed.url).toBe(`${f.env.VAULT_ORIGIN}/w/northwind/sign-mandate?proposal=${proposed.id}`)
-    expect(await body(await call("GET", "/v1/mandates"))).toEqual({ mandates: [], proposals: [expect.objectContaining({ id: proposed.id, url: proposed.url, classes: ["read"], items: "all" })] })
+    // This machine asked for nothing a mandate could cover, so a proposal of
+    // its own is refused, and every credential always is.
+    expect(await body(await call("GET", "/v1/mandates/asked"))).toEqual({ items: [], classes: [] })
+    expect(await body(await call("POST", "/v1/mandates/proposals", "/v1/mandates/proposals", { terms: { items: "all", classes: ["read"], caps: { read: 100, change: 0, send: 0, delete: 0 }, ttlDays: 7, schedule: null, note: "Smoke test" }, reason: "Smoke test" }), 403)).toMatchObject({ error: "forbidden", mandateRefused: "items_all" })
+    expect(await body(await call("GET", "/v1/mandates"))).toEqual({ mandates: [], proposals: [] })
     expect((await call("GET", "/v1/mandates/:id", "/v1/mandates/mdt_missing123")).status).toBe(404)
     expect((await call("GET", "/v1/mandates/:id/uses", "/v1/mandates/mdt_missing123/uses")).status).toBe(404)
     expect((await call("POST", "/v1/mandates/:id/pause", "/v1/mandates/mdt_missing123/pause", { rev: 1 })).status).toBe(404)

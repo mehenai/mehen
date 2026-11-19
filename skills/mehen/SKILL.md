@@ -58,7 +58,7 @@ On approval required, say what you want to do, then the block; `next.say` names 
 
 Either way write the block, then `mehen wait <pol_id> --timeout 60 --json`. Only the human's passkey turns one on: it is on when `mehen wait` returns `approved` with `rule`; `ruleProposal` or stage `co-sign` means a manager must still co-sign. Neither covers sends, payments, sharing, deletes, credential or access changes, protected credentials or environments, live keys or anything in a managed workspace. Switched off, or refused: do not propose it again; ask as usual. A 409 saying the rule ended: send once more, which asks; never loop.
 
-The third time the same kind of ask carries `mandateCover` with state `none` or `unticked`, watched or not, propose a mandate (`mehen mandate propose --note "<why>" --json`, MCP `vault_mandate`) and write the block; never without it. Any other state: hand the person its `url`.
+The third time the same kind of ask carries `mandateCover` with state `none` or `unticked`, watched or not, propose a mandate (`mehen mandate propose --note "<why>" --json`, MCP `vault_mandate`; it names only what this machine asked for, and the vault refuses more) and write the block; never without it. Any other state: hand the person its `url`.
 
 `mehen fetch` names the rule, task grant, posture or mandate that let a request through; `mehen show` and `mehen check` only hint: the vault decides.
 
@@ -106,7 +106,7 @@ Never open, print or grep a `.env` file or any other credential file for its val
 - **Approval is the human's passkey:** after submit, write "**Needs you in the vault:**" with the review link from `ask` and stop. `mehen wait <adp_id> --timeout 60 --json` says when they have decided; a timeout means wait again.
 - **After approval:** `mehen adopt apply`, then `mehen adopt verify --json`; relay every gap and failed check.
 - **Retiring originals is the human's step:** `mehen adopt retire --json` (a dry run) says which files are ready and why the others are held; relay it. Never `--yes` unless the human asked for it in this conversation; `mehen adopt unretire` puts files back.
-- **Never delete, move or edit an original file**, even after verify passes. Removing them is the human's decision.
+- **Never delete, move or edit an original file**, even after verify passes.
 - **Just one key:** `mehen request` with `--home project` in the checkout (a private credential cannot back a project variable); the human pastes it from their own copy. Then `mehen env set <NAME> --env <env> --item <slug>`.
 - Guides: https://docs.mehen.dev/guides/adopt.md (many at once) and https://docs.mehen.dev/guides/existing-keys.md (one at a time).
 
@@ -120,4 +120,4 @@ Template items allow reads; other methods ask unless the template allows that na
 
 ## Updating
 
-Installed release builds with a compiled trusted release key check for signed updates automatically; a build with no trusted key updates nothing. Never reinstall over an installed `mehen`: `mehen update --json` brings it to the current release now, and its signature is checked. `cli_outdated` (exit 1) means the vault needs a newer `mehen`: it has usually updated itself already, so run `next.command`; if it still fails, run `mehen update --json` once and retry. A running MCP server switches to the new version in place (`vault_status` `cli.mcp.action` is `switch`); restart the agent only when it is `restart`.
+Installed release builds with a compiled trusted release key check for signed updates automatically; a build with no trusted key updates nothing. Never reinstall over an installed `mehen`: `mehen update --json` updates it now, signature checked. `cli_outdated` (exit 1) means the vault needs a newer `mehen`: it has usually updated itself already, so run `next.command`; if it still fails, run `mehen update --json` once and retry. A running MCP server switches to the new version in place (`vault_status` `cli.mcp.action` is `switch`); restart the agent only when it is `restart`.

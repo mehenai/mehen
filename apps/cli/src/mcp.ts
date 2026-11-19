@@ -57,7 +57,7 @@ const INSTRUCTIONS =
   "This server may use several workspaces; `vault_status` lists them; pass `workspace` when it lists more than one and the checkout does not bind one."
 
 function listed(t: (typeof TOOLS)[number]): Record<string, unknown> {
-  const { $schema: _schema, ...inputSchema } = z.toJSONSchema(t.input, { io: "input" }) as Record<string, unknown>
+  const { $schema: _schema, ...inputSchema } = z.toJSONSchema(t.advertised ?? t.input, { io: "input" }) as Record<string, unknown>
   return { name: t.name, title: t.title, description: t.description, inputSchema, ...(t.output ? { outputSchema: t.output } : {}), annotations: t.annotations }
 }
 

@@ -188,7 +188,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
         if (ruleable && asked.created_at >= askedFrom) countPostureAsk(ctx, principal, credential, held)
         // Only for the machine itself, never beside a cap's line.
         const cover = ruleable && !managed && !capped ? mandateCoverHint(ctx, principal, credential, held, invocation.workspace.slug) : null
-        if (cover && asked.created_at >= askedFrom) recordMandateCoverAsk(ctx, asked.id, principal.deviceId, cover)
+        if (cover && asked.created_at >= askedFrom) recordMandateCoverAsk(ctx, asked.id, principal.deviceId, credential.id, cover)
         if (plan) {
           plan.asked = asked
           plan.cover = cover
