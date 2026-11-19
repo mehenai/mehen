@@ -17,9 +17,13 @@ const API = "/ex/jira/*/rest/api/3"
 // with their statuses, components and versions, issue types, fields,
 // priorities, statuses, resolutions, users and filters). Every other read
 // asks. Creating, editing and moving issues, comments and everything else
-// need an approval. Webhooks, users, groups, project roles and role
-// actors, permission schemes, issue security schemes, filter permissions
-// and deleting a project are refused.
+// need an approval. Webhooks, users, groups, project roles, global roles
+// and their actors, permission schemes, issue security schemes, updating a
+// project (its body can set the permission and issue security schemes, and
+// no body rule can yet prove it does not), creating or updating a filter
+// (its body takes share and edit permissions), the default share scope,
+// filter permissions and deleting a project, at once or asynchronously,
+// are refused.
 // https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/
 export const jira: Template = {
   id: "jira",
@@ -69,7 +73,7 @@ export const jira: Template = {
           `${API}/user/**`,
           `${API}/group/**`,
           `${API}/project/*/role/**`,
-          `${API}/role/*/actors/**`,
+          `${API}/role/**`,
           `${API}/permissionscheme/**`,
           `${API}/project/*/permissionscheme/**`,
           `${API}/issuesecurityschemes/**`,
@@ -78,7 +82,15 @@ export const jira: Template = {
         ],
         note: "users, groups, roles, permission and issue security schemes, and filter sharing give someone else access",
       },
+      {
+        action: "deny",
+        methods: ["POST", "PUT"],
+        paths: [`${API}/filter`, `${API}/filter/*`],
+        note: "creates or updates a filter, whose body takes share and edit permissions, or sets the default share scope",
+      },
+      { action: "deny", methods: ["PUT"], paths: [`${API}/project/*`], note: "updates a project, whose body can set its permission and issue security schemes" },
       { action: "deny", methods: ["DELETE"], paths: [`${API}/project/*`], note: "deletes a project and its issues" },
+      { action: "deny", methods: ["POST"], paths: [`${API}/project/*/delete`], note: "deletes a project and its issues, asynchronously" },
     ],
   },
   ceiling: "relay",

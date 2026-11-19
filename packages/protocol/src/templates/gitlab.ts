@@ -7,15 +7,17 @@ const API = "/api/v4"
 // PRIVATE-TOKEN header. Self-managed instances have their own hosts and
 // are not bound. A project is named by its numeric id: the binding refuses
 // the URL-encoded "group%2Fproject" form, as it refuses every encoded
-// slash. Without a human: the named reads (the user, projects and groups,
-// repository contents, issues, merge requests, pipelines and jobs,
+// slash. Without a human: the named reads (the user, repository contents, issues, merge requests, pipelines and jobs,
 // releases, labels, milestones, members, environments, deployments,
 // to-dos, namespaces and search). Every other read asks, and those that
-// hand back a secret are pinned to an approval: CI/CD, pipeline and
+// hand back a secret are pinned to an approval: project and group lists
+// and details (they carry runners_token, and a path rule cannot require
+// simple=true), CI/CD, pipeline and
 // schedule variables, secure files, trigger tokens, deploy and access
 // tokens, cluster agents, webhooks, integrations and push mirrors. Every
 // write needs an approval, and GraphQL queries too, since a query can read
-// CI/CD variable values; GraphQL mutations are refused. Webhooks, SSH, GPG
+// CI/CD variable values; anything but one plain query (a mutation, several
+// operations, a "_json" multiplex batch, any other key) is refused. Webhooks, SSH, GPG
 // and deploy keys, every kind of access token, deploy and trigger tokens,
 // runners, members, invitations, sharing and access requests, service
 // accounts, protected branches, tags and environments, transfers, push
@@ -38,8 +40,6 @@ export const gitlab: Template = {
           `${API}/user`,
           `${API}/version`,
           `${API}/personal_access_tokens/self`,
-          `${API}/projects`,
-          `${API}/projects/*`,
           `${API}/projects/*/repository/**`,
           `${API}/projects/*/issues/**`,
           `${API}/projects/*/merge_requests/**`,
@@ -55,8 +55,6 @@ export const gitlab: Template = {
           `${API}/projects/*/deployments/**`,
           `${API}/projects/*/search`,
           `${API}/groups`,
-          `${API}/groups/*`,
-          `${API}/groups/*/projects`,
           `${API}/groups/*/issues`,
           `${API}/groups/*/merge_requests`,
           `${API}/issues`,
@@ -65,12 +63,16 @@ export const gitlab: Template = {
           `${API}/namespaces/**`,
           `${API}/search`,
         ],
-        "reads of projects, groups, code, issues, merge requests, pipelines and jobs",
+        "reads of code, issues, merge requests, pipelines and jobs",
       ),
       {
         action: "approve",
         methods: READS,
         paths: [
+          `${API}/projects`,
+          `${API}/projects/*`,
+          `${API}/groups/*`,
+          `${API}/groups/*/projects`,
           `${API}/projects/*/variables/**`,
           `${API}/groups/*/variables/**`,
           `${API}/admin/ci/variables/**`,
@@ -89,10 +91,10 @@ export const gitlab: Template = {
           `${API}/projects/*/remote_mirrors/**`,
           `${API}/runners/**`,
         ],
-        note: "variables, secure files, tokens, hooks, integrations and mirrors hand back secrets",
+        note: "projects and groups (runners_token), variables, secure files, tokens, hooks, integrations and mirrors hand back secrets",
       },
       { action: "approve", paths: ["/api/graphql"], note: "GraphQL requests, since a query can read CI/CD variable values" },
-      { action: "deny", paths: ["/api/graphql"], body: "graphql-mutation", note: "GraphQL requests that are not plainly a query" },
+      { action: "deny", paths: ["/api/graphql"], body: "graphql-mutation", note: "GraphQL requests that are not exactly one plain query" },
       { action: "deny", methods: WRITES, paths: [`${API}/projects/*/hooks/**`, `${API}/groups/*/hooks/**`, `${API}/hooks/**`], note: "webhooks" },
       {
         action: "deny",

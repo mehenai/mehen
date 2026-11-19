@@ -6,17 +6,18 @@ import { NAMED_READS, READS, WRITES } from "./shared.ts"
 // instead and is not bound. Without a human: the named reads (incidents
 // and their log entries, notes and alerts, on-calls, schedules,
 // escalation policies, teams, users, business services, maintenance
-// windows, priorities and abilities). Services are not named: with
-// include[]=integrations a service read returns integration keys, and a
-// rule cannot read the query. Every other read asks, and those that return
-// routing or integration keys are pinned to an approval: event
-// orchestrations, rulesets, service integrations, automation runners,
-// extensions and webhook subscriptions. Triggering,
+// windows, priorities and abilities). Every other read asks, and those
+// that can return a key are pinned to an approval, since a rule cannot read
+// the query string that asks for it: services (integration keys with
+// include[]=integrations), log entries (a channel's service_key with
+// include[]=channels), event orchestrations, rulesets, service
+// integrations, automation runners, extensions and webhook subscriptions. Triggering,
 // acknowledging and resolving incidents and everything else need an
 // approval; creating an incident, its status updates and responder
 // requests are pinned to one, since they page people. Users (their roles,
 // contact methods and notification rules), team membership, webhooks and
-// extensions, creating integrations or automation runners, and OAuth
+// extensions, creating event orchestrations (each mints an integration
+// with a routing key), integrations or automation runners, and OAuth
 // delegations are refused.
 // https://developer.pagerduty.com/api-reference/
 export const pagerduty: Template = {
@@ -34,7 +35,6 @@ export const pagerduty: Template = {
         [
           "/incidents",
           "/incidents/*",
-          "/incidents/*/log_entries",
           "/incidents/*/notes",
           "/incidents/*/alerts",
           "/incidents/*/alerts/*",
@@ -50,8 +50,6 @@ export const pagerduty: Template = {
           "/teams/*/members",
           "/users",
           "/users/*",
-          "/log_entries",
-          "/log_entries/*",
           "/business_services",
           "/business_services/*",
           "/maintenance_windows/**",
@@ -63,8 +61,20 @@ export const pagerduty: Template = {
       {
         action: "approve",
         methods: READS,
-        paths: ["/event_orchestrations/**", "/rulesets/**", "/services/*/integrations/**", "/automation_actions/runners/**", "/extensions/**", "/webhook_subscriptions/**"],
-        note: "orchestrations, rulesets, integrations, runners and webhooks hand back routing and integration keys",
+        paths: [
+          "/services",
+          "/services/*",
+          "/services/*/integrations/**",
+          "/log_entries",
+          "/log_entries/*",
+          "/incidents/*/log_entries",
+          "/event_orchestrations/**",
+          "/rulesets/**",
+          "/automation_actions/runners/**",
+          "/extensions/**",
+          "/webhook_subscriptions/**",
+        ],
+        note: "services, log entries, orchestrations, rulesets, integrations, runners and webhooks can hand back routing, service and integration keys",
       },
       { action: "approve", methods: ["POST"], paths: ["/incidents", "/incidents/*/status_updates", "/incidents/*/responder_requests"], note: "pages people or messages subscribers" },
       { action: "deny", methods: WRITES, paths: ["/users/**"], note: "users, their roles, contact methods and notification rules decide who gets paged" },
@@ -73,8 +83,8 @@ export const pagerduty: Template = {
       {
         action: "deny",
         methods: WRITES,
-        paths: ["/services/*/integrations/**", "/event_orchestrations/*/integrations/**", "/automation_actions/runners/**"],
-        note: "creates or changes an integration or automation runner, each of which carries a key",
+        paths: ["/event_orchestrations", "/services/*/integrations/**", "/event_orchestrations/*/integrations/**", "/automation_actions/runners/**"],
+        note: "creates an event orchestration, or creates or changes an integration or automation runner, each of which carries a key",
       },
       { action: "deny", methods: WRITES, paths: ["/oauth_delegations/**"], note: "OAuth grants" },
     ],

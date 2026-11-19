@@ -83,16 +83,16 @@ function jsonStringEnd(text: string, start: number): number {
   return text.length
 }
 
-// True unless the body is a GraphQL-over-HTTP JSON request whose query
-// document, read in full, holds no mutation or subscription. An empty or
-// non-UTF-8 body, invalid JSON, a repeated key, a batch (an array), or a
-// missing or unreadable query all count as a mutation.
+// True unless the body is exactly the envelope graphqlIsQuery accepts: one
+// plain query, with only "variables" and "operationName" beside it. Anything
+// else counts as a mutation: an empty or non-UTF-8 body, invalid JSON, a
+// repeated key, a batch (an array), a missing or unreadable query, several
+// operations, and any other key, since a server may run what it holds
+// (GitLab executes a "_json" array of operations even beside a harmless
+// top-level "query", and persisted-query keys name a document the body
+// does not show).
 export function graphqlMayMutate(body: Uint8Array | null): boolean {
-  const request = graphqlRequestOf(body)
-  if (request === null) return true
-  const query = request.query
-  if (typeof query !== "string") return true
-  return graphqlDocumentMayMutate(query)
+  return !graphqlIsQuery(body)
 }
 
 // True only for a GraphQL-over-HTTP JSON request that holds nothing but
