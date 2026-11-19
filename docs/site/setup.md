@@ -53,7 +53,7 @@ curl -fsSL https://mehen.dev/install | sh
 
 The last line is the receipt: `mehen-install: {"v":1,"result":"installed","path":"/abs/path/mehen",...}`. **Use that `path` for every command in this conversation.** If `result` is `already-installed`, a `mehen` was there after all: use its `path` and run `mehen update --json` as above. Do not edit shell files; the installer has done what it can for new shells, and the agents you register get the absolute path.
 
-Never run the installer on a machine that already has Mehen, and never as a way around a refused update: an installed `mehen` verifies its own updates; the installer cannot. Stop and tell the human when the platform is unsupported (Mehen needs macOS, or Linux with glibc, WSL included, on arm64 or x64; musl-based Linux and native Windows are not supported; the installer needs `curl` and `shasum` or `sha256sum`) or the installer reports a checksum failure. Never bypass a checksum.
+Never run the installer on a machine that already has Mehen, and never as a way around a refused update: an installed `mehen` verifies its own updates and refuses an older release; the installer checks the release's signature and checksums, but has no record of what was installed before. Stop and tell the human when the platform is unsupported (Mehen needs macOS, or Linux with glibc, WSL included, on arm64 or x64; musl-based Linux and native Windows are not supported; the installer needs `curl`, `openssl`, and `shasum` or `sha256sum`) or the installer reports a signature or checksum failure. Never bypass a signature or a checksum.
 
 ## A vault on this machine
 

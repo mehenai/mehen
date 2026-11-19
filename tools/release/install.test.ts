@@ -1,9 +1,37 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { realpathSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { canonicalJson } from "../../packages/protocol/src/canonical-json.ts"
+import { RELEASE_KEYS } from "../../packages/protocol/src/release-keys.ts"
+import { installerKeyLine } from "./keys.ts"
+
+// The test release key, which the installer trusts only for a loopback
+// download base (MEHEN_INSTALL_TEST_RELEASE_KEY), and every manifest the
+// server gives signed with it the way tools/release/sign.ts signs one: ES256
+// over the canonical JSON without `signatures`.
+let testKey: CryptoKeyPair
+let testSpki = ""
+const b64url = (bytes: ArrayBuffer) => Buffer.from(bytes).toString("base64url")
+beforeAll(async () => {
+  testKey = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair
+  testSpki = Buffer.from(await crypto.subtle.exportKey("spki", testKey.publicKey)).toString("base64")
+})
+async function sign(unsigned: Record<string, unknown>, key: CryptoKey = testKey.privateKey): Promise<string> {
+  return b64url(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(canonicalJson(unsigned))))
+}
+// Signed, then laid out as JSON.stringify would, keys in the order given:
+// never the canonical bytes, so the installer must rebuild them itself.
+let tamper: (manifest: Record<string, unknown>) => Record<string, unknown> = (m) => m
+let shape: (manifest: Record<string, unknown>) => Record<string, unknown> = (m) => m
+async function signedManifest(given: Record<string, unknown>): Promise<string> {
+  const unsigned = shape(given)
+  const signatures = mode === "unsigned" ? [] : mode === "other-key" ? [{ keyId: "rk-other", alg: "ES256", signature: await sign(unsigned) }] : [{ keyId: "rk-test", alg: "ES256", signature: await sign(unsigned) }]
+  const bad = mode === "bad-signature" ? signatures.map((x) => ({ ...x, signature: `${x.signature.slice(0, 40)}${x.signature[40] === "A" ? "B" : "A"}${x.signature.slice(41)}` })) : signatures
+  return JSON.stringify(tamper({ ...unsigned, signatures: bad }), null, 2)
+}
 
 // Every run gets a private temporary HOME and install directory and a
 // minimal environment: the real HOME, ZDOTDIR and shell files are never
@@ -23,6 +51,8 @@ beforeEach(async () => {
   mode = "ok"
   delay = 0
   requests = []
+  tamper = (m) => m
+  shape = (m) => m
   raw = new TextEncoder().encode("#!/bin/sh\necho mehen fixture\n")
   gz = Bun.gzipSync(raw)
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
@@ -32,14 +62,14 @@ beforeEach(async () => {
     if (path.endsWith(".json") && mode === "null") return new Response("null")
     if (path.endsWith(".json") && mode === "escaped") return new Response('{"version":"1.2.\\u0033"}')
     if (!path.endsWith(".json") && mode === "binary-http") return new Response("No", { status: 404 })
-    if (path.endsWith(".json")) return Response.json({ version: "1.2.3", commit: "a53a3de", builtAt: "2026-10-27", files: ["mehen-linux-x64", "mehen-linux-arm64", "mehen-darwin-arm64", "mehen-darwin-x64", "mehen-se"].map(name => ({ name, os: name.includes("linux") ? "linux" : "darwin", arch: "arm64", url: `https://mehen.dev/dl/v1.2.3/${name}.gz`, sha256: mode === "invalid-checksum" ? "bad" : mode === "raw" ? "0".repeat(64) : hash(raw), size: mode === "empty-size" ? "" : mode === "bad-size" ? "2x" : raw.length, gzSha256: mode === "checksum" ? "0".repeat(64) : hash(gz), gzSize: mode === "empty-gzsize" ? "" : gz.length })), signatures: [{ keyId: "rk-test", alg: "ES256", signature: "A".repeat(86) }] })
+    if (path.endsWith(".json")) return new Response(await signedManifest({ version: "1.2.3", commit: "a53a3de", builtAt: "2026-10-27", files: ["mehen-linux-x64", "mehen-linux-arm64", "mehen-darwin-arm64", "mehen-darwin-x64", "mehen-se"].map(name => ({ name, os: name.includes("linux") ? "linux" : "darwin", arch: "arm64", url: `https://mehen.dev/dl/v1.2.3/${name}.gz`, sha256: mode === "invalid-checksum" ? "bad" : mode === "raw" ? "0".repeat(64) : hash(raw), size: mode === "empty-size" ? "" : mode === "bad-size" ? "2x" : raw.length, gzSha256: mode === "checksum" ? "0".repeat(64) : hash(gz), gzSize: mode === "empty-gzsize" ? "" : gz.length })) }), { headers: { "content-type": "application/json" } })
     if (delay) await Bun.sleep(delay)
     return new Response(mode === "truncated" ? gz.slice(0, 8) : gz)
   } })
 })
 afterEach(async () => { server.stop(true); await rm(root, { recursive: true, force: true }) })
 async function run(shell = "sh", env: Record<string, string> = {}, args: string[] = []) {
-  const proc = Bun.spawn([Bun.which(shell)!, resolve(import.meta.dir, "install.sh"), ...args], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, SHELL: "/bin/sh", MEHEN_INSTALL_DIR: join(root, "bin"), MEHEN_DL_BASE: `http://127.0.0.1:${server.port}`, ...env }, stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn([Bun.which(shell)!, resolve(import.meta.dir, "install.sh"), ...args], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, SHELL: "/bin/sh", MEHEN_INSTALL_DIR: join(root, "bin"), MEHEN_DL_BASE: `http://127.0.0.1:${server.port}`, MEHEN_INSTALL_TEST_RELEASE_KEY: `rk-test ${testSpki}`, ...env }, stdout: "pipe", stderr: "pipe" })
   const stdout = await new Response(proc.stdout).text()
   const stderr = await new Response(proc.stderr).text()
   return { code: await proc.exited, stdout, stderr }
@@ -246,7 +276,7 @@ describe("the lock and rollback", () => {
 
     test(`${shell}: the installer's lock is a 0700 directory with a 0600 owner file, whatever the umask`, async () => {
       delay = 800
-      const installer = Bun.spawn([Bun.which(shell)!, "-c", `umask 000; exec '${Bun.which(shell)}' '${resolve(import.meta.dir, "install.sh")}'`], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, SHELL: "/bin/sh", MEHEN_INSTALL_DIR: bin(), MEHEN_DL_BASE: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe" })
+      const installer = Bun.spawn([Bun.which(shell)!, "-c", `umask 000; exec '${Bun.which(shell)}' '${resolve(import.meta.dir, "install.sh")}'`], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, SHELL: "/bin/sh", MEHEN_INSTALL_DIR: bin(), MEHEN_DL_BASE: `http://127.0.0.1:${server.port}`, MEHEN_INSTALL_TEST_RELEASE_KEY: `rk-test ${testSpki}` }, stdout: "pipe", stderr: "pipe" })
       const lock = join(bin(), ".mehen.update.lock")
       for (let i = 0; i < 300 && !(await Bun.file(join(lock, "owner.json")).exists()); i++) await Bun.sleep(10)
       const { stat } = await import("node:fs/promises")
@@ -579,4 +609,112 @@ describe("PATH persistence", () => {
       expect(await Bun.file(join(root, ".zshenv")).exists()).toBe(false)
     })
   }
+})
+
+describe("the manifest's signature, checked before any hash in it", () => {
+  const nothingInstalled = async () => {
+    expect(await readdir(bin()).catch(() => [] as string[])).toEqual([])
+    expect(requests.filter((p) => p.endsWith(".gz"))).toEqual([])
+  }
+
+  for (const shell of shells) {
+    test(`${shell}: a good signature over a manifest laid out any way installs`, async () => {
+      // Keys out of order, extra fields the release tool may add, one that
+      // sorts differently with and without its quotes, and a value that is
+      // not ASCII: all covered by the signature, all rebuilt byte for byte.
+      shape = ({ files, ...rest }) => ({ files, zeta: "z", "a!": "punct", a: "plain", note: "caf\u00e9 \u2713", nested: { b: [1, 2, { y: "y", x: "x" }], a: 0 }, ...rest })
+      const good = await run(shell)
+      expect(good.stderr).toBe("")
+      expect(good.code).toBe(0)
+      expect(receipt(good.stdout)).toMatchObject({ result: "installed", version: "1.2.3" })
+    })
+
+    test(`${shell}: a manifest changed after signing is refused before any binary is fetched`, async () => {
+      tamper = (m) => ({ ...m, files: (m.files as Record<string, unknown>[]).map((f) => ({ ...f, sha256: "f".repeat(64) })) })
+      const refused = await run(shell)
+      expect(refused.code).toBe(2)
+      expect(refused.stderr).toContain("signature does not verify against Mehen's release key (rk-test), so nothing was installed")
+      await nothingInstalled()
+    })
+
+    for (const [name, words] of [["bad-signature", "signature does not verify"], ["other-key", "signature does not verify"], ["unsigned", "is not signed"]] as const) {
+      test(`${shell}: ${name} is refused before any binary is fetched`, async () => {
+        mode = name
+        const refused = await run(shell)
+        expect(refused.code).toBe(2)
+        expect(refused.stderr).toContain(words)
+        await nothingInstalled()
+      })
+    }
+
+    test(`${shell}: what the installer cannot rebuild exactly is refused, not guessed at`, async () => {
+      for (const odd of [(m: Record<string, unknown>) => ({ ...m, extra: 1.5 }), (m: Record<string, unknown>) => ({ ...m, extra: true }), (m: Record<string, unknown>) => ({ ...m, extra: "line\\nbreak" })]) {
+        tamper = odd
+        const refused = await run(shell)
+        expect(refused.code).toBe(2)
+        expect(refused.stderr).toContain("Invalid release manifest")
+        await nothingInstalled()
+      }
+    })
+  }
+
+  test("a duplicate key, which JSON.parse would resolve one way and a shell another, is refused", async () => {
+    server.stop(true)
+    const unsigned = { version: "1.2.3", commit: "a", builtAt: "b", files: [] }
+    const body = `{"version":"1.2.3","commit":"a","builtAt":"b","files":[],"version":"9.9.9","signatures":[{"keyId":"rk-test","alg":"ES256","signature":"${await sign(unsigned)}"}]}`
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => { requests.push(new URL(req.url).pathname); return new Response(body) } })
+    const refused = await run("sh")
+    expect(refused.code).toBe(2)
+    expect(refused.stderr).toContain("Invalid release manifest")
+  })
+
+  test("the pinned key is the compiled release key, and the real 0.4.0 manifest verifies with it; tampered, it does not", async () => {
+    const script = await readFile(resolve(import.meta.dir, "install.sh"), "utf8")
+    const pinned = await Promise.all(RELEASE_KEYS.map(installerKeyLine))
+    expect(/^release_keys='([^']*)'$/m.exec(script)?.[1]).toBe(pinned.join("\n"))
+    const key = RELEASE_KEYS[0]!
+    const real = await readFile(resolve(import.meta.dir, "fixtures/manifest-0.4.0.json"), "utf8")
+    const serve = (body: string) => {
+      server.stop(true)
+      requests = []
+      server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => { const p = new URL(req.url).pathname; requests.push(p); return p.endsWith(".json") ? new Response(body) : new Response("No", { status: 404 }) } })
+    }
+    // No test key: the pinned one. The signature passes, so the binary is asked for (and refused by this server).
+    serve(real)
+    const verified = await run("sh", { MEHEN_INSTALL_TEST_RELEASE_KEY: "" })
+    expect(verified.stderr).toContain("Binary download failed")
+    expect(requests.some((p) => p.endsWith(".gz"))).toBe(true)
+    serve(real.replace(/"sha256": "[0-9a-f]/, '"sha256": "0'))
+    const tampered = await run("sh", { MEHEN_INSTALL_TEST_RELEASE_KEY: "" })
+    expect(tampered.stderr).toContain(`signature does not verify against Mehen's release key (${key.id})`)
+    expect(requests.some((p) => p.endsWith(".gz"))).toBe(false)
+  })
+
+  test("a signature by any one of several trusted keys is enough, as for the updater", async () => {
+    const second = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair
+    const secondSpki = Buffer.from(await crypto.subtle.exportKey("spki", second.publicKey)).toString("base64")
+    const good = await run("sh", { MEHEN_INSTALL_TEST_RELEASE_KEY: `rk-new ${secondSpki}\nrk-test ${testSpki}` })
+    expect(good.code).toBe(0)
+    await rm(bin(), { recursive: true, force: true })
+    const refused = await run("sh", { MEHEN_INSTALL_TEST_RELEASE_KEY: `rk-new ${secondSpki}` })
+    expect(refused.stderr).toContain("release key (rk-new)")
+  })
+
+  test("the test key is never trusted for a download base off loopback", async () => {
+    const script = await readFile(resolve(import.meta.dir, "install.sh"), "utf8")
+    expect(script).toMatch(/if \[ "\$loopback" = 1 \] && \[ -n "\$\{MEHEN_INSTALL_TEST_RELEASE_KEY:-\}" \]; then release_keys=/)
+    expect(script.match(/MEHEN_INSTALL_TEST_RELEASE_KEY/g)).toHaveLength(2)
+  })
+
+  test("without openssl it stops and says how to get it", async () => {
+    const tools = join(root, "tools")
+    await mkdir(tools, { recursive: true })
+    for (const name of ["uname", "sha256sum", "shasum", "curl", "awk", "sed", "mkdir", "cat", "id", "date", "ls", "tr", "cut", "getconf", "ldd", "grep", "rm", "dirname"]) {
+      const at = Bun.which(name)
+      if (at) await symlink(at, join(tools, name)).catch(() => undefined)
+    }
+    const result = await run("sh", { PATH: tools })
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("openssl is required to check the release signature")
+  })
 })

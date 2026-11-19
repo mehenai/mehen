@@ -9,6 +9,8 @@
 # Order: refuse unsafe paths; create the directory; take the installation
 # lock (.mehen.update.lock, shared with the updater) first; only then decide,
 # download, verify and make one move; roll back on any failure after it.
+# Verify: the manifest's ES256 signature against the pinned release key
+# first, then the binary's size and sha256 from the verified manifest.
 set -eu
 fail() { printf 'mehen-install: %s\n' "$1" >&2; exit 2; }
 say() { if [ "${MEHEN_QUIET:-0}" != 1 ]; then printf '%s\n' "$1"; fi; }
@@ -71,6 +73,7 @@ else
   fail 'A checksum tool is required: shasum or sha256sum.'
 fi
 command -v curl >/dev/null 2>&1 || fail 'curl is required.'
+command -v openssl >/dev/null 2>&1 || fail 'openssl is required to check the release signature. Install it (Debian and Ubuntu: sudo apt install openssl; Fedora: sudo dnf install openssl), then run the installer again.'
 base=${MEHEN_DL_BASE:-https://mehen.dev/dl}
 base=${base%/}
 loopback=0
@@ -399,8 +402,111 @@ fi
 stage=$(mktemp -d "$install_dir/.mehen-update.XXXXXX")
 if [ -n "$version" ]; then manifest="$base/v$version/manifest.json"; else manifest="$base/latest.json"; fi
 curl -fsSL --proto '=https,http' --proto-redir '=https' --retry 2 "$manifest" -o "$stage/manifest.json" || fail 'Manifest download failed.'
-# Release manifests use simple ASCII strings. Tokenise JSON rather than relying
-# on line layout; reject escapes and unexpected syntax rather than guessing.
+# --- the manifest's signature, before any hash in it is trusted ---------------
+# The release tool signs the canonical JSON of the manifest without
+# `signatures` (keys sorted, no whitespace) with a P-256 key (ES256), as
+# packages/protocol/src/release-manifest.ts says; the updater checks the
+# same bytes against the same key. Here awk rebuilds those bytes from the
+# file, refusing anything it cannot reproduce exactly (an escape, a
+# duplicate key, a number that is not a plain integer), and openssl checks
+# the signature against the pinned keys. Every file entry is read from the
+# verified bytes, never from the file as downloaded.
+# The trusted release keys, one "<id> <base64 SPKI>" a line: exactly
+# RELEASE_KEYS in packages/protocol/src/release-keys.ts (install.test.ts
+# holds the two the same), so a key is added or retired here with it.
+release_keys='rk-studio-2026-auto MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEoAh4FhedQUyKlbxmNsVvhPy99A/kR2bF+XnqvjBkGDfeQzYyGgdD9LhIdgst9YFbX3Do2yxsvQGmljHzMgAAKg=='
+if [ "$loopback" = 1 ] && [ -n "${MEHEN_INSTALL_TEST_RELEASE_KEY:-}" ]; then release_keys=$MEHEN_INSTALL_TEST_RELEASE_KEY; fi
+release_key_ids=$(printf '%s\n' "$release_keys" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//')
+# The output paths go through the environment: awk -v would read a
+# backslash in the install directory as an escape.
+MEHEN_I_UNSIGNED="$stage/unsigned.json" MEHEN_I_SIGS="$stage/signatures" LC_ALL=C awk '
+function fail() { bad=1; exit 2 }
+function token(   t) {
+  sub(/^[ \t\r\n]+/, "", s)
+  if (s == "") return ""
+  if (match(s, /^"[^"\\\001-\037]*"/)) { t=substr(s,1,RLENGTH); s=substr(s,RLENGTH+1); return t }
+  if (match(s, /^(0|[1-9][0-9]*)/)) { t=substr(s,1,RLENGTH); s=substr(s,RLENGTH+1); if (length(t) > 15) fail(); return t }
+  t=substr(s,1,1); s=substr(s,2); if (t !~ /^[{}\[\]:,]$/) fail(); return t
+}
+# One value, canonical, from the next token; `top` marks the manifest
+# itself, whose signatures go aside.
+function value(depth, top,   t, n, i, j, k, keys, vals, out, key, v, sep) {
+  if (depth > 8) fail()
+  t = token()
+  if (t ~ /^"/ || t ~ /^[0-9]/) return t
+  if (t == "[") {
+    out = "["; sep = ""
+    if (peek() == "]") { token(); return "[]" }
+    for (;;) {
+      out = out sep value(depth + 1, 0); sep = ","
+      t = token(); if (t == "]") return out "]"; if (t != ",") fail()
+    }
+  }
+  if (t != "{") fail()
+  n = 0
+  if (peek() == "}") { token(); return "{}" }
+  for (;;) {
+    key = token(); if (key !~ /^"[ -~]*"$/) fail()
+    if (token() != ":") fail()
+    v = value(depth + 1, 0)
+    for (i = 1; i <= n; i++) if (keys[i] == key) fail()
+    keys[++n] = key; vals[n] = v
+    t = token(); if (t == "}") break; if (t != ",") fail()
+  }
+  # Sorted by the keys themselves, without their quotes, byte by byte.
+  for (i = 2; i <= n; i++) { k = keys[i]; v = vals[i]; for (j = i - 1; j >= 1 && bare(keys[j]) > bare(k); j--) { keys[j+1] = keys[j]; vals[j+1] = vals[j] } keys[j+1] = k; vals[j+1] = v }
+  out = "{"; sep = ""
+  for (i = 1; i <= n; i++) {
+    if (top && keys[i] == "\"signatures\"") { signatures = vals[i]; continue }
+    out = out sep keys[i] ":" vals[i]; sep = ","
+  }
+  return out "}"
+}
+function bare(q) { return substr(q, 2, length(q) - 2) }
+function peek() { sub(/^[ \t\r\n]+/, "", s); return substr(s, 1, 1) }
+{ s = s $0 "\n" }
+END {
+  if (bad) exit 2
+  if (peek() != "{") exit 2
+  body = value(1, 1)
+  sub(/^[ \t\r\n]+/, "", s); if (s != "") exit 2
+  unsigned = ENVIRON["MEHEN_I_UNSIGNED"]; sigs = ENVIRON["MEHEN_I_SIGS"]
+  printf "%s", body > unsigned
+  rest = signatures
+  if (rest == "" || rest == "[]") exit 3
+  if (rest !~ /^\[/) exit 2
+  while (match(rest, /\{"alg":"ES256","keyId":"[A-Za-z0-9._-]+","signature":"[A-Za-z0-9_-]+"\}/)) {
+    one = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+    sub(/^\{"alg":"ES256","keyId":"/, "", one); sub(/","signature":"/, " ", one); sub(/"\}$/, "", one)
+    print one > sigs; count++
+    if (count > 16) exit 2
+  }
+  if (count == 0) exit 3
+}' "$stage/manifest.json" || {
+  [ $? = 3 ] && fail 'The release manifest is not signed, so nothing was installed.'
+  fail 'Invalid release manifest.'
+}
+# r||s, 64 bytes of base64url, as the DER SEQUENCE openssl reads: each
+# integer without its leading zero bytes, and one zero byte before a high bit.
+signature_der() {
+  printf '%s==' "$1" | tr '_-' '/+' | openssl base64 -d -A 2>/dev/null | od -An -v -tx1 | tr -d ' \n' | LC_ALL=C awk '
+function byte(h) { return index("0123456789abcdef", substr(h,1,1)) * 16 + index("0123456789abcdef", substr(h,2,1)) - 17 }
+function int_(h) { while (length(h) > 2 && substr(h,1,2) == "00") h = substr(h,3); if (byte(substr(h,1,2)) >= 128) h = "00" h; return sprintf("02%02x", length(h) / 2) h }
+{ if (length($0) != 128 || $0 ~ /[^0-9a-f]/) exit 2; r = int_(substr($0,1,64)); s = int_(substr($0,65,64)); der = sprintf("30%02x", (length(r) + length(s)) / 2) r s
+  for (i = 1; i <= length(der); i += 2) printf "\\%03o", byte(substr(der,i,2)) }'
+}
+signed=0
+while read -r key_id signature; do
+  spki=$(printf '%s\n' "$release_keys" | awk -v id="$key_id" '$1 == id {print $2; exit}')
+  [ -n "$spki" ] || continue
+  printf '%s\n' '-----BEGIN PUBLIC KEY-----' "$spki" '-----END PUBLIC KEY-----' > "$stage/release-key.pem"
+  der=$(signature_der "$signature") || continue
+  printf "$der" > "$stage/signature.der"
+  if openssl dgst -sha256 -verify "$stage/release-key.pem" -signature "$stage/signature.der" "$stage/unsigned.json" >/dev/null 2>&1; then signed=1; break; fi
+done < "$stage/signatures"
+[ "$signed" = 1 ] || fail "The release manifest's signature does not verify against Mehen's release key ($release_key_ids), so nothing was installed. Someone may have changed it on the way: do not install from this source, and report it to security@mehen.dev."
+# The entries, from the verified canonical bytes. Tokenise JSON rather than
+# relying on line layout; reject escapes and unexpected syntax rather than guessing.
 awk '
 function token(   t) {
   sub(/^[ \t\r\n]+/, "", s)
@@ -432,7 +538,7 @@ END {
   if (depth!=0 || version !~ /^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$/) exit 2
   print version
   for (i=1;i<=count;i++) print files[i]
-}' "$stage/manifest.json" > "$stage/entries" || fail 'Invalid release manifest.'
+}' "$stage/unsigned.json" > "$stage/entries" || fail 'Invalid release manifest.'
 version_found=$(sed -n '1p' "$stage/entries")
 [ -n "$version_found" ] || fail 'Invalid release version.'
 if [ -n "$version" ] && [ "$version" != "$version_found" ]; then fail 'Release version does not match MEHEN_VERSION.'; fi
