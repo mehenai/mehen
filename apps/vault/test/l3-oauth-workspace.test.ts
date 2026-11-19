@@ -810,11 +810,12 @@ it("Microsoft's interaction_required, consent_required and login_required end th
   expect(getOAuthProvider("microsoft-graph")?.refresh.terminalErrors).toEqual(["invalid_grant", "interaction_required", "consent_required", "login_required"])
 })
 
-// A refresh answered interaction_required, as Microsoft's token endpoint
-// sends it: a Microsoft connection needs a reconnect at once; a Google one,
-// whose list does not name it, waits to retry.
-for (const [provider, outcome] of [["microsoft-graph", "needs_reauth"], ["google-gmail", "refresh_retrying"]] as const)
-  it(`a ${provider} refresh answered interaction_required ends in ${outcome}`, async () => {
+// A refresh answered with each of Microsoft's sign-in-again codes, as its
+// token endpoint sends them: a Microsoft connection needs a reconnect at
+// once; a Google one, whose list names none of them, waits to retry.
+const SIGN_IN_AGAIN = ["interaction_required", "consent_required", "login_required"] as const
+for (const [provider, outcome, code] of [...SIGN_IN_AGAIN.map((code) => ["microsoft-graph", "needs_reauth", code] as const), ...SIGN_IN_AGAIN.map((code) => ["google-gmail", "refresh_retrying", code] as const)])
+  it(`a ${provider} refresh answered ${code} ends in ${outcome}`, async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       const item = await connected(ctx)
@@ -822,9 +823,13 @@ for (const [provider, outcome] of [["microsoft-graph", "needs_reauth"], ["google
       // The client's binding admits its provider's token endpoint.
       ctx.sql.exec("UPDATE items SET binding=? WHERE slug='google-client'", JSON.stringify(getTemplate(provider === "microsoft-graph" ? "microsoft-oauth-client" : "google-oauth-client")!.binding))
       ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
-      setUpstreamFetch(async () => Response.json({ error: "interaction_required", error_description: "AADSTS50076: Due to a configuration change made by your administrator, you must use multi-factor authentication." }, { status: 400 }))
+      setUpstreamFetch(async () => Response.json({ error: code, error_description: "The user must sign in again." }, { status: 400 }))
       await expect(workspaceAccessToken(ctx, checkedCredential(ctx, item.slug)!)).rejects.toMatchObject({ code: outcome })
-      expect(checkedCredential(ctx, item.slug)?.status).toBe(outcome)
+      const after = checkedCredential(ctx, item.slug)!
+      expect(after.status).toBe(outcome)
+      // An ended grant says why; a retried one is not yet put in front of anyone.
+      if (outcome === "needs_reauth") expect(after.review?.reason).toEqual(expect.stringContaining("no longer accepts the sign-in"))
+      else expect(after.review).toBeNull()
     })
   })
 
