@@ -82,7 +82,7 @@ The page must show the fingerprint **5NZV DP67 PXT0 DB6E**. If it differs, do no
 Valid until 18:14. I will wait.
 ```
 
-The first line is `ask.title` and the name from `ask.what`; `Open:` is `ask.url`; the third line is `ask.check` (an approval: "Tick the binding code **K7Q2MX**, then read the whole request before you approve."; a connection: "Sign in as you@example.com"; an intake: who asked); the last line is `ask.expiresAt`. Never shorten `check.value`. Name the workspace: `ask.context.workspace.slug`, or for an enrolment the unverified `ask.intent.workspace` (its `context.workspace` is null). If `mehen` warns that the vault returned a link not on `<vault>`, do not go looking for it: tell the human. In apps that draw MCP cards the human also sees a live card for the ask; write the block anyway.
+The first line is `ask.title` and the name from `ask.what`; `Open:` is `ask.url`; the third line is `ask.check` (an approval: "Tick the binding code **K7Q2MX**, then read the whole request before you approve."; a connection: "Sign in as you@example.com"; an intake: who asked); the last line is `ask.expiresAt`. Never shorten `check.value`. Name the workspace: `ask.context.workspace.slug`, or, when that is null (`mehen enrol` until activation), the unverified `ask.intent.workspace`. If `mehen` warns that the vault returned a link not on `<vault>`, do not go looking for it: tell the human. In apps that draw MCP cards the human also sees a live card for the ask; write the block anyway.
 
 ## Do
 
