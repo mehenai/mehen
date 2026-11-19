@@ -76,8 +76,26 @@ command -v curl >/dev/null 2>&1 || fail 'curl is required.'
 command -v openssl >/dev/null 2>&1 || fail 'openssl is required to check the release signature. Install it (Debian and Ubuntu: sudo apt install openssl; Fedora: sudo dnf install openssl), then run the installer again.'
 base=${MEHEN_DL_BASE:-https://mehen.dev/dl}
 base=${base%/}
+# Plain http only for this machine, and loopback (which alone allows the
+# test hooks and the test release key) only for an authority that is
+# exactly 127.0.0.1, localhost or [::1] with a numeric port: nothing a URL
+# parser could read as a user name, another host, a query or a fragment.
 loopback=0
-case "$base" in https://*) ;; http://127.0.0.1:*|http://localhost:*) loopback=1 ;; *) fail 'Download base must use https (or loopback http for tests).' ;; esac
+case "$base" in
+  https://*) ;;
+  http://*)
+    authority=${base#http://}
+    authority=${authority%%/*}
+    case "$base" in *[@?#\\\ ]*) authority= ;; esac
+    host=${authority%:*}
+    port=${authority##*:}
+    case "$host" in 127.0.0.1|localhost|'[::1]') ;; *) host= ;; esac
+    case "$port" in ''|*[!0-9]*) host= ;; esac
+    [ -n "$host" ] && [ "$host:$port" = "$authority" ] || fail 'Download base must use https (or loopback http for tests).'
+    loopback=1
+    ;;
+  *) fail 'Download base must use https (or loopback http for tests).' ;;
+esac
 case "$version" in *[!A-Za-z0-9.-]*) fail 'Invalid MEHEN_VERSION.' ;; esac
 # A fault the tests inject after the move, honoured only for a loopback base.
 fault() { [ "$loopback" = 1 ] && [ "${MEHEN_INSTALL_TEST_FAULT:-}" = "$1" ]; }

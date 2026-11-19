@@ -700,6 +700,45 @@ describe("the manifest's signature, checked before any hash in it", () => {
     expect(refused.stderr).toContain("release key (rk-new)")
   })
 
+  test("a base that only looks like loopback, with 127.0.0.1:80 as its user name, is not loopback: no test key, no plain http", async () => {
+    // A server on another address that answers as the release channel, with
+    // a manifest the test key signed.
+    const elsewhere = Bun.serve({ hostname: "127.0.0.2", port: 0, async fetch(req) {
+      requests.push(`elsewhere:${new URL(req.url).pathname}`)
+      return fetch(`http://127.0.0.1:${server.port}${new URL(req.url).pathname}`)
+    } })
+    try {
+      for (const base of [`http://127.0.0.1:80@127.0.0.2:${elsewhere.port}`, `http://localhost:1@127.0.0.2:${elsewhere.port}`, `http://127.0.0.1:${elsewhere.port}#@127.0.0.2:${elsewhere.port}`, `http://127.0.0.1:${elsewhere.port}?@x`, `http://127.0.0.1:x${elsewhere.port}`, "http://127.0.0.1", "http://127.0.0.1.example:80", "http://[::1]", "http://localhost.:80"]) {
+        requests = []
+        const refused = await run("sh", { MEHEN_DL_BASE: base })
+        expect({ base, code: refused.code }).toEqual({ base, code: 2 })
+        expect(refused.stderr).toContain("must use https")
+        expect(requests).toEqual([])
+      }
+      expect(await readdir(bin()).catch(() => [] as string[])).toEqual([])
+    } finally {
+      elsewhere.stop(true)
+    }
+  })
+
+  test("exactly 127.0.0.1, localhost or [::1] with a numeric port is loopback", async () => {
+    for (const base of [`http://127.0.0.1:${server.port}`, `http://localhost:${server.port}/`]) {
+      await rm(bin(), { recursive: true, force: true })
+      const ok = await run("sh", { MEHEN_DL_BASE: base })
+      expect({ base, code: ok.code, stderr: ok.stderr }).toEqual({ base, code: 0, stderr: "" })
+    }
+    const six = (() => { try { return Bun.serve({ hostname: "::1", port: 0, fetch: (req) => fetch(`http://127.0.0.1:${server.port}${new URL(req.url).pathname}`) }) } catch { return null } })()
+    if (six) {
+      try {
+        await rm(bin(), { recursive: true, force: true })
+        const ok = await run("sh", { MEHEN_DL_BASE: `http://[::1]:${six.port}` })
+        expect(ok.code).toBe(0)
+      } finally {
+        six.stop(true)
+      }
+    }
+  })
+
   test("the test key is never trusted for a download base off loopback", async () => {
     const script = await readFile(resolve(import.meta.dir, "install.sh"), "utf8")
     expect(script).toMatch(/if \[ "\$loopback" = 1 \] && \[ -n "\$\{MEHEN_INSTALL_TEST_RELEASE_KEY:-\}" \]; then release_keys=/)

@@ -147,6 +147,20 @@ describe("vault URL", () => {
     expect(resolveVaultUrl(env, config)).toBe("https://enrolled.example")
   })
 
+  test("only http on localhost, 127.0.0.1 or [::1] with an explicit port is a local vault; anything else is as if there were no record", async () => {
+    dir = await tempDir()
+    const env = { MEHEN_HOME: dir.path }
+    const record = (origin: string) => writeFile(join(dir.path, "local-vault.json"), JSON.stringify({ origin, data: "/x", port: 7787, service: "process" }), { mode: 0o600 })
+    for (const origin of ["http://localhost:7787", "http://127.0.0.1:7799", "http://[::1]:7787"]) {
+      await record(origin)
+      expect(defaultVault(env)).toEqual({ url: origin, source: "local" })
+    }
+    for (const origin of ["https://vault.example", "https://localhost:7787", "http://localhost", "http://127.0.0.1", "http://localhost:80", "http://[::1]", "http://127.0.0.2:7787", "http://localhost.:7787", "http://user@localhost:7787", "http://localhost:7787/path", "http://localhost:7787?q", "ws://localhost:7787"]) {
+      await record(origin)
+      expect({ origin, vault: defaultVault(env) }).toEqual({ origin, vault: { url: DEFAULT_VAULT_URL, source: "default" } })
+    }
+  })
+
   test("a local-vault.json that is broken or names no vault origin leaves the default", async () => {
     dir = await tempDir()
     const env = { MEHEN_HOME: dir.path }

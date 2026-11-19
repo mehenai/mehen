@@ -10,14 +10,21 @@ import { SYSTEMD_UNIT } from "./up/service.ts"
 
 export const LOCAL_VAULT_RECORD = "local-vault.json"
 
-// The record's origin, or null when there is no record or it names no
-// origin mehen accepts. Never throws: a broken record leaves the default.
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"])
+
+// The record's origin when it is a vault on this machine: plain http to
+// localhost, 127.0.0.1 or [::1] with its port written out, which is all
+// `mehen up` ever records. Anything else, and a record that is missing or
+// broken, is null, so the default is unchanged. Never throws.
 export function localVaultOrigin(root: string): string | null {
   try {
     const value: unknown = JSON.parse(readFileSync(join(root, LOCAL_VAULT_RECORD), "utf8"))
     if (typeof value !== "object" || value === null) return null
     const origin = (value as Record<string, unknown>).origin
-    return typeof origin === "string" ? canonicalOrigin(origin) : null
+    if (typeof origin !== "string") return null
+    const canonical = canonicalOrigin(origin)
+    const url = new URL(canonical)
+    return url.protocol === "http:" && LOCAL_HOSTS.has(url.hostname) && url.port !== "" && canonical === origin ? canonical : null
   } catch {
     return null
   }
