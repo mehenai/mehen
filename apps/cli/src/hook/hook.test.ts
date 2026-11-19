@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { claudeAnswer, claudeToolCall, guardLevel, judge, SESSION_CONTEXT } from "./index.ts"
-import { commandFindings, secretFile, secretInText } from "./rules.ts"
+import { GREP_WALK_DEPTH, GREP_WALK_ENTRIES, commandFindings, secretFile, secretInText } from "./rules.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
 
 const HOME = "/home/a"
@@ -183,6 +183,84 @@ describe("the environment, recursive searches and a vault's own folder", () => {
       await Bun.write(`${dir.path}/vault/objects/WorkspaceVault/x.sqlite`, "")
       expect(secretFile(`${dir.path}/vault/objects/WorkspaceVault/x.sqlite`, CWD, HOME)).toBe("it is a Mehen vault's own data")
       expect(secretFile(`${dir.path}/other.txt`, CWD, HOME)).toBeNull()
+    } finally {
+      await dir.remove()
+    }
+  })
+})
+
+describe("review fixes: shell wrappers", () => {
+  test("a known wrapper does not hide the program it runs", () => {
+    for (const command of ["command cat .env", "builtin export -p", "env printenv", "env -i FOO=1 cat .env", "exec cat .env", "nohup cat .env", "time cat .env", "time -p cat .env", "sudo -u root cat .env", "sudo cat ~/.ssh/id_ed25519", "xargs cat .env", "xargs -n 1 cat .env", "FOO=1 cat .env", "command env", "nohup env | grep KEY"]) {
+      expect({ command, found: commandFindings(command, CWD, HOME).length > 0 }).toEqual({ command, found: true })
+    }
+  })
+
+  test("a wrapper around ordinary work is still ordinary", () => {
+    for (const command of ["command -v cat", "env NODE_ENV=test bun test", "time bun test", "nohup bun run dev", "sudo -u root ls", "xargs rm -f", "builtin cd src"]) {
+      expect({ command, found: commandFindings(command, CWD, HOME) }).toEqual({ command, found: [] })
+    }
+  })
+})
+
+describe("review fixes: paths written another way", () => {
+  test("$HOME, ${HOME} and ~ are the home folder, quoted or not, without running the shell", () => {
+    for (const command of ['cat "$HOME/.aws/credentials"', "cat $HOME/.aws/credentials", "cat ${HOME}/.ssh/id_rsa", "cat ~/.ssh/id_rsa", "head -1 \"${HOME}/.netrc\""]) {
+      expect({ command, found: commandFindings(command, CWD, HOME).length > 0 }).toEqual({ command, found: true })
+    }
+    expect(commandFindings("cat '$HOME/notes.txt'", CWD, HOME)).toEqual([])
+  })
+
+  test("a cd earlier in the command moves where later relative paths point", () => {
+    expect(commandFindings("cd ~/.aws && cat credentials", CWD, HOME)[0]?.reason).toContain("credentials")
+    expect(commandFindings("cd /home/a/.ssh; cat id_ed25519", CWD, HOME)).toHaveLength(1)
+    expect(commandFindings("cd src && cat index.ts", CWD, HOME)).toEqual([])
+  })
+
+  test("a symbolic link is judged by what it points at, and making one to a key file is itself found", async () => {
+    const dir = await tempDir()
+    try {
+      await Bun.write(`${dir.path}/.env`, "KEY=x")
+      const { symlink } = await import("node:fs/promises")
+      await symlink(`${dir.path}/.env`, `${dir.path}/cfg`)
+      expect(secretFile("cfg", dir.path, HOME)).toContain("environment file")
+      expect(commandFindings("cat cfg", dir.path, HOME)).toHaveLength(1)
+      const linking = commandFindings("ln -s .env settings && cat settings", dir.path, HOME)
+      expect(linking[0]).toMatchObject({ rule: "secret-file", reason: expect.stringContaining("`ln` would link to .env") })
+      expect(commandFindings("ln -s README.md docs", dir.path, HOME)).toEqual([])
+    } finally {
+      await dir.remove()
+    }
+  })
+})
+
+describe("review fixes: recursive grep", () => {
+  test("a key file further down is found, and only an exclude that covers it waives the check", async () => {
+    const dir = await tempDir()
+    try {
+      await Bun.write(`${dir.path}/app.ts`, "")
+      await Bun.write(`${dir.path}/nested/deeper/.env`, "KEY=x")
+      expect(commandFindings("grep -r KEY .", dir.path, HOME)[0]?.reason).toContain("nested/deeper/.env")
+      expect(commandFindings("grep -r --exclude='*.md' KEY .", dir.path, HOME)[0]?.reason).toContain(".env")
+      expect(commandFindings("grep -r --exclude='.env*' KEY .", dir.path, HOME)).toEqual([])
+      expect(commandFindings("grep -r --exclude-dir=nested KEY .", dir.path, HOME)).toEqual([])
+      expect(commandFindings("grep -r --include='*.ts' KEY .", dir.path, HOME)).toEqual([])
+      expect(commandFindings("grep -rn -e KEY nested", dir.path, HOME)).toHaveLength(1)
+      expect(commandFindings("grep -r KEY src-that-does-not-exist", dir.path, HOME)).toEqual([])
+    } finally {
+      await dir.remove()
+    }
+  })
+
+  test("a scope too large to check within the bound is refused, with a reason that says how to narrow it", async () => {
+    const dir = await tempDir()
+    try {
+      for (let i = 0; i < GREP_WALK_ENTRIES + 5; i++) await Bun.write(`${dir.path}/many/f${i}.txt`, "")
+      expect(commandFindings("grep -r KEY many", dir.path, HOME)[0]?.reason).toContain("too many files")
+      let deep = `${dir.path}/deep`
+      for (let i = 0; i <= GREP_WALK_DEPTH + 1; i++) deep += `/d${i}`
+      await Bun.write(`${deep}/x.txt`, "")
+      expect(commandFindings("grep -r KEY deep", dir.path, HOME)[0]?.reason).toContain("too deep")
     } finally {
       await dir.remove()
     }
