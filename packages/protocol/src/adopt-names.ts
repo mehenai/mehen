@@ -8,6 +8,7 @@ import type { ItemKind } from "./kinds.ts"
 export type EnvNameTemplate = { template: string; kind: ItemKind; field: string }
 
 const key = (template: string): EnvNameTemplate => ({ template, kind: "api-key", field: "key" })
+const basic = (template: string, field: "username" | "password"): EnvNameTemplate => ({ template, kind: "basic-auth", field })
 const oauthClient = (template: string, field: "client_id" | "client_secret"): EnvNameTemplate => ({ template, kind: "oauth-client", field })
 
 // Exact variable names, as the provider's own docs and SDKs spell them.
@@ -18,12 +19,16 @@ export const ENV_NAME_TEMPLATES: Readonly<Record<string, EnvNameTemplate>> = {
   GH_TOKEN: key("github-pat"),
   GITHUB_PAT: key("github-pat"),
   GITHUB_PERSONAL_ACCESS_TOKEN: key("github-pat"),
+  GITLAB_TOKEN: key("gitlab"),
   CLOUDFLARE_API_TOKEN: key("cloudflare-api-token"),
   CF_API_TOKEN: key("cloudflare-api-token"),
   LINEAR_API_KEY: key("linear"),
+  JIRA_API_TOKEN: basic("jira", "password"),
   STRIPE_SECRET_KEY: key("stripe"),
   STRIPE_API_KEY: key("stripe"),
   SLACK_BOT_TOKEN: key("slack-bot"),
+  DISCORD_TOKEN: key("discord"),
+  DISCORD_BOT_TOKEN: key("discord"),
   GEMINI_API_KEY: key("google-gemini"),
   GOOGLE_GENERATIVE_AI_API_KEY: key("google-gemini"),
   MISTRAL_API_KEY: key("mistral"),
@@ -35,11 +40,16 @@ export const ENV_NAME_TEMPLATES: Readonly<Record<string, EnvNameTemplate>> = {
   VERCEL_TOKEN: key("vercel"),
   FLY_API_TOKEN: key("fly"),
   NPM_TOKEN: key("npm"),
+  TWINE_PASSWORD: basic("pypi", "password"),
+  TWINE_USERNAME: basic("pypi", "username"),
+  PYPI_API_TOKEN: basic("pypi", "password"),
   NOTION_API_KEY: key("notion"),
   NOTION_TOKEN: key("notion"),
+  FIGMA_ACCESS_TOKEN: key("figma"),
   GITBOOK_API_TOKEN: key("gitbook"),
   FATHOM_API_KEY: key("fathom"),
   SENTRY_AUTH_TOKEN: key("sentry"),
+  PAGERDUTY_TOKEN: key("pagerduty"),
   POSTHOG_PERSONAL_API_KEY: key("posthog"),
   BETTERSTACK_API_TOKEN: key("betterstack-uptime"),
   BETTERUPTIME_API_TOKEN: key("betterstack-uptime"),
@@ -50,6 +60,9 @@ export const ENV_NAME_TEMPLATES: Readonly<Record<string, EnvNameTemplate>> = {
   INTERCOM_ACCESS_TOKEN: key("intercom"),
   RESEND_API_KEY: key("resend"),
   POSTMARK_SERVER_TOKEN: key("postmark-server"),
+  SENDGRID_API_KEY: key("sendgrid"),
+  TWILIO_AUTH_TOKEN: basic("twilio", "password"),
+  TWILIO_ACCOUNT_SID: basic("twilio", "username"),
   LOOPS_API_KEY: key("loops"),
   BRAVE_API_KEY: key("brave-search"),
   BRAVE_SEARCH_API_KEY: key("brave-search"),

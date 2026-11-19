@@ -28,14 +28,17 @@ import { betterstackUptime } from "./templates/betterstack-uptime.ts"
 import { braveSearch } from "./templates/brave-search.ts"
 import { browserbase } from "./templates/browserbase.ts"
 import { cloudflareApiToken } from "./templates/cloudflare-api-token.ts"
+import { discord } from "./templates/discord.ts"
 import { elevenlabs } from "./templates/elevenlabs.ts"
 import { fathom } from "./templates/fathom.ts"
+import { figma } from "./templates/figma.ts"
 import { firecrawl } from "./templates/firecrawl.ts"
 import { fly } from "./templates/fly.ts"
 import { gitbook } from "./templates/gitbook.ts"
 import { githubOauth } from "./templates/github-oauth.ts"
 import { githubOauthClient } from "./templates/github-oauth-client.ts"
 import { githubPat } from "./templates/github-pat.ts"
+import { gitlab } from "./templates/gitlab.ts"
 import { googleCalendar } from "./templates/google-calendar.ts"
 import { googleDrive } from "./templates/google-drive.ts"
 import { googleGemini } from "./templates/google-gemini.ts"
@@ -46,6 +49,7 @@ import { hetznerCloud } from "./templates/hetzner-cloud.ts"
 import { heygen } from "./templates/heygen.ts"
 import { hubspotPrivateApp } from "./templates/hubspot-private-app.ts"
 import { intercom } from "./templates/intercom.ts"
+import { jira } from "./templates/jira.ts"
 import { linear } from "./templates/linear.ts"
 import { loops } from "./templates/loops.ts"
 import { microsoftGraph } from "./templates/microsoft-graph.ts"
@@ -57,17 +61,21 @@ import { npm } from "./templates/npm.ts"
 import { ollamaCloud } from "./templates/ollama-cloud.ts"
 import { openai } from "./templates/openai.ts"
 import { openrouter } from "./templates/openrouter.ts"
+import { pagerduty } from "./templates/pagerduty.ts"
 import { posthog } from "./templates/posthog.ts"
 import { postmarkServer } from "./templates/postmark-server.ts"
+import { pypi } from "./templates/pypi.ts"
 import { resend } from "./templates/resend.ts"
 import { scaleway } from "./templates/scaleway.ts"
 import { semrush } from "./templates/semrush.ts"
+import { sendgrid } from "./templates/sendgrid.ts"
 import { sentry } from "./templates/sentry.ts"
 import { serpapi } from "./templates/serpapi.ts"
 import { slackBot } from "./templates/slack-bot.ts"
 import { snyk } from "./templates/snyk.ts"
 import { stripe } from "./templates/stripe.ts"
 import { together } from "./templates/together.ts"
+import { twilio } from "./templates/twilio.ts"
 import { vercel } from "./templates/vercel.ts"
 
 export { CLIENT_SETUP_CALLBACK } from "./templates/shared.ts"
@@ -127,6 +135,10 @@ export type Template = {
   policy: PolicyInput
   ceiling: Mode
   fields: Record<string, FieldHint>
+  // The environment variable the provider's own SDK or CLI reads this
+  // credential from, where the provider documents one, so `mehen run` can
+  // put the placeholder there without being told.
+  defaultEnvVar?: string
   // Well-known value prefixes; the intake form warns when a value lacks one.
   prefixes?: string[]
   // A cheap read-only call that proves an item works (`mehen adopt verify`),
@@ -144,10 +156,13 @@ export const TEMPLATES: Record<string, Template> = {
   openai,
   anthropic,
   "github-pat": githubPat,
+  gitlab,
   "cloudflare-api-token": cloudflareApiToken,
   linear,
+  jira,
   stripe,
   "slack-bot": slackBot,
+  discord,
   "google-gemini": googleGemini,
   mistral,
   groq,
@@ -158,10 +173,13 @@ export const TEMPLATES: Record<string, Template> = {
   vercel,
   fly,
   npm,
+  pypi,
   notion,
+  figma,
   gitbook,
   fathom,
   sentry,
+  pagerduty,
   posthog,
   "betterstack-uptime": betterstackUptime,
   "hetzner-cloud": hetznerCloud,
@@ -171,6 +189,8 @@ export const TEMPLATES: Record<string, Template> = {
   intercom,
   resend,
   "postmark-server": postmarkServer,
+  sendgrid,
+  twilio,
   loops,
   "brave-search": braveSearch,
   serpapi,

@@ -24,6 +24,15 @@ describe("ENV_NAME_TEMPLATES", () => {
     }
   })
 
+  test("a template's default environment variable is one of its conventional names, for the field the relay sends", () => {
+    for (const template of Object.values(TEMPLATES)) {
+      if (template.defaultEnvVar === undefined) continue
+      const entry = ENV_NAME_TEMPLATES[template.defaultEnvVar]
+      const field = KINDS[template.kind].primary
+      expect({ id: template.id, entry }).toEqual({ id: template.id, entry: { template: template.id, kind: template.kind, field: field ?? "" } })
+    }
+  })
+
   test("the names the spec lists map to their templates", () => {
     const expected: Record<string, string> = {
       OPENAI_API_KEY: "openai",
