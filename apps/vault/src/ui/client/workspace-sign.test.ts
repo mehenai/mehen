@@ -77,7 +77,7 @@ describe("signed: the one way the pages sign", () => {
   })
 
   it("a credential changed since the page showed it refuses before the step-up starts", async () => {
-    const shown = { id: "itm_shown", version: 3, configRevision: 2, dependencyRevision: 1 }
+    const shown = { id: "itm_shown", kind: "api-key", version: 3, configRevision: 2, dependencyRevision: 1 }
     const v = vault({ "/api/w/northwind/items/key/action": expected, "/api/w/northwind": WORKSPACE, "/api/w/northwind/items/key": { ...shown, configRevision: 3 } })
     const still = async () => itemChangedRefusal(shown, (await (await fetch("/api/w/northwind/items/key")).json()) as typeof shown)
     expect(await refusedWith(signed(shell(), request(still), passkey))).toEqual(CHANGED_SINCE_SHOWN)

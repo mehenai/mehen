@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { canonicalJson, type NextStep } from "@mehen/protocol/api"
-import { hostMatches, type Destination } from "@mehen/protocol/binding"
+import { hostMatches, restrictivePathMayMeet, type Destination } from "@mehen/protocol/binding"
 import { type PolicyFloorView, type PolicySecuritySnapshot } from "@mehen/protocol/policy-mode"
 import { POLICY_CATALOGUES } from "@mehen/protocol/policy-catalogue"
 import { GENERIC_POLICY_FLOOR_WORDS, POLICY_FLOOR, POLICY_SAFETY_PROFILES, POLICY_SAFETY_VERSION, classifyPolicyRequest, resolvePolicyRequest } from "@mehen/protocol/policy-safety"
@@ -26,8 +26,14 @@ export function policyDigest(value: unknown): string {
 // catalogue change makes every permit in flight stale.
 const SAFETY_DIGEST = policyDigest({ domain: POLICY_SAFETY_VERSION, profiles: POLICY_SAFETY_PROFILES, generic: GENERIC_POLICY_FLOOR_WORDS, catalogues: POLICY_CATALOGUES })
 const FLOOR_VIEWS = POLICY_FLOOR.map((entry) => ({ ...entry, ruleDigest: policyDigest({ host: entry.host, action: entry.action, reason: entry.reason, rule: entry.rule }) }))
+// The floors a request this item may make can meet: on one of its hosts and,
+// when both name paths, on a path its binding admits, read as loosely as the
+// relay reads it, so the view never hides a floor the relay applies. A view
+// only; the relay applies POLICY_FLOOR itself.
 export function itemPolicyFloor(item: ItemRecord): PolicyFloorView[] {
-  return FLOOR_VIEWS.filter((entry) => item.binding.hosts.some((host) => hostMatches(host, entry.host)))
+  const bound = item.binding.paths ?? []
+  const reaches = (paths: string[] | undefined) => !paths?.length || !bound.length || paths.some((path) => bound.some((b) => restrictivePathMayMeet(path, b)))
+  return FLOOR_VIEWS.filter((entry) => item.binding.hosts.some((host) => hostMatches(host, entry.host)) && reaches(entry.rule.paths))
 }
 export function guardDigest(snapshot: PolicySecuritySnapshot): string {
   return policyDigest({ domain: "mehen-policy-guard/v1", snapshot })

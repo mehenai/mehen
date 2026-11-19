@@ -691,6 +691,16 @@ describe("mehen mcp tools", () => {
     expect(result.structuredContent).toMatchObject({ status: 202, item: "openai-personal (alex)", truncated: false, headers: { "x-id": "1" }, body: JSON.stringify({ got: "aGk" }) })
   })
 
+  test("vault_fetch adds a hint when the service rejects the credential, and none for a status that says nothing about it", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.relay = () => new Response("bad key", { status: 401, headers: { [UPSTREAM_HEADER]: "1" } })
+    const rejected = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/models" })
+    expect(rejected.isError).toBe(false)
+    expect(rejected.structuredContent).toMatchObject({ status: 401, hint: expect.stringContaining("mehen request api-key --name openai-personal --provider openai") })
+    vault.relay = () => new Response("gone", { status: 404, headers: { [UPSTREAM_HEADER]: "1" } })
+    expect((await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/models" })).structuredContent).not.toHaveProperty("hint")
+  })
+
   test("vault_fetch carries rules when standing rules allowed the request, and ignores a malformed Mehen-Rule", async () => {
     await vault.enrolSoftware(dir.path)
     const endsAt = "2027-01-10T14:00:00.000Z"

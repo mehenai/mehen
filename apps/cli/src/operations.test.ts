@@ -223,6 +223,78 @@ test("showItem (pickDescription) copies pushes field by field only when the vaul
   expect(await showItem(api, "openai-prod")).toHaveProperty("pushes", [])
 })
 
+test("showItem (pickDescription) copies a connection's scopes, expiry and renewal field by field, never a token", async () => {
+  const { item } = await import("./testing/mock-vault.ts")
+  const base = item("gmail-alex")
+  const connection = { scopes: ["https://www.googleapis.com/auth/gmail.modify"], expiresAt: "2026-11-09T10:00:00.000Z", refreshing: false }
+  let description: unknown = base
+  const api = { async relay(): Promise<Response> { throw new Error("unexpected relay") }, async request<T>(): Promise<T> { return description as T } }
+  expect(await showItem(api, "gmail-alex")).not.toHaveProperty("connection")
+  description = { ...base, connection: { ...connection, accessToken: "ya29.never" } }
+  expect((await showItem(api, "gmail-alex")).connection).toEqual(connection)
+  description = { ...base, home: { kind: "project", project: "prj_1", extra: true }, connection: { ...connection, client: "google-client" } }
+  expect(await showItem(api, "gmail-alex")).toMatchObject({ home: { kind: "project", project: "prj_1" }, connection: { ...connection, client: "google-client" } })
+  expect((await showItem(api, "gmail-alex")).home).not.toHaveProperty("extra")
+})
+
+// A rotation or reconnect must ask for the home the credential has (the
+// default is private), and a reconnect for its OAuth client.
+test("credentialRejectedHint names a workspace or project credential's home, and a connection's client", async () => {
+  const { credentialRejectedHint } = await import("./operations.ts")
+  const revoked = { status: 401, headers: {} }
+  const workspaceConnection = { slug: "gmail-team", kind: "oauth-connection" as const, provider: "google-gmail", home: { kind: "workspace" as const }, connection: { scopes: [], expiresAt: null, refreshing: false, client: "google-client" } }
+  expect(credentialRejectedHint(revoked, workspaceConnection)).toBe("The service rejected gmail-team's sign-in. If it was revoked, ask a human to reconnect it: mehen connect google-gmail --client google-client --name gmail-team --reason '<why>' --home workspace.")
+  // A reader who may not see the client: mehen connect without --client
+  // would use the provider's default client, not the connection's own, so
+  // the hint sends the human to the credential's page instead.
+  const unnamed = { ...workspaceConnection, connection: { scopes: [], expiresAt: null, refreshing: false } }
+  const narrow = { status: 403, headers: { "www-authenticate": 'Bearer error="insufficient_scope", scope="gmail.send"' } }
+  expect(credentialRejectedHint(revoked, unnamed)).toBe("The service rejected gmail-team's sign-in. If it was revoked, ask a human to reconnect it from its page in the vault.")
+  expect(credentialRejectedHint(narrow, unnamed)).toBe("The service said gmail-team lacks a scope it needs. Ask a human to reconnect it with more from its page in the vault; mehen show gmail-team lists the scopes it holds.")
+  for (const head of [revoked, narrow]) expect(credentialRejectedHint(head, unnamed)).not.toContain("mehen connect")
+  const projectKey = { slug: "openai-evals", kind: "api-key" as const, provider: "openai", home: { kind: "project" as const, project: "prj_3kQ9vXyZ7" } }
+  expect(credentialRejectedHint(revoked, projectKey)).toBe("The service rejected openai-evals. If its value was revoked or expired, ask a human to replace it: mehen request api-key --name openai-evals --provider openai --reason '<why>' --home project --project prj_3kQ9vXyZ7.")
+  expect(credentialRejectedHint(revoked, { ...projectKey, home: { kind: "member", member: "mem_1" } })).toMatch(/--reason '<why>' --home private\.$/)
+})
+
+// Only the platform reconnects a managed workspace's connection, or one
+// made with a custom provider (mehen connect cannot name one): the hint
+// says so and names no command the agent cannot run.
+test("credentialRejectedHint leaves a managed or custom-provider connection to the platform, with no mehen connect", async () => {
+  const { credentialRejectedHint } = await import("./operations.ts")
+  const revoked = { status: 401, headers: {} }, narrow = { status: 403, headers: { "www-authenticate": 'Bearer error="insufficient_scope", scope="gmail.send"' } }
+  const managed = { slug: "gmail-team", kind: "oauth-connection" as const, provider: "google-gmail", home: { kind: "workspace" as const }, connection: { scopes: [], expiresAt: null, refreshing: false, reconnect: "platform" as const } }
+  const custom = { ...managed, slug: "acme", provider: null, connection: { scopes: [], expiresAt: null, refreshing: false } }
+  expect(credentialRejectedHint(revoked, managed)).toBe("The service rejected gmail-team's sign-in. The platform reconnects this account.")
+  expect(credentialRejectedHint(narrow, managed)).toBe("The service said gmail-team lacks a scope it needs. The platform reconnects this account; mehen show gmail-team lists the scopes it holds.")
+  expect(credentialRejectedHint(revoked, custom)).toBe("The service rejected acme's sign-in. The platform reconnects this account.")
+  for (const head of [revoked, narrow]) for (const item of [managed, custom]) expect(credentialRejectedHint(head, item)).not.toContain("mehen connect")
+})
+
+// RFC 6750: only a Bearer challenge whose error parameter is exactly
+// insufficient_scope, its parameters read with quoted strings.
+test("insufficientScope reads the Bearer challenge's error and scope parameters, nothing else", async () => {
+  const { insufficientScope } = await import("./operations.ts")
+  const of = (challenge: string, status = 403) => insufficientScope({ status, headers: { "www-authenticate": challenge } })
+  expect(of('Bearer error="insufficient_scope", scope="gmail.send gmail.modify"')).toEqual(["gmail.send", "gmail.modify"])
+  expect(of("Bearer error=insufficient_scope")).toEqual([])
+  expect(of('Bearer realm="a, b=\\"c\\"", error="insufficient_scope", scope="x"')).toEqual(["x"])
+  expect(of('Basic realm="api", Bearer error="insufficient_scope", scope="y"')).toEqual(["y"])
+  // Whole challenges: a token68 (with its padding) before Bearer, and every Bearer challenge.
+  expect(of('Negotiate YIIF==, Bearer error="insufficient_scope", scope="gmail.send"')).toEqual(["gmail.send"])
+  expect(of("Negotiate oRswGaADCgEAoxIEEAEAAABDh+CIwTbjqQAAAAA=, Bearer error=insufficient_scope, scope=a")).toEqual(["a"])
+  expect(of('Bearer realm="a", error="invalid_token", Bearer error="insufficient_scope", scope="z"')).toEqual(["z"])
+  expect(of('Bearer error="invalid_token", Negotiate YIIF==')).toBeNull()
+  expect(of('Negotiate a/b+c==, Bearer error="insufficient_scope", scope="w"')).toEqual(["w"])
+  expect(of('Bearer error="insufficient_scope", scope="x", Negotiate YIIF==')).toEqual(["x"])
+  // The phrase only inside a description, a suffixed value, another scheme or another status: none.
+  expect(of('Bearer error="invalid_token", error_description="insufficient_scope for this call"')).toBeNull()
+  expect(of('Bearer error="insufficient_scope_extra"')).toBeNull()
+  expect(of('Bearer error="insufficient_scopes"')).toBeNull()
+  expect(of('Basic error="insufficient_scope"')).toBeNull()
+  expect(of('Bearer error="insufficient_scope"', 401)).toBeNull()
+})
+
 test("policy operations export the real producer implementations", async () => {
   const operations = await import("./operations.ts")
   const policy = await import("./policy-operations.ts")

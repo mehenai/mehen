@@ -99,6 +99,18 @@ it("intersects prospective metadata with the machine's stored tags", async () =>
     await expect(workspaceIntakeOps["intake.status"].handler(ctx, p, { intake: hidden.intake }, i)).rejects.toThrowError("No such credential request.")
   })
 })
+it("refuses to rotate a stored Google service account key or GitHub App, the kind read from the credential itself",async()=>{
+ const {seedCredential}=await import("./credentials-test-support.ts")
+ const f=await credentialsFixture();await inAccess(f.tenant,async ctx=>{
+  const p=memberPrincipal(ctx,"member"),i=memberInvocation(ctx,"member")
+  for(const [kind,slug,label] of [["google-service-account","gcp-adopted","Google service account key"],["github-app","app-adopted","GitHub App"]] as const){
+   const item=await seedCredential(ctx,slug,{kind:"member",member:"mem_member"})
+   ctx.sql.exec("UPDATE items SET kind=? WHERE id=?",kind,item.id)
+   expect(()=>createWorkspaceIntake(ctx,p,{slug,home:"private"},i)).toThrowError(`Mehen cannot use a ${label} yet`)
+  }
+  expect(ctx.sql.exec("SELECT count(*) AS n FROM workspace_credential_requests").toArray()[0]).toEqual({n:0})
+ })
+})
 it("rotates a generic visible credential without changing its provider, binding, policy or home",async()=>{
  const {workspaceIntakeOps}=await import("../src/vault/areas/intake-workspace.ts")
  const {seedCredential}=await import("./credentials-test-support.ts")
@@ -258,6 +270,16 @@ it("long-poll status rechecks a removed owner after its wait without revealing m
     await refused
     expect(JSON.stringify(ctx.sql.exec("SELECT * FROM workspace_credential_requests").toArray())).toBe(before)
     expect(open).not.toHaveBeenCalled();expect(send).not.toHaveBeenCalled();open.mockRestore();send.mockRestore()
+  })
+})
+it("refuses to ask for a Google service account key or a GitHub App, which nothing could use until minting is built", async () => {
+  const { devicePrincipal, deviceInvocation } = await import("./credentials-test-support.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const p = devicePrincipal(), i = await deviceInvocation(ctx), request = { reason: "test", home: "project", project: "prj_a" }
+    expect(() => createWorkspaceIntake(ctx, p, { ...request, kind: "google-service-account", slug: "gcp-deployer", binding: { hosts: ["oauth2.googleapis.com"] } }, i)).toThrowError("Mehen cannot use a Google service account key yet: minting tokens from it is not built, so nothing could fetch, run or lease with it. It is not asked for.")
+    expect(() => createWorkspaceIntake(ctx, p, { ...request, kind: "github-app", slug: "release-bot" }, i)).toThrowError("Mehen cannot use a GitHub App yet")
+    expect(ctx.sql.exec("SELECT count(*) AS n FROM workspace_credential_requests").toArray()[0]).toEqual({ n: 0 })
   })
 })
 it("stores a device's intake for a custom kind with no binding as lease-only, and refuses an injection with no hosts", async () => {

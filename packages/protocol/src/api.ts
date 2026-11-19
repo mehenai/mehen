@@ -326,7 +326,19 @@ export type ItemDescription = ItemSummary & {
   // whether it lets this key through, and the catalogue it reads. Never
   // which other machines it covers. Absent from a vault without postures.
   posture?: ItemDescriptionPosture | undefined
+  // An OAuth connection only: what the provider granted it, when its token
+  // expires (null when it does not), and whether a failed renewal waits to
+  // retry. Never a token. Absent from a vault that does not say.
+  connection?: ItemConnection | undefined
+  // Where it belongs, in a workspace vault. A rotation or reconnect asks for
+  // the same home.
+  home?: import("./workspace.ts").CredentialHome | undefined
 }
+// client: the slug of the OAuth client it signs in through, which a
+// reconnect names; absent from a vault that does not say, and from a reader
+// who may not see that client. reconnect: "platform" in a managed
+// workspace, whose platform reconnects it; no device can.
+export type ItemConnection = { scopes: string[]; expiresAt: string | null; refreshing: boolean; client?: string | undefined; reconnect?: "platform" | undefined }
 export type ItemDescriptionPosture = { level: import("./policy-mode.ts").PostureLevel; coversThisKey: boolean; catalogue: import("./policy-mode.ts").PostureCatalogue | null }
 
 // ---------------------------------------------------------------- /v1: enrolment (proof by the new key, `ten` = "enrol")
@@ -1068,7 +1080,8 @@ export type PendingAsk = {
   provider?: string | null | undefined
   // Connects: the account the sign-in must be as, when pinned or expected.
   account?: string | null | undefined
-  // Review only: why the vault flagged the item, as its page shows it.
+  // Review and reconnect only: why the vault flagged the item, or why the
+  // connection stopped, as its page shows it.
   reason?: string | undefined
   // Adoptions only: how many credentials the batch holds.
   items?: number | undefined

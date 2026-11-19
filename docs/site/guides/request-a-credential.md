@@ -29,7 +29,7 @@ Human needed: add a credential
 
 MCP: `vault_request`.
 
-- `<kind>` is one of the closed list: `api-key`, `bearer-token`, `basic-auth`, `custom-headers`, `oauth-client`, `oauth-connection`, `google-service-account`, `github-app`, `hmac-key`, `ssh-key`, `password-login`, `totp`, `database-url`, `smtp-imap`, `cloud-access-key`, `file`, `note`, `generic`.
+- `<kind>` is one of the closed list: `api-key`, `bearer-token`, `basic-auth`, `custom-headers`, `oauth-client`, `oauth-connection`, `google-service-account`, `github-app`, `hmac-key`, `ssh-key`, `password-login`, `totp`, `database-url`, `smtp-imap`, `cloud-access-key`, `file`, `note`, `generic`. A `google-service-account` or `github-app` is refused with `bad_request` ("Mehen cannot use a Google service account key yet: minting tokens from it is not built, so nothing could fetch, run or lease with it."), so a secret nothing could use is never asked for.
 - `--name` is the slug of the item to create: lower case letters, digits and single dashes, 2 to 64 characters, starting with a letter and not ending with a dash.
 - `--reason` is required (up to 500 characters) and the human reads it. Say plainly what you will do with the credential.
 - `--provider` names a template, and the template's kind must match `<kind>`. A template fixes where the key may go, how it is sent and which endpoints need approval, and the human sees its destination marked as verified. [Providers and templates](../reference/providers.md) lists every one; `mehen templates` prints the same list.

@@ -12,8 +12,8 @@ import { waitForStorageWrite } from "../storage-waits.ts"
 import { devicePolicyState } from "./devices.ts"
 import { relayServices } from "../../relay/services.ts"
 import { authoriseRelay,parseRelayRequest, type Checked } from "./relay.ts"
-import { assertCredentialCurrent, credentialAudit, credentialOps, openCredentialSecrets, visibleCredential, type CheckedCredential } from "./items-workspace.ts"
-import { workspaceTokenRead } from "./oauth-workspace.ts"
+import { assertCredentialCurrent, checkedCredential, credentialAudit, credentialOps, openCredentialSecrets, visibleCredential, type CheckedCredential } from "./items-workspace.ts"
+import { connectionNeedsReauth, workspaceTokenRead } from "./oauth-workspace.ts"
 import { assertApprovedUse, consumeApprovedUse, prepareApprovedUse, assertRunUse, type ProtectedSnapshot } from "./projects-workspace.ts"
 import { accessState, authorise, managedSetting, openAskCount, openWorkloadAskCount, setting, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 import { managedPolicyView } from "../managed-platform.ts"
@@ -115,7 +115,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
       if (plan && item.home.kind === "member") plan.private = true
       return item
     },
-    reauth(item) { throw new VaultError("needs_reauth", `"${item.slug}" needs to be connected again.`, { next: managed ? { say: "The platform reconnects this account." } : { url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/items/${item.slug}`, say: "Reconnect this credential in the workspace." } }); },
+    reauth(item) { if (managed) throw new VaultError("needs_reauth", `"${item.slug}" needs to be connected again.`, { next: { say: "The platform reconnects this account." } }); throw connectionNeedsReauth(ctx, item, plan ? undefined : { principal, invocation }) },
     prepare(entries: Checked[]) {
       for (const { item, mode } of entries)
         authorise(ctx, invocation, { type: "item.use", context }, { credential: item.id, mode: mode === "reveal" ? "relay" : mode }, ctx.now())
@@ -207,7 +207,11 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
       if (!credential)
         throw new VaultError("not_found", "No such credential.")
       if (item.kind !== "oauth-connection") return { secrets: await openCredentialSecrets(ctx, credential), item: credential }
-      const { accessToken, item: refreshed } = await workspaceTokenRead(ctx, credential)
+      // The first failure carries the reconnect link too, as every later one does.
+      const { accessToken, item: refreshed } = await workspaceTokenRead(ctx, credential).catch((error: unknown) => {
+        if (!(error instanceof VaultError) || error.code !== "needs_reauth" || managed) throw error
+        throw connectionNeedsReauth(ctx, checkedCredential(ctx, credential.slug) ?? credential, { principal, invocation })
+      })
       if (!refreshed || refreshed.id !== credential.id || refreshed.configRev !== credential.configRev || canonicalJson(refreshed.home) !== canonicalJson(credential.home))
         throw new VaultError("conflict", "The credential changed; review and try again.")
       checked.set(item.slug, refreshed)

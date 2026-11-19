@@ -28,6 +28,26 @@ export function deviceModeAllowed(ceiling: Mode, wanted: Mode): boolean {
   return modeAllowed(ceiling, wanted)
 }
 
+// A kind only minting could use: a Google service account key or a GitHub
+// App. Minting is not built, so nothing could fetch, run or lease with one,
+// and the vault refuses to ask for it rather than store a secret no one can
+// use.
+export function mintOnly(kind: ItemKind): boolean {
+  return KINDS[kind].defaultCeiling === "mint"
+}
+
+export function mintOnlyRefusal(kind: ItemKind): string {
+  return `Mehen cannot use a ${KINDS[kind].label} yet: minting tokens from it is not built, so nothing could fetch, run or lease with it. It is not asked for.`
+}
+
+// The value version a person's signed change to a credential's settings
+// pins: none for an OAuth connection, whose token the vault renews without
+// a person, so a renewal never refuses it (its configuration revision still
+// moves on a reconnect).
+export function settingsPinnedVersion(kind: string, version: number): number | null {
+  return kind === "oauth-connection" ? null : version
+}
+
 export type FieldSpec = {
   name: string
   secret: boolean

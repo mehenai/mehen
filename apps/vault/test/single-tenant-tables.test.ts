@@ -15,10 +15,13 @@ it("drops the single-tenant OAuth and intake tables on the next migration, and k
     expect(tables(ctx.sql)).toEqual(["workspace_credential_requests", "workspace_oauth_connections"])
     // As a workspace that ran the migrations before the drop.
     for (const area of [oauthArea, intakeArea]) {
-      const kept = area.migrations.slice(0, -1)
-      for (const step of kept.slice(0, area.name === "oauth" ? 3 : 4)) ctx.sql.exec(step)
-      ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area=?", kept.length, area.name)
+      // Every migration before the drop has run; the drop has not.
+      const drop = area.migrations.findIndex((step) => step.startsWith("DROP TABLE IF EXISTS"))
+      for (const step of area.migrations.slice(0, area.name === "oauth" ? 3 : 4)) ctx.sql.exec(step)
+      ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area=?", drop, area.name)
     }
+    // Made again by the oauth migration that follows the drop.
+    ctx.sql.exec("DROP TABLE workspace_oauth_client_rejections")
     expect(tables(ctx.sql)).toEqual(["intakes", "oauth_clients", "oauth_connections", "oauth_connects", "workspace_credential_requests", "workspace_oauth_connections"])
     applyMigrations(ctx.sql, ctx.storage, [oauthArea, intakeArea])
     expect(tables(ctx.sql)).toEqual(["workspace_credential_requests", "workspace_oauth_connections"])

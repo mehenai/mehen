@@ -144,6 +144,7 @@ test("notice kind literals include protection_changed and refuse the obsolete sp
   { kind: "member_joined", workspace, member: "m", name: "M", role: "member", by: "i", at },
   { kind: "deletion_scheduled", workspace, by: "m", at, deleteAfter: at },
   { kind: "rotation_required", workspace, projects: [], items: [], by: "m", at },
+  { kind: "connection_failing", workspace, item: { id: "itm_1", slug: "gmail-team" }, provider: { id: "google-gmail", name: "Gmail" }, account: "team@example.com", since: at, reason: "Mehen has not been able to renew the sign-in with Gmail since 2027-01-01 (last error: throttled (429)); it keeps trying", at },
  ]
  for (const notice of notices) expect(WorkspaceNoticePayloadSchema.parse(notice)).toEqual(notice)
  expect(WorkspaceNoticePayloadSchema.safeParse({ ...notices[1], kind: "protection_loosened" }).success).toBe(false)

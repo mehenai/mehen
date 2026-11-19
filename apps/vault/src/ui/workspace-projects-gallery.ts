@@ -117,6 +117,10 @@ export function description(item: WorkspaceItemSummary, extra: Partial<Pick<Huma
 // the owner cannot see (another member's private connection).
 const OAUTH_CLIENT = summary("google-client", { kind: "workspace" }, "google-oauth-client", { kind: "oauth-client", hosts: ["oauth2.googleapis.com"] })
 
+// The same client once Google rejected it: the Replace the client secret
+// row in Needs you lands here.
+const OAUTH_CLIENT_REJECTED = { ...OAUTH_CLIENT, status: "needs_reauth" as const, review: { reason: "Gmail rejected this OAuth client (its secret is wrong, expired or deleted), so the connections that use it are paused: replace its secret, then reconnect them", since: ISO(-3_600_000) } }
+
 // A Gmail connection whose provider stopped accepting its token: the
 // Reconnect row in Needs you lands here.
 const GMAIL_REAUTH = summary("gmail-alex", { kind: "workspace" }, "google-gmail", { kind: "oauth-connection", account: "alex@northwind.example", accountVerified: true, hosts: ["gmail.googleapis.com"], status: "needs_reauth" })
@@ -202,6 +206,7 @@ export function workspaceProjectsGallery(): ShellGalleryEntry[] {
     { id: "ws-credentials-held", group: GROUP, title: "Credentials, owner whose account is restricted", note: "The list to read, with no Add a credential and no remove-by-name, and one line saying why.", page: workspaceCredentialsPage(galleryShell(heldOwner), { viewer: heldOwner, items: workspaceItems, projects: [ownerProject, OTHER_PROJECT] }) },
     { id: "ws-credential-private", group: GROUP, title: "Credential, own private", note: "Only me: its own metadata, the private audit limit, and moving it into a project the owner edits.", page: workspaceCredentialPage(owner, { viewer: VIEWERS.owner, item: description(GALLERY_ITEMS[2] as WorkspaceItemSummary), projects: [ownerProject, OTHER_PROJECT] }) },
     { id: "ws-credential-oauth-client", group: GROUP, title: "OAuth client with dependent connections", note: "Delete and move list the connections that sign in through it; a connection the viewer cannot see is only said to exist.", page: workspaceCredentialPage(owner, { viewer: VIEWERS.owner, item: description(OAUTH_CLIENT, { dependencies: [{ slug: "gmail-alex", role: "connection" }], hiddenDependencies: true }), projects: [ownerProject, OTHER_PROJECT] }) },
+    { id: "ws-credential-client-rejected", group: GROUP, title: "OAuth client, rejected by its provider", note: "The Replace the client secret row in Needs you lands here: why its connections are paused, and Replace, which clears it.", page: workspaceCredentialPage(owner, { viewer: VIEWERS.owner, item: description(OAUTH_CLIENT_REJECTED), projects: [ownerProject, OTHER_PROJECT] }) },
     { id: "ws-credential-reconnect", group: GROUP, title: "Connection, needs reconnecting", note: "The Reconnect row in Needs you lands here: why, and Reconnect, which signs in to the provider again under the same name.", page: workspaceCredentialPage(owner, { viewer: VIEWERS.owner, item: description(GMAIL_REAUTH), projects: [ownerProject, OTHER_PROJECT] }) },
     { id: "ws-credential-review", group: GROUP, title: "Credential, needs review", note: "The Review row in Needs you lands here: the reason and since when, and Replace, which clears it.", page: workspaceCredentialPage(owner, { viewer: VIEWERS.owner, item: description(GALLERY_ITEMS[3] as WorkspaceItemSummary), projects: [ownerProject, OTHER_PROJECT] }) },
     { id: "ws-credential-workspace", group: GROUP, title: "Credential, whole workspace", note: "Used by prod: replace, move with the exact warning, delete listing what depends on it.", page: workspaceCredentialPage(owner, { viewer: VIEWERS.owner, item: description(GALLERY_ITEMS[0] as WorkspaceItemSummary), projects: [ownerProject, OTHER_PROJECT] }) },

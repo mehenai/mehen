@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { CredentialHomeSchema, KINDS, canonicalJson, type CustomOAuthProvider, customItemPolicy, getTemplate, isLeaseOnly, isSealedBox, leaseOnlyAllowed, leaseOnlyBinding, leaseOnlyRefusal, NATURAL_INJECTION, openText, type CredentialHome, type PrivateEvent, type WorkspaceIntakeView } from "@mehen/protocol"
+import { CredentialHomeSchema, KINDS, canonicalJson, type CustomOAuthProvider, customItemPolicy, getTemplate, isLeaseOnly, isSealedBox, leaseOnlyAllowed, leaseOnlyBinding, leaseOnlyRefusal, mintOnly, mintOnlyRefusal, NATURAL_INJECTION, openText, type CredentialHome, type PrivateEvent, type WorkspaceIntakeView } from "@mehen/protocol"
 import { WorkspaceIntakeCreate, Slug, Tag, type IntakeStatus } from "@mehen/protocol/api"
 import type { AccessPrincipal } from "../access.ts"
 import { one, randomId, type VaultContext } from "../core.ts"
@@ -207,6 +207,7 @@ const CreateMember = z.strictObject({ provider: z.string().max(64).optional(), s
 
 function createIntakeRequest(ctx:VaultContext,p:AccessPrincipal,input:unknown,invocation:WorkspaceInvocationContext){
  const raw=p.kind === "device"?parseOpInput(WorkspaceIntakeCreate,input):parseOpInput(CreateMember,input)
+ if("kind" in raw&&mintOnly(raw.kind))throw new VaultError("bad_request",mintOnlyRefusal(raw.kind))
  const template=raw.provider?getTemplate(raw.provider):null
  if(raw.provider&&!template)throw new VaultError("bad_request","Unknown credential template.")
  // In a managed workspace the platform's defaults apply when an intake is
@@ -228,6 +229,7 @@ function createIntakeRequest(ctx:VaultContext,p:AccessPrincipal,input:unknown,in
  if(target&&raw.provider!==undefined&&raw.provider!==target.provider)throw new VaultError("conflict","Rotation keeps the credential provider.")
  const kind=target?.kind??template?.kind??("kind" in raw?raw.kind:null)
  if(!kind)throw new VaultError("bad_request","Choose a built-in template.")
+ if(mintOnly(kind))throw new VaultError("bad_request",mintOnlyRefusal(kind))
  if("kind" in raw&&raw.kind!==kind)throw new VaultError("bad_request","The credential kind does not match its template.")
  const home=p.kind === "member"&&target?target.home:proposedHome
  if(home.kind === "member")assertItemRight(ctx,invocation,{type:"credential.create"},{destinationHome:home})
@@ -389,7 +391,7 @@ export const workspaceIntakeOps = {
   "intake.status": { auth: ["device"] as const, async handler(ctx: VaultContext, p: AccessPrincipal, input: unknown, invocation: WorkspaceInvocationContext): Promise<IntakeStatus> {
       const { intake, wait, waitMs } = parseOpInput(z.object({ intake: z.string(), ...RequestWait }), input)
       const row = await waitForCredentialRequest(ctx, p, intake, invocation, waitMs ?? (wait ? 30000 : 0))
-      return { intake: row.id, status: row.status === "open" && row.expires_at <= ctx.now() ? "expired" : row.status as IntakeStatus["status"], expiresAt: new Date(row.expires_at).toISOString(), ...(row.status === "completed" ? { item: describeCredential(ctx, visibleCredential(ctx, p, row.slug, undefined, invocation)) } : {}) }
+      return { intake: row.id, status: row.status === "open" && row.expires_at <= ctx.now() ? "expired" : row.status as IntakeStatus["status"], expiresAt: new Date(row.expires_at).toISOString(), ...(row.status === "completed" ? { item: describeCredential(ctx, visibleCredential(ctx, p, row.slug, undefined, invocation), { principal: p, invocation }) } : {}) }
     } },
   "intake.cancel": { auth: ["account", "device"] as const, handler(ctx: VaultContext, p: AccessPrincipal, input: unknown, invocation: WorkspaceInvocationContext) {
       const { intake } = parseOpInput(z.object({ intake: z.string() }), input)

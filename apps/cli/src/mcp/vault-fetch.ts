@@ -2,7 +2,7 @@ import { type Bytes, utf8 } from "@mehen/protocol/bytes"
 import { z } from "zod"
 import { FETCH_MAX_TIME_SECONDS, timedOut } from "../commands/fetch.ts"
 import { usageError } from "../errors.ts"
-import { bodyForJson, type UpstreamHead, fetchContext, parseJsonBody, parseSelectPath, readLimited, relayReplaces, relayRequest, replacingRefused, selectJson, upstreamHead } from "../operations.ts"
+import { bodyForJson, rejectedHint, type UpstreamHead, fetchContext, parseJsonBody, parseSelectPath, readLimited, relayReplaces, relayRequest, replacingRefused, selectJson, upstreamHead } from "../operations.ts"
 import { mandateAllowed, mandateCapped } from "../mandate-operations.ts"
 import { type PostureAllowed, type RuleAllowed, postureAllowed, ruleEnded, rulesAllowed } from "../policy-operations.ts"
 import { sessionLabel } from "../session.ts"
@@ -17,7 +17,7 @@ export function decodeBase64(text: string): Bytes {
 const MCP_SELECT = { option: "select", help: "mehen fetch --help" }
 
 // vault_fetch's result without select: the body as text, cut at 256 KiB.
-async function fetchOutput(head: UpstreamHead & { rules?: RuleAllowed[]; postures?: PostureAllowed[]; mandate?: string }, response: Response): Promise<ToolOutput> {
+async function fetchOutput(head: UpstreamHead & { rules?: RuleAllowed[]; postures?: PostureAllowed[]; mandate?: string; hint?: string }, response: Response): Promise<ToolOutput> {
   const { bytes, truncated, size } = await readLimited(response, FETCH_BODY_LIMIT)
   const strict = truncated ? null : bodyForJson(bytes)
   const text = strict && "body" in strict ? strict.body : new TextDecoder().decode(bytes)
@@ -31,8 +31,8 @@ export const vaultFetch = tool({
   name: "vault_fetch",
   title: "Send a request with a credential",
   description:
-    "Make one HTTP request with an item's credential: the vault adds it on the way to the upstream, which must be in the item's binding. Returns the upstream status, headers and body as the vault returns them (text, at most 256 KiB; the vault may have decompressed or scrubbed the body and removed headers). Use select for a JSON field from the full response, subject to the vault's 32 MiB response limit. " +
-    "Any upstream status is a success here; read `status`. A vault refusal is an error with `next`; when a human must approve or reconnect, it also carries `ask` and a link: hand them over and call vault_wait with the id, do not retry.",
+    "Make one HTTP request with an item's credential: the vault adds it on the way to the upstream, which must be in the item's binding. Returns the upstream status, headers and body as the vault returns them (text, at most 256 KiB, possibly decompressed, scrubbed or with headers removed). select takes a JSON field from the full response, up to 32 MiB. " +
+    "Any upstream status is a success here; read `status`, and `hint` if the credential was rejected. A vault refusal is an error with `next`; when a human must approve or reconnect, it also carries `ask` and a link: hand them over and call vault_wait with the id, do not retry.",
   input: z.object({
     item: z.string().optional().describe("the item to use (or run)"),
     run: z.string().optional().describe("a mehen run id whose placeholders the request carries (instead of item)"),
@@ -75,7 +75,8 @@ export const vaultFetch = tool({
       const rules = await rulesAllowed(api, response, request.item ?? null, signal)
       const postures = postureAllowed(response)
       const mandate = mandateAllowed(response)
-      const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}) }
+      const hint = await rejectedHint(api, upstream, request.item ?? null, signal)
+      const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}), ...(hint ? { hint } : {}) }
       if (select !== null) {
         const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY)
         const picked = selectJson(parseJsonBody(bytes, head.status, MCP_SELECT), select)
