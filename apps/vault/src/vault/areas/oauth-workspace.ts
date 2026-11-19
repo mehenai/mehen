@@ -78,8 +78,13 @@ export function forgetClientRejection(ctx: VaultContext, client: string): void {
 // They end at once, failed with the reason, so a machine's wait ends and a
 // new connect makes a new link; their consent is never carried to the new
 // version.
-export function endClientConnects(ctx: VaultContext, client: string, why: "replaced" | "removed"): void {
-  const ended = why === "replaced" ? "Its OAuth client's secret was replaced after this link was made, so the link can no longer sign in; ask for a new link." : "Its OAuth client was removed or moved after this link was made, so the link can no longer sign in; ask for a new link."
+const CONNECT_ENDED_WORDS = {
+  replaced: "Its OAuth client's secret was replaced after this link was made",
+  removed: "Its OAuth client was removed after this link was made",
+  moved: "Its OAuth client was moved to another home after this link was made",
+} as const
+export function endClientConnects(ctx: VaultContext, client: string, why: keyof typeof CONNECT_ENDED_WORDS): void {
+  const ended = `${CONNECT_ENDED_WORDS[why]}, so the link can no longer sign in; ask for a new link.`
   ctx.sql.exec("UPDATE workspace_credential_requests SET status='cancelled',payload=json_set(payload,'$.ended',?) WHERE kind='connect' AND status='open' AND client_id=?", ended, client)
   ctx.sql.exec("DELETE FROM platform_connect_states WHERE connect IN (SELECT id FROM workspace_credential_requests WHERE kind='connect' AND status!='open' AND client_id=?)", client)
 }
@@ -731,8 +736,10 @@ function connectedAtOf(ctx: VaultContext, item: string, basis: ConnectionBasis):
 // so each member's identity gate is left out (capabilityState); the real
 // session and passkey checks apply to the reconnect itself.
 function reconnectors(ctx: VaultContext, credential: string): string[] {
-  const state = credentialAccessState(ctx)
-  return state.members.filter(m => m.status === "active" && m.standing.effectiveRole !== "guest" && can(capabilityState(state, m.id), { kind: "member", memberId: m.id, account: m.account, session: "ses_notice", securityEpoch: 0, sessionCheck: null }, { type: "credential.rotate" }, { credential }, ctx.now()).allowed).map(m => m.account)
+  const state = credentialAccessState(ctx), home = state.credentials.find((c) => c.id === credential)?.home
+  // A guest maintains only their own private credentials.
+  const guestMay = (m: (typeof state.members)[number]) => home?.kind === "member" && home.member === m.id
+  return state.members.filter(m => m.status === "active" && (m.standing.effectiveRole !== "guest" || guestMay(m)) && can(capabilityState(state, m.id), { kind: "member", memberId: m.id, account: m.account, session: "ses_notice", securityEpoch: 0, sessionCheck: null }, { type: "credential.rotate" }, { credential }, ctx.now()).allowed).map(m => m.account)
 }
 
 // What an agent is told about a connection that already needs a person:

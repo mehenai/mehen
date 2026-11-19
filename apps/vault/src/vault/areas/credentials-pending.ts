@@ -66,13 +66,14 @@ export function credentialPending(ctx: VaultContext, principal: AccessPrincipal,
       continue
     result.push({ workspace: invocation.workspace, owner, view: "detail", detail: { kind: "review", id: stored.slug, title: `Replace the client secret of ${stored.slug}`, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/items/${stored.slug}`, expiresAt: null, requestedBy: null, item: stored.slug, reason: "the provider rejected this OAuth client, so the connections that use it are paused; reconnect them once its secret is replaced" } })
   }
-  if (guest)
-    return result
   for (const { slug } of rows(ctx.sql.exec<{
     slug: string
   }>("SELECT slug FROM items WHERE status='needs_reauth' OR review_reason IS NOT NULL"))) {
     const item = checkedCredential(ctx, slug)
     if (!item || paused.has(item.id) || result.some(r => r.view === "detail" && r.detail.id === item.slug))
+      continue
+    // A guest maintains only their own private OAuth connections here.
+    if (guest && !(item.kind === "oauth-connection" && item.home.kind === "member" && item.home.member === principal.memberId))
       continue
     const reconnect = item.status === "needs_reauth"
     // A dead connection is one Reconnect row: an open connect to it (an

@@ -1239,6 +1239,71 @@ it("ends the connects pinned to a client when its secret is replaced, with the r
   })
 })
 
+// Moving a client to another home ends the connects made for it there,
+// with the reason, as replacing its secret does, and drops their platform state.
+it("ends a connect pinned to a client that is moved, with the reason, and its platform state", async () => {
+  const { deviceInvocation, devicePrincipal, memberInvocation: invocationOf } = await import("./credentials-test-support.ts")
+  const { workspaceItemOps } = await import("../src/vault/areas/items-workspace.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const moved = await client(ctx)
+    const machine = devicePrincipal("dev_admin"), asked = await deviceInvocation(ctx, "dev_admin")
+    const c = createWorkspaceConnect(ctx, machine, { provider: "google-gmail", client: "google-client", slug: "gmail-moved", home: "workspace", reason: "Read the inbox" }, asked)
+    ctx.sql.exec("INSERT INTO platform_connect_states(state_hash,connect,expires_at) VALUES (?,?,?)", "hash-moved", c.connect, ctx.now() + 600_000)
+    const after = { kind: "project" as const, project: "prj_a" }
+    const action = { type: "item.rehome" as const, item: moved.id, before: moved.home, after, dependencyRevision: moved.dependencyRevision }
+    workspaceItemOps["items.rehome"].handler(ctx, memberPrincipal(ctx), { slug: "google-client", home: after }, invocationOf(ctx, "owner", action))
+    expect(await workspaceOAuthOps["oauth.connectStatus"].handler(ctx, machine, { connect: c.connect }, asked)).toMatchObject({ status: "failed", message: expect.stringContaining("moved") })
+    expect(workspaceOAuthOps["oauth.connectView"].handler(ctx, memberPrincipal(ctx), { connect: c.connect }, memberInvocation(ctx))).toMatchObject({ status: "failed", message: expect.stringContaining("moved") })
+    expect(ctx.sql.exec("SELECT * FROM platform_connect_states WHERE connect=?", c.connect).toArray()).toEqual([])
+  })
+})
+
+// A guest's own private client and a connection made through it.
+async function guestConnection(ctx: VaultContext) {
+  await client(ctx, { kind: "member", member: "mem_guest" }, "guest-client")
+  const g = memberPrincipal(ctx, "guest"), gi = memberInvocation(ctx, "guest")
+  const c = createWorkspaceConnect(ctx, g, { provider: "google-gmail", client: "guest-client", slug: "gmail-guest", home: "private" }, gi)
+  const action = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, g, { connect: c.connect }, gi))
+  await startWorkspaceConnect(ctx, g, { connect: c.connect, state: "state-guest-123456789" }, memberInvocation(ctx, "guest", action))
+  upstream()
+  await finishWorkspaceConnect(ctx, g, { connect: c.connect, state: "state-guest-123456789", code: "code-guest", error: null }, gi)
+  return checkedCredential(ctx, "gmail-guest")!
+}
+const outboxOf = (ctx: VaultContext, account: string) => ctx.sql.exec<{ payload: string }>("SELECT payload FROM notice_outbox WHERE account=?", account).toArray().map((n) => (JSON.parse(n.payload) as { kind: string }).kind)
+
+// A guest maintains their own private connection: told when it stops, and
+// shown its Reconnect row, as anyone else who may rotate it is; a guest
+// still sees nothing of anyone else's.
+it("tells a guest their private client was rejected and, once its secret is replaced, shows them their connection's Reconnect row", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await guestConnection(ctx)
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_client" }, { status: 401 }))
+    await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth" })
+    expect(outboxOf(ctx, "acc_guest")).toContain("oauth_client_rejected")
+    expect((await needsYouRows(ctx, "guest")).map((r) => [r.kind, r.id])).toEqual([["review", "guest-client"]])
+    await replaceClientSecret(ctx, "guest-client")
+    expect((await needsYouRows(ctx, "guest")).map((r) => [r.kind, r.id])).toEqual([["reconnect", "gmail-guest"]])
+  })
+})
+
+it("tells a guest when their private connection's grant ends, and shows them its Reconnect row", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await guestConnection(ctx)
+    // Someone else's dead connection, which the guest must not see.
+    const other = await connected(ctx)
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=?", ctx.now() - 1)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_grant" }, { status: 400 }))
+    await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth" })
+    await expect(workspaceAccessToken(ctx, other)).rejects.toMatchObject({ code: "needs_reauth" })
+    expect(outboxOf(ctx, "acc_guest")).toEqual(["connection_lost"])
+    expect((await needsYouRows(ctx, "guest")).map((r) => [r.kind, r.id])).toEqual([["reconnect", "gmail-guest"]])
+  })
+})
+
 // The rejection is the client's secret's, not its settings': a description
 // edit keeps it, and only a new secret, a restore or a removal lifts it.
 it("keeps a guest's private client rejected, its repair row and the connect page's notice, across a description edit", async () => {

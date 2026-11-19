@@ -340,6 +340,8 @@ export function rehomeCredentialDependencies(ctx: VaultContext, item: CheckedCre
     if (!clientHome || !connectionHome || !compatibleClientHome(clientHome, connectionHome))
       throw new VaultError("conflict", "This home is incompatible with a credential dependency.")
   }
+  // First, so a connect through this client records why it ended.
+  endClientConnects(ctx, item.id, "moved")
   ctx.sql.exec("UPDATE workspace_credential_requests SET status='cancelled' WHERE client_id=? OR target_id=?", item.id, item.id)
   for (const edge of edges) {
     const connection = one(ctx.sql.exec<{
