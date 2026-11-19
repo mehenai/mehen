@@ -5,7 +5,7 @@
 
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { startChrome } from "../../../tools/ci/chrome.ts"
+import { startChrome, within } from "../../../tools/ci/chrome.ts"
 
 // Where macOS and the Linux packages put Chrome or Chromium, as a path or a
 // command on PATH.
@@ -78,11 +78,16 @@ export async function launchChrome(chromePath: string): Promise<{ cdp: Cdp; clos
   const chrome = await startChrome(chromePath, { flags: ["--disable-gpu", "--hide-scrollbars"], profilePrefix: "mehen-gallery-" })
   const ws = new WebSocket(chrome.endpoint)
   try {
-    await new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve())
-      ws.addEventListener("error", () => reject(new Error(`could not connect to Chrome's devtools socket at ${chrome.endpoint}`)))
-    })
+    const opened = await within(
+      new Promise<true>((resolve, reject) => {
+        ws.addEventListener("open", () => resolve(true))
+        ws.addEventListener("error", () => reject(new Error(`could not connect to Chrome's devtools socket at ${chrome.endpoint}`)))
+      }),
+      30_000,
+    )
+    if (opened === null) throw new Error(`Chrome's devtools socket at ${chrome.endpoint} did not answer within 30 s`)
   } catch (error) {
+    ws.close()
     await chrome.close()
     throw error
   }
@@ -90,7 +95,7 @@ export async function launchChrome(chromePath: string): Promise<{ cdp: Cdp; clos
   return {
     cdp,
     close: async () => {
-      await Promise.race([cdp.send("Browser.close").catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5_000))])
+      await within(cdp.send("Browser.close").catch(() => undefined), 5_000)
       await chrome.close()
     },
   }

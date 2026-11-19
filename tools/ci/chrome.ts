@@ -33,12 +33,26 @@ export const CHROME_FLAGS = ["--headless=new", "--remote-debugging-port=0", "--n
 
 export type StartedChrome = { process: ChildProcess; endpoint: string; profile: string; close: () => Promise<void> }
 
-// The two lines of DevToolsActivePort, or null while it is absent or partial.
+// The two lines of DevToolsActivePort, or null while it is absent or
+// partial: the browser's path is complete only with its whole id, a UUID,
+// so a file caught mid-write is never read as a shorter path.
+const BROWSER_PATH = /^\/devtools\/browser\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function devToolsEndpoint(text: string | null): string | null {
   if (text === null) return null
   const [port, path] = text.split("\n")
-  if (port === undefined || path === undefined || !/^[1-9][0-9]{0,4}$/.test(port) || !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(path)) return null
+  if (port === undefined || path === undefined || !/^[1-9][0-9]{0,4}$/.test(port) || !BROWSER_PATH.test(path)) return null
   return `ws://127.0.0.1:${port}${path}`
+}
+
+// The promise's value, or null once `ms` has passed; the timer goes either
+// way, so a finished wait never keeps the process alive.
+export async function within<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([promise, new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), ms)))])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function exited(child: ChildProcess): Promise<void> {
@@ -49,8 +63,8 @@ async function stop(child: ChildProcess): Promise<void> {
   // No pid: it never started, so there is nothing to stop or wait for.
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return
   child.kill("SIGTERM")
-  const gone = await Promise.race([exited(child).then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000))])
-  if (!gone) {
+  const gone = await within(exited(child).then(() => true), 5_000)
+  if (gone === null) {
     child.kill("SIGKILL")
     await exited(child)
   }

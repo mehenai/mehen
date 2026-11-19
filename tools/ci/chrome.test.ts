@@ -25,24 +25,51 @@ const profiles = async () => (await all()).filter((n) => !before.includes(n))
 
 describe("devToolsEndpoint", () => {
   test("only both lines, a port and the browser's path, make an endpoint", () => {
-    expect(devToolsEndpoint("9222\n/devtools/browser/0b1c-2d3e\n")).toBe("ws://127.0.0.1:9222/devtools/browser/0b1c-2d3e")
-    for (const partial of [null, "", "9222", "9222\n", "9222\n/devtools/br", "0\n/devtools/browser/x", "abc\n/devtools/browser/x", "9222\n/devtools/page/x"]) expect(devToolsEndpoint(partial)).toBeNull()
+    const uuid = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"
+    expect(devToolsEndpoint(`9222\n/devtools/browser/${uuid}`)).toBe(`ws://127.0.0.1:9222/devtools/browser/${uuid}`)
+    expect(devToolsEndpoint(`9222\n/devtools/browser/${uuid}\n`)).toBe(`ws://127.0.0.1:9222/devtools/browser/${uuid}`)
+    // Every cut of the path short of the whole id is partial, never an endpoint.
+    for (let cut = 0; cut < uuid.length; cut++) expect(devToolsEndpoint(`9222\n/devtools/browser/${uuid.slice(0, cut)}`)).toBeNull()
+    for (const partial of [null, "", "9222", "9222\n", "9222\n/devtools/br", `0\n/devtools/browser/${uuid}`, `abc\n/devtools/browser/${uuid}`, `9222\n/devtools/page/${uuid}`, "9222\n/devtools/browser/0b1c-2d3e"]) expect(devToolsEndpoint(partial)).toBeNull()
   })
 })
 
 describe("startChrome", () => {
   test("waits through a slow start and a file written in two steps, then close stops it and removes its profile", async () => {
-    const chrome = await fake('sleep 1; printf 9222 > "$profile/DevToolsActivePort"; sleep 0.4; printf "9222\\n/devtools/browser/abc-123\\n" > "$profile/DevToolsActivePort"; exec sleep 30')
+    const chrome = await fake('sleep 1; printf 9222 > "$profile/DevToolsActivePort"; sleep 0.4; printf "9222\\n/devtools/browser/0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d\\n" > "$profile/DevToolsActivePort"; exec sleep 30')
     const started = await startChrome(chrome, { flags: ["--extra"], profilePrefix: "mehen-chrome-test-" })
-    expect(started.endpoint).toBe("ws://127.0.0.1:9222/devtools/browser/abc-123")
+    expect(started.endpoint).toBe("ws://127.0.0.1:9222/devtools/browser/0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d")
     expect(await profiles()).toHaveLength(1)
     await started.close()
     expect(started.process.exitCode !== null || started.process.signalCode !== null).toBe(true)
     expect(await profiles()).toEqual([])
   })
 
+  test("a browser path written in two pieces is waited for, never used cut short", async () => {
+    const chrome = await fake('printf "9222\\n/devtools/browser/0b1c2d3e-4f50" > "$profile/DevToolsActivePort"; sleep 0.5; printf "9222\\n/devtools/browser/0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d" > "$profile/DevToolsActivePort"; exec sleep 30')
+    const started = await startChrome(chrome, { profilePrefix: "mehen-chrome-test-" })
+    expect(started.endpoint).toBe("ws://127.0.0.1:9222/devtools/browser/0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d")
+    await started.close()
+  })
+
+  test("closing leaves no timer behind: a script that starts and closes Chrome exits at once", async () => {
+    const chrome = await fake('printf "9222\\n/devtools/browser/0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d" > "$profile/DevToolsActivePort"; exec sleep 30')
+    const script = join(dir, "run.ts")
+    await writeFile(script, `import { startChrome, within } from ${JSON.stringify(join(import.meta.dir, "chrome.ts"))}\nconst c = await startChrome(${JSON.stringify(chrome)}, { profilePrefix: "mehen-chrome-test-" })\nawait c.close()\nawait within(Promise.resolve(1), 5_000)\n`)
+    const begun = Date.now()
+    const proc = Bun.spawn([process.execPath, script], { stdout: "ignore", stderr: "inherit" })
+    expect(await proc.exited).toBe(0)
+    expect(Date.now() - begun).toBeLessThan(3_000)
+  })
+
+  test("within gives the value, or null once the time is up", async () => {
+    const { within } = await import("./chrome.ts")
+    expect(await within(Promise.resolve(7), 1_000)).toBe(7)
+    expect(await within(new Promise<number>(() => undefined), 50)).toBeNull()
+  })
+
   test("every start gets a profile of its own", async () => {
-    const chrome = await fake('printf "9222\\n/devtools/browser/abc\\n" > "$profile/DevToolsActivePort"; exec sleep 30')
+    const chrome = await fake('printf "9222\\n/devtools/browser/0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d" > "$profile/DevToolsActivePort"; exec sleep 30')
     const [a, b] = await Promise.all([startChrome(chrome, { profilePrefix: "mehen-chrome-test-" }), startChrome(chrome, { profilePrefix: "mehen-chrome-test-" })])
     expect(a.profile).not.toBe(b.profile)
     await Promise.all([a.close(), b.close()])
