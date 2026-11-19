@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest"
 import { VaultError } from "../src/http.ts"
 import { workspaceRunOps } from "../src/vault/areas/runs-workspace.ts"
-import { drainOutbox, noticeScan } from "../src/vault/areas/workspace-runtime.ts"
+import { drainOutbox, installSecurity, noticeScan, updateRestriction } from "../src/vault/areas/workspace-runtime.ts"
 import { accessMember } from "./workspace-fixtures.ts"
 import { noticeRows } from "../src/ui/pages/needs-you.ts"
 import type { VaultContext } from "../src/vault/core.ts"
@@ -91,6 +91,26 @@ describe("runs.create refused project_unshared", () => {
       expect(shareNotices(ctx)[0]!.payload).toMatchObject({ member: { member: "mem_guest" } })
     })
   })
+
+  // A share request queued to someone who may no longer share the project
+  // is not listed to them: the right is checked again when Needs you is read.
+  const CHANGES: [string, string, (ctx: VaultContext) => void][] = [
+    ["their Manage share was removed", "member", (ctx) => ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_member_b'")],
+    ["a recovery restriction began", "admin", (ctx) => { installSecurity(ctx, "acc_admin", 0, null); updateRestriction(ctx, "acc_admin", 0, { reason: "recovery", until: ctx.now() + 86_400_000, notice: "ntc_recovery" }) }],
+    ["a security change is pending", "admin", (ctx) => installSecurity(ctx, "acc_admin", 0, { transitionId: "ast_pending", reservedEpoch: 1, revokedSessionIds: [], removedFactorIds: [], restriction: null })],
+  ]
+  for (const [change, role, apply] of CHANGES)
+    it(`stops listing a queued share request to a recipient once ${change}, and keeps it for the others`, async () => {
+      const f = await projectFixture()
+      await inAccess(f.tenant, async (ctx) => {
+        ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", "shr_member_b", "prj_b", "member", "mem_member", JSON.stringify({ id: "shr_member_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: false, expiresAt: null }))
+        await refused(ctx)
+        const listed = (who: string) => noticeScan(ctx, accessMember(projectState(ctx), who), null).notices.filter((n) => n.payload.kind === "project_share_requested").length
+        expect([listed(role), listed("owner")]).toEqual([1, 1])
+        apply(ctx)
+        expect([listed(role), listed("owner")]).toEqual([0, 1])
+      })
+    })
 
   it("leaves a team machine's refusal as it was: no notice, and no link to the project", async () => {
     const f = await projectFixture()

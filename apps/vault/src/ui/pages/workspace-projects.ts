@@ -198,6 +198,7 @@ function shareLevelOptions(): Html {
 }
 
 const SHARE_GUEST_OWNER_ONLY = "Only an owner or admin can share this project with a guest."
+const SHARE_REQUEST_UNAVAILABLE = "The person this share request named cannot be shared with here now: they may have been suspended or removed. Choose who to share with."
 
 function sharesCard(data: ProjectPageData, controls: ProjectControls, names: Names): Html {
   const shares = data.project.shares
@@ -210,9 +211,12 @@ function sharesCard(data: ProjectPageData, controls: ProjectControls, names: Nam
   const teams = data.viewer.role === "guest" ? [] : (data.teams ?? [])
   const reach = workspaceReach(data)
   const asked = data.shareWith != null && members.some((m) => m.member === data.shareWith) ? data.shareWith : null
-  // A share request naming a guest this viewer may not share with: the form
-  // says why and chooses no one, so nobody else is shared with by mistake.
-  const notOffered = data.shareWith != null && asked === null && controls.share && !controls.shareWithGuests && (data.members ?? []).some((m) => m.member === data.shareWith && m.status === "active" && m.role === "guest") ? SHARE_GUEST_OWNER_ONLY : null
+  // A share request naming someone this page cannot offer (a guest this
+  // viewer may not share with, a member suspended or removed since, or a
+  // member list it could not read): the form says why and chooses no one,
+  // so nobody else is shared with by mistake.
+  const guestOwnerOnly = !controls.shareWithGuests && (data.members ?? []).some((m) => m.member === data.shareWith && m.status === "active" && m.role === "guest")
+  const notOffered = data.shareWith != null && asked === null && controls.share ? (guestOwnerOnly ? SHARE_GUEST_OWNER_ONLY : SHARE_REQUEST_UNAVAILABLE) : null
   return html`<section class="card" aria-label="Shared with" data-region="shares">
     <div class="card-head"><h2>Shared with</h2></div>
     ${shares.length
@@ -225,7 +229,7 @@ function sharesCard(data: ProjectPageData, controls: ProjectControls, names: Nam
     ${controls.share
       ? html`<details class="fold edit" data-region="share-fold"${asked !== null || notOffered !== null ? " open" : ""}>
           <summary>${icon("chevronRight")}<span>Share this project</span></summary>
-          <form class="stack" data-form="share" novalidate>
+          <form class="stack" data-form="share"${data.shareWith != null ? html` data-requested="${data.shareWith}"` : ""} novalidate>
             ${notOffered !== null ? html`<p class="notice warn" data-region="share-not-offered">${notOffered}</p>` : ""}
             <label class="field"><span class="label">With</span><select data-input="subject">${notOffered !== null ? html`<option value="" selected>Choose who to share with</option>` : ""}<optgroup label="People">${members.map(
               (m) => html`<option value="${m.member}" data-kind="member" data-role="${m.role}"${m.member === asked ? " selected" : ""}>${cardText(m.name)} (${m.member})${m.role === "guest" ? ", guest" : ""}</option>`,

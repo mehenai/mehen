@@ -210,8 +210,15 @@ export function shareRequestPath(project: string, member: string): string {
 // owner or admin for a guest). There is no session here, so each one's
 // identity gate is left out (capabilityState); the share asks for it.
 function shareRequestAccounts(ctx: VaultContext, project: string, member: string): string[] {
-  const state = accessState(ctx), now = ctx.now(), after = { level: "use" as const, protected: false, expiresAt: null }
-  return state.members.filter((m) => m.status === "active" && m.id !== member && can(capabilityState(state, m.id), { kind: "member", memberId: m.id, account: m.account, session: "ses_notice", securityEpoch: 0, sessionCheck: null }, { type: "project.share", after }, { project, member }, now).allowed).map((m) => m.account)
+  const state = accessState(ctx), now = ctx.now()
+  return state.members.filter((m) => mayShareWith(state, m, project, member, now)).map((m) => m.account)
+}
+// Whether `m` may share `project` with `member` now, as the share itself is
+// decided, its session gate aside. Checked again when Needs you lists a
+// share request, so one whose recipient lost the right is not shown.
+function mayShareWith(state: AccessState, m: AccessMember, project: string, member: string, now: number): boolean {
+  const after = { level: "use" as const, protected: false, expiresAt: null }
+  return m.status === "active" && m.id !== member && can(capabilityState(state, m.id), { kind: "member", memberId: m.id, account: m.account, session: "ses_notice", securityEpoch: 0, sessionCheck: null }, { type: "project.share", after }, { project, member }, now).allowed
 }
 // How many accounts it queued the notice for.
 export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, sourceId?: string): number {
@@ -395,6 +402,8 @@ export function noticeScan(ctx: VaultContext, principal: WorkspaceRuntimePrincip
     if (principal.kind === "device" && !(payload.kind === "machine_added" && payload.device === principal.deviceId)) return []
     // A share request resolves once the project is shared with its member.
     if (payload.kind === "project_share_requested" && effectiveAccess(state, { kind: "member", id: payload.member.member }, payload.project.id, ctx.now()).level !== null) return []
+    // Nor is it listed to one who may no longer share it with them.
+    if (payload.kind === "project_share_requested" && !mayShareWith(state, member, payload.project.id, payload.member.member, ctx.now())) return []
     if (member.standing.effectiveRole === "guest" && !(payload.kind === "machine_added" && payload.owner.kind === "member" && payload.owner.member === member.id || payload.kind === "owner_changed" && payload.member === member.id)) return []
     return [OutboxEventSchema.parse({ id: row.id, account: row.account, payload, at: row.created_at, url: `${ctx.env.VAULT_ORIGIN}/w/${payload.workspace.slug}${payload.kind === "machine_added" ? `/devices/${payload.device}` : payload.kind === "backup_recipient" ? "/settings" : payload.kind === "member_joined" ? "/people" : payload.kind === "project_share_requested" ? shareRequestPath(payload.project.id, payload.member.member) : "/"}` })]
   })
