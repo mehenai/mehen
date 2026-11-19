@@ -459,7 +459,7 @@ function wireFillChoice(boot: IntakeBoot, form: HTMLElement): void {
   })
 }
 
-type ConnectPageBoot = HomeBoot & { connect: string; terms: ConnectTerms }
+type ConnectPageBoot = HomeBoot & { connect: string; terms: ConnectTerms; blocked?: true }
 
 export function initWorkspaceConnect(raw: Boot, maybe: ShellState | null): void {
   const shell = needShell(maybe)
@@ -468,7 +468,8 @@ export function initWorkspaceConnect(raw: Boot, maybe: ShellState | null): void 
   wireHomeSummary()
   const button = must<HTMLButtonElement>('[data-action="start-connect"]')
   const cancel = find<HTMLButtonElement>('[data-action="cancel-request"]')
-  const g = gate([button, cancel], () => true)
+  // Its client rejected: nothing can start until the secret is replaced.
+  const g = gate([button, cancel], (b) => b !== button || boot.blocked !== true)
   if (cancel) wire(cancel, g, "Stopping...", cancelRequest(shell, cancel))
   wire(button, g, "Waiting for your passkey...", async () => {
     const home = chosenHome(boot)

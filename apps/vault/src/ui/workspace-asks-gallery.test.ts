@@ -51,6 +51,20 @@ function between(text: string, from: string, to: string): string {
   return text.slice(start, end === -1 ? undefined : end)
 }
 
+describe("a connect whose OAuth client the provider rejected", () => {
+  it("says so, links to the client only when the reader may see it, and keeps Continue off", () => {
+    const seen = rendered("ws-connect-client-rejected")
+    expect(seen).toContain('data-region="connect-client-rejected"')
+    expect(seen).toContain('href="/w/northwind/items/google-client"')
+    expect(seen).toContain("&quot;blocked&quot;:true")
+    expect(seen).toMatch(/data-action="start-connect"[^>]* disabled/)
+    const hidden = rendered("ws-connect-client-rejected-hidden")
+    expect(hidden).toContain('data-region="connect-client-rejected"')
+    expect(hidden).not.toContain("/items/google-client")
+    expect(rendered("ws-connect")).not.toContain('data-region="connect-client-rejected"')
+  })
+})
+
 describe("the workspace asks gallery", () => {
   it("is registered in the gallery script, with every page kind once per id", () => {
     expect(GALLERY_SCRIPT).toContain('import { workspaceAsksGallery } from "../src/ui/workspace-asks-gallery.ts"')
@@ -591,7 +605,7 @@ describe("allow this from now on", () => {
     const ttls = panel.match(/data-input="rule-ttl" value="\d+"( checked)?><span>[^<]+/g) ?? []
     expect(ttls).toEqual(['data-input="rule-ttl" value="86400"><span>1 day', 'data-input="rule-ttl" value="604800" checked><span>7 days', 'data-input="rule-ttl" value="2592000"><span>30 days'])
     expect(panel).toContain("<dt>Still asks</dt><dd>Anything else on this credential, and any request that sends, pays, shares or deletes</dd>")
-    expect(panel).toContain("<dt>Ends sooner</dt><dd>if access changes or this credential is edited</dd>")
+    expect(panel).toContain("<dt>Ends sooner</dt><dd>if access changes or this credential is replaced, reconnected or edited</dd>")
     expect(panel).toContain('<p class="small refused" id="rule-mismatch" aria-live="polite" data-region="rule-mismatch" hidden>')
     expect(panel).not.toContain('data-region="rule-cosign"')
     expect(panel).not.toContain('data-region="rule-context"')

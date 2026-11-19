@@ -262,7 +262,8 @@ export function credentialRenewal(item: Pick<WorkspaceItemDescription, "kind" | 
 // `renewal` is null when this viewer may not renew it.
 function attentionNotice(item: WorkspaceItemDescription, renewal: CredentialRenewal | null): Html {
   const clears = renewal === null ? " Whoever manages where it belongs can clear it." : renewal.starts === "connect" ? " Reconnecting under Manage clears it." : " Replacing the secret under Manage clears it."
-  if (item.status === "needs_reauth") return html`<div class="notice error" data-region="item-reconnect"><p><b>Needs reconnecting.</b> The provider stopped accepting its token, so agents cannot use it until someone signs in again.${clears}</p></div>`
+  if (item.status === "needs_reauth" && item.kind === "oauth-client") return html`<div class="notice error" data-region="item-replace-secret"><p><b>Needs a new secret.</b> ${item.review !== undefined ? html`${cardText(item.review.reason)}.` : "The provider rejected this OAuth client, so the connections that use it are paused."}${clears}</p></div>`
+  if (item.status === "needs_reauth") return html`<div class="notice error" data-region="item-reconnect"><p><b>Needs reconnecting.</b> ${item.review !== undefined ? html`Agents cannot use it until someone signs in again: ${cardText(item.review.reason)}.` : "The provider stopped accepting its token, so agents cannot use it until someone signs in again."}${clears}</p></div>`
   if (item.review !== undefined) return html`<div class="notice warn" data-region="item-review"><p><b>Needs review</b> since ${timeTag(item.review.since)}: ${cardText(item.review.reason)}.${clears}</p></div>`
   return html``
 }
@@ -364,7 +365,7 @@ export function workspaceCredentialPage(shell: WorkspaceShell, data: CredentialP
     workspace: shell,
     current: "credentials",
     ...(rulesLine !== undefined ? { policyRules: rulesLine } : {}),
-    boot: { page: "ws-credential", slug: item.slug, home: item.home, id: item.id, version: item.version, configRevision: item.configRevision, dependencyRevision: item.dependencyRevision, ...(item.previous ? { previous: item.previous.version } : {}), ...web },
+    boot: { page: "ws-credential", slug: item.slug, home: item.home, id: item.id, kind: item.kind, version: item.version, configRevision: item.configRevision, dependencyRevision: item.dependencyRevision, ...(item.previous ? { previous: item.previous.version } : {}), ...web },
     body: html`${pageHead({ tile: serviceTile(item, "xl"), eyebrow: "Credential", title: cardText(item.slug), lead: html`${cardText(serviceName(item))}${item.account !== null ? html` as ${cardText(item.account)}` : ""}` })}
       ${data.viewer.held === true ? notice("warn", HELD_WORDS) : ""}
       ${attentionNotice(item, controls.rotate ? credentialRenewal(item) : null)}

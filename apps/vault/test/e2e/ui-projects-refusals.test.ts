@@ -90,7 +90,7 @@ describe("an old item page and a replacement credential", () => {
   it("the old page's delete signature is refused for the replacement, which survives; the page refuses before signing", async () => {
     const f = await setup()
     await addCredential(f, f.alex, f.work, "reused-key", { kind: "workspace" })
-    const shown = await body<{ id: string; version: number; configRevision: number; dependencyRevision: number }>(await f.request(`/api/w/${WS}/items/reused-key`, f.alex))
+    const shown = await body<{ id: string; kind: string; version: number; configRevision: number; dependencyRevision: number }>(await f.request(`/api/w/${WS}/items/reused-key`, f.alex))
     const oldPage = (await page(f, `/w/${WS}/items/reused-key`, f.alex)).text
     expect(oldPage).toContain(`&quot;id&quot;:&quot;${shown.id}&quot;`)
     // The old page prepares and signs its delete, but does not send it yet.

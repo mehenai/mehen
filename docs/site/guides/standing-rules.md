@@ -60,7 +60,7 @@ Both show the same panel, "From now on, without asking you":
 | Context | The project and environment, when the request named them |
 | How long | 1 day, 7 days (the default) or 30 days |
 | Still asks | "Anything else on this credential, and any request that sends, pays, shares or deletes" |
-| Ends sooner | "if access changes or this credential is edited" |
+| Ends sooner | "if access changes or this credential is replaced, reconnected or edited" |
 
 The vault builds these terms from the request it stored, never from the agent's description. The page checks its copy against the vault's before Approve turns on, and the passkey signs the digest of the terms with the path and duration chosen.
 
@@ -80,7 +80,7 @@ A rule ends at its deadline, which is never more than 30 days away. It ends soon
 
 - someone stops it;
 - access changes under it: the person who approved or co-signed leaves, changes role or loses the right to decide, the machine is revoked or rescoped, the workload ends, or a protected environment starts to reference the credential;
-- the credential is edited.
+- the credential is replaced (a new value), reconnected or edited.
 
 The credential's page and the machine's page list rules under "Allowed without asking": who, the request, who approved, uses, last use and end, with **Stop** and **Extend**. Stopping only narrows, so it needs no passkey; the machine's owner, the person who approved or co-signed, any manager of the credential's home, a manager of the project the request was asked in, and an owner or admin may stop a rule, as may a member of the team for a team's machine (never a guest). The agent stops its own with `mehen policy revoke <rul_id>` (MCP `vault_policy` `revoke`); `mehen policy stop` is the old name.
 
@@ -137,7 +137,7 @@ The vault refuses a grant with `forbidden` and says why:
 
 A guest's machine cannot ask for a task grant (`forbidden`), and a protected credential always asks (`environment_refused`).
 
-A grant covers only the reviewed routes marked routine in its areas, with no query string and with a JSON body, on that credential's host. Deletes, secrets, sending, sharing, payments and anything outside the areas still ask. A request it let through answers as usual; `mehen fetch` adds "allowed without asking by task grant rul_..., use 3 of 50, ends ..." on stderr, and `--json` carries the use count in `rules`. `mehen policy ls --grants` lists your grants with their areas, uses, end and what they were used for. The grant ends at its deadline, at its last use, when someone stops it, when access changes or the credential is edited, or when a newer grant for the same credential and key replaces it. A request racing for the last use gets the `conflict` above: send it once more, and it asks.
+A grant covers only the reviewed routes marked routine in its areas, with no query string and with a JSON body, on that credential's host. Deletes, secrets, sending, sharing, payments and anything outside the areas still ask. A request it let through answers as usual; `mehen fetch` adds "allowed without asking by task grant rul_..., use 3 of 50, ends ..." on stderr, and `--json` carries the use count in `rules`. `mehen policy ls --grants` lists your grants with their areas, uses, end and what they were used for. The grant ends at its deadline, at its last use, when someone stops it, when access changes or the credential is replaced, reconnected or edited, or when a newer grant for the same credential and key replaces it. A request racing for the last use gets the `conflict` above: send it once more, and it asks.
 
 `mehen check` says when a live task grant may cover a held request ("A task grant on issues may cover this ...", `mayCover` in `--json`). It is a hint: it reads the request as made outside any project, the exit code stays the policy's, and the vault decides when the request is sent.
 
