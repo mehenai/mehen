@@ -151,11 +151,14 @@ describe("vault URL", () => {
     dir = await tempDir()
     const env = { MEHEN_HOME: dir.path }
     const record = (origin: string) => writeFile(join(dir.path, "local-vault.json"), JSON.stringify({ origin, data: "/x", port: 7787, service: "process" }), { mode: 0o600 })
-    for (const origin of ["http://localhost:7787", "http://127.0.0.1:7799", "http://[::1]:7787"]) {
+    for (const origin of ["http://localhost:7787", "http://127.0.0.1:7799", "http://[::1]:7787", "http://localhost:1", "http://localhost:65535"]) {
       await record(origin)
       expect(defaultVault(env)).toEqual({ url: origin, source: "local" })
     }
-    for (const origin of ["https://vault.example", "https://localhost:7787", "http://localhost", "http://127.0.0.1", "http://localhost:80", "http://[::1]", "http://127.0.0.2:7787", "http://localhost.:7787", "http://user@localhost:7787", "http://localhost:7787/path", "http://localhost:7787?q", "ws://localhost:7787"]) {
+    // `mehen up --port 80` writes http://localhost:80, whose canonical origin drops the port.
+    await record("http://localhost:80")
+    expect(defaultVault(env)).toEqual({ url: "http://localhost", source: "local" })
+    for (const origin of ["https://vault.example", "https://localhost:7787", "http://localhost", "http://127.0.0.1", "http://localhost:0", "http://localhost:65536", "http://localhost:07787", "http://localhost:", "http://[::1]", "http://127.0.0.2:7787", "http://localhost.:7787", "http://user@localhost:7787", "http://localhost:7787/path", "http://localhost:7787?q", "ws://localhost:7787"]) {
       await record(origin)
       expect({ origin, vault: defaultVault(env) }).toEqual({ origin, vault: { url: DEFAULT_VAULT_URL, source: "default" } })
     }

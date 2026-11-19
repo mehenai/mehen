@@ -10,21 +10,24 @@ import { SYSTEMD_UNIT } from "./up/service.ts"
 
 export const LOCAL_VAULT_RECORD = "local-vault.json"
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"])
+// Exactly what `mehen up` writes: plain http to localhost, 127.0.0.1 or
+// [::1], with its port written out (1 to 65535, as up accepts it).
+const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})$/
 
-// The record's origin when it is a vault on this machine: plain http to
-// localhost, 127.0.0.1 or [::1] with its port written out, which is all
-// `mehen up` ever records. Anything else, and a record that is missing or
-// broken, is null, so the default is unchanged. Never throws.
+// The record's origin, canonical, when it is a vault on this machine. The
+// port is checked in the record as written: the canonical origin drops a
+// default :80, which `mehen up --port 80` records. Anything else, and a
+// record that is missing or broken, is null, so the default is unchanged.
+// Never throws.
 export function localVaultOrigin(root: string): string | null {
   try {
     const value: unknown = JSON.parse(readFileSync(join(root, LOCAL_VAULT_RECORD), "utf8"))
     if (typeof value !== "object" || value === null) return null
     const origin = (value as Record<string, unknown>).origin
     if (typeof origin !== "string") return null
-    const canonical = canonicalOrigin(origin)
-    const url = new URL(canonical)
-    return url.protocol === "http:" && LOCAL_HOSTS.has(url.hostname) && url.port !== "" && canonical === origin ? canonical : null
+    const match = LOCAL_ORIGIN.exec(origin)
+    if (match === null || Number(match[2]) > 65535) return null
+    return canonicalOrigin(origin)
   } catch {
     return null
   }
