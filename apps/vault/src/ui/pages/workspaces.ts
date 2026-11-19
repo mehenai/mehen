@@ -129,17 +129,27 @@ function summaries(shell: WorkspaceShell, data: HomeData): Html {
   </div>${data.items === null || data.devices === null || data.projects === null ? html`<p class="small muted">A ? is a list that could not be read just now.</p>` : ""}</section>`
 }
 
+const CONNECT_LABEL = "Connect an agent"
+
 const GUEST_ADMISSION = "An owner, an admin or a manager of the shared project admits a guest's machine before it can use anything."
 
 // The Get started items this viewer sees, each
 // done from what the viewer's own reads show: owners and admins four,
 // members the first two, guests the first with the admission sentence.
+// Once one of the viewer's own machines is enrolled (mehen up enrols the
+// machine it runs on), the card no longer offers to connect one.
 export function getStartedItems(shell: WorkspaceShell, data: HomeData): GetStartedItem[] {
+  const connected = data.devices?.some((d) => !d.revoked && d.owner.kind === "member" && d.owner.member === data.viewer.member) ?? false
+  const items = allGetStartedItems(shell, data)
+  return connected ? items.slice(1) : items
+}
+
+function allGetStartedItems(shell: WorkspaceShell, data: HomeData): GetStartedItem[] {
   const slug = shell.identity.workspace.slug
   const role = data.viewer.role
   const setup = agentSetup(shell.identity.origin, slug)
   const connect: GetStartedItem = {
-    label: "Connect an agent",
+    label: CONNECT_LABEL,
     body: html`Paste this line into your agent, then open the approval link it gives you. The <a href="${workspaceHref(slug, "/connect-agent")}">Connect an agent page</a> gives a line that also sends the approval to your Needs you.${role === "guest" ? html` ${GUEST_ADMISSION}` : ""}`,
     more: setup !== null ? copyBox(setup.prompt) : undefined,
     done: data.devices?.some((d) => !d.revoked && d.owner.kind === "member" && d.owner.member === data.viewer.member) ?? false,
@@ -171,11 +181,11 @@ export function getStartedItems(shell: WorkspaceShell, data: HomeData): GetStart
   ]
 }
 
-const STEP_WORDS: Readonly<Record<number, string>> = { 1: "One step", 2: "Two short steps", 4: "Four short steps" }
+const STEP_WORDS: Readonly<Record<number, string>> = { 1: "One step", 2: "Two short steps", 3: "Three short steps", 4: "Four short steps" }
 
 function getStartedCard(shell: WorkspaceShell, data: HomeData): Html {
   const items = getStartedItems(shell, data)
-  if (items.every((i) => i.done)) return html``
+  if (items.length === 0 || items.every((i) => i.done)) return html``
   return getStarted({ workspace: shell.identity.workspace.id, sub: `${STEP_WORDS[items.length] ?? `${items.length} short steps`}. This card goes away when they are done.`, items })
 }
 
@@ -188,7 +198,7 @@ export function workspaceHomePage(shell: WorkspaceShell, data?: HomeData): PageI
   // While Get started shows its first step undone, that step is the way to
   // connect; the header offers no second one beside it.
   const first = data !== undefined ? getStartedItems(shell, data)[0] : undefined
-  const stepShown = first !== undefined && !first.done
+  const stepShown = first !== undefined && first.label === CONNECT_LABEL && !first.done
   const agent = shell.pages.includes("connect-agent") && !stepShown ? html`<a class="btn secondary" href="${workspaceHref(slug, "/connect-agent")}">${icon("terminal")}<span>Connect an agent</span></a>` : undefined
   const head = pageHead({ title: cardText(shell.identity.workspace.name), lead: html`<span class="workspace-identity">${identityLine(shell.identity)}</span>`, actions: agent })
   return {

@@ -25,6 +25,7 @@ import { BACKENDS, type Backend, type Config, DEFAULT_VAULT_URL, type Env, asser
 import { keyPath, readKeyScope } from "./device-key.ts"
 import { type EnrolmentRecord, type WorkspaceIntent, isPendingRecord, readEnrolmentRecord, recordAsk, recordFingerprint, recordFromLegacyEntry } from "./enrolment-record.ts"
 import { CliError, usageError } from "./errors.ts"
+import { defaultVault } from "./local-vault.ts"
 import { PENDING_DIR, WORKSPACES_DIR, managedHost, originKey, resolveHome, rootAboveSlot } from "./home.ts"
 import { type LedgerScope, ledgerOrigins, readLedger, readLegacyEnrolments } from "./ledger.ts"
 import type { ManifestWorkspace } from "./run/manifest.ts"
@@ -496,7 +497,7 @@ function waitNotFound(env: Env, id: string): CliError {
   if (id.startsWith("enr_")) {
     let vaultUrl = DEFAULT_VAULT_URL
     try {
-      vaultUrl = canonicalOrigin(env.MEHEN_VAULT_URL || DEFAULT_VAULT_URL)
+      vaultUrl = canonicalOrigin(env.MEHEN_VAULT_URL || defaultVault(env).url)
     } catch {
       // The message keeps the default; the bad URL is refused where it is used.
     }
