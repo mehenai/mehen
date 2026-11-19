@@ -4,7 +4,7 @@
 // WorkspaceVault object, as `mehen serve` runs it.
 
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { WorkspaceVault } from "mehen-local:vault"
@@ -129,5 +129,86 @@ describe("the management guard on the local edition", () => {
       expect([query, refusal(() => ctx.sql.exec(query))]).toEqual([query, expect.stringContaining("guard's own")])
     }
     expect(unmarkedWrite(ctx)).toContain("management_guard")
+  })
+
+  // The seventh review: a statement whose conflict algorithm is ROLLBACK
+  // ends the native transaction while the guard's scope is still open.
+  const ROLLBACKS = [
+    "INSERT OR ROLLBACK INTO tenant_state(key,value) VALUES ('guard_rollback_probe','1'),('guard_rollback_probe','2')",
+    "WITH v(k) AS (VALUES ('guard_rollback_probe')) INSERT OR ROLLBACK INTO tenant_state(key,value) SELECT k,'1' FROM v UNION ALL SELECT k,'2' FROM v",
+    "UPDATE OR ROLLBACK tenant_state SET key='guard_probe_a' WHERE key IN ('guard_probe_a','guard_probe_b')",
+    "insert /* a comment */ or\n  rollback into tenant_state(key,value) values ('x','1')",
+  ]
+  test.each(ROLLBACKS)("refuses %s, and no marker outlives the transaction", (query) => {
+    const ctx = workspace()
+    ctx.storage.transactionSync(() => {
+      guard.beforeManagementChange(ctx)
+      ctx.sql.exec("INSERT INTO tenant_state(key,value) VALUES ('guard_probe_a','1'),('guard_probe_b','2')")
+    })
+    const failed = refusal(() => ctx.storage.transactionSync(() => {
+      guard.beforeManagementChange(ctx)
+      try { ctx.sql.exec(query) } catch { /* caught, as a handler might */ }
+      guard.beforeManagementChange(ctx)
+      throw new Error("after rollback")
+    }))
+    expect(failed).toBe("after rollback")
+    expect(refusal(() => ctx.sql.exec(query))).toMatch(/OR ROLLBACK/)
+    expect(unmarkedWrite(ctx)).toContain("management_guard")
+    expect(value(ctx)).toBe("{}")
+  })
+
+  test("leaves the vault's own literals and names that spell rollback alone", () => {
+    const ctx = workspace()
+    ctx.storage.transactionSync(() => {
+      guard.beforeManagementChange(ctx)
+      ctx.sql.exec("INSERT INTO tenant_state(key,value) VALUES ('or rollback', 'insert or rollback into') -- or rollback")
+    })
+    expect(ctx.sql.exec("SELECT value FROM tenant_state WHERE key='or rollback'").toArray()).toEqual([{ value: "insert or rollback into" }])
+  })
+
+  // The class, whatever ends the native transaction: here the test ends it
+  // under the vault, as an engine error that rolls back would.
+  test("a transaction that ended under the guard breaks its scope: no further statement or guard call, and no marker after it", () => {
+    const ctx = workspace()
+    const db = latest()
+    const failed = refusal(() => ctx.storage.transactionSync(() => {
+      guard.beforeManagementChange(ctx)
+      db.run("ROLLBACK")
+      expect(refusal(() => guard.beforeManagementChange(ctx))).toMatch(/transaction ended/)
+      expect(refusal(() => ctx.sql.exec("SELECT 1"))).toMatch(/transaction ended/)
+      expect(refusal(() => ctx.sql.exec("UPDATE project_shares SET value='{\"broken\":true}' WHERE id='shr_1'"))).toMatch(/transaction ended/)
+    }))
+    expect(failed).toMatch(/transaction ended/)
+    expect(unmarkedWrite(ctx)).toContain("management_guard")
+    expect(value(ctx)).toBe("{}")
+  })
+
+  test("a caught constraint failure leaves the transaction and the guard whole", () => {
+    const ctx = workspace()
+    ctx.storage.transactionSync(() => {
+      guard.beforeManagementChange(ctx)
+      expect(refusal(() => ctx.sql.exec("INSERT INTO tenant_state(key,value) VALUES ('dup','1'),('dup','2')"))).toMatch(/UNIQUE constraint failed/)
+      guard.beforeManagementChange(ctx)
+      ctx.sql.exec("UPDATE project_shares SET value='{\"after\":true}' WHERE id='shr_1'")
+    })
+    expect(value(ctx)).toBe('{"after":true}')
+    expect(unmarkedWrite(ctx)).toContain("management_guard")
+  })
+
+  test("refuses load_extension", () => {
+    const ctx = workspace()
+    for (const query of ["SELECT load_extension('x')", "select LOAD_EXTENSION ('x', 'entry')"]) expect([query, refusal(() => ctx.sql.exec(query).toArray())]).toEqual([query, expect.stringContaining("load_extension")])
+  })
+
+  // The raw database handle is a private field of the storage
+  // implementation; nothing else names a storage's database.
+  test("keeps the raw database handle inside the storage implementation", () => {
+    const storage = new LocalStorage(new Database(":memory:"), { read: () => null, write: () => undefined, clear: () => undefined } as never, () => undefined)
+    expect(Object.keys(storage)).not.toContain("db")
+    expect((storage as unknown as Record<string, unknown>).db).toBeUndefined()
+    const sources = [...new Bun.Glob("**/*.ts").scanSync(resolve(import.meta.dir, "../src"))].map((path) => `local/src/${path}`)
+      .concat([...new Bun.Glob("**/*.ts").scanSync(resolve(import.meta.dir, "../../vault/src"))].map((path) => `vault/src/${path}`))
+    const naming = sources.filter((path) => !path.endsWith(".test.ts") && /storage\??\.db\b|storage\[\s*["'`]db["'`]\s*\]/.test(readFileSync(resolve(import.meta.dir, "../..", path), "utf8")))
+    expect(naming).toEqual([])
   })
 })

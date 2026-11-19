@@ -34,6 +34,10 @@ export function isolateManagementGuardsForTests(): () => void {
 
 export const GUARD_TABLE = "_mehen_guard"
 export const REVISION_TABLE = "_mehen_revision"
+// One row, written as each outermost transaction starts where SQLite's own
+// transaction state cannot be read (the Worker's objects): a rollback that
+// ends the native transaction takes it away.
+export const TRANSACTION_TABLE = "_mehen_tx"
 // The guard's own tables and triggers: never dumped, restored or counted as
 // data (vault-backup.ts).
 export const GUARD_PREFIX = "_mehen_"
@@ -69,33 +73,100 @@ export const NEUTRAL_COLUMNS: Readonly<Record<GraphTable, readonly string[]>> = 
 // context of the object shares: how deep the current one is, whether the
 // schema may change (migrations, restores), and whether the guard's tables
 // are there (a deleteAll removes them until the object starts again).
-type Scope = { depth: number; trusted: number; ready: boolean }
+// broken: the native transaction ended under an open scope (a statement
+// rolled it back); every statement and guard call in the scope throws until
+// the outermost transaction ends.
+type Scope = { depth: number; trusted: number; ready: boolean; broken: boolean }
 const scopes = new WeakMap<object, Scope>()
 // The guard's own SQL for each object, unchecked: the storage wrapper
 // (tenant-vault.ts) hands it over and nothing else may reach it. The checked
-// SQL refuses any statement that names the guard's tables.
-const guardSqls = new WeakMap<object, SqlStorage>()
-export function registerGuardSql(storage: object, sql: SqlStorage): void {
+// SQL refuses any statement that names the guard's tables. With it, how to
+// tell whether SQLite has a transaction open: the local edition's storage
+// says (bun:sqlite's inTransaction); the Worker's says nothing, so there the
+// guard writes TRANSACTION_TABLE's row as each outermost transaction starts.
+const guardSqls = new WeakMap<object, { sql: SqlStorage; native: (() => boolean) | null }>()
+export function registerGuardSql(storage: object, sql: SqlStorage, native: (() => boolean) | null = null): void {
   if (guardSqls.has(storage)) throw new Error("The management guard's SQL is registered once per object.")
-  guardSqls.set(storage, sql)
+  guardSqls.set(storage, { sql, native })
 }
 function guardSql(storage: object): SqlStorage {
-  const sql = guardSqls.get(storage)
-  if (!sql) throw new VaultError("internal", "The management guard has no SQL for this object.")
-  return sql
+  const own = guardSqls.get(storage)
+  if (!own) throw new VaultError("internal", "The management guard has no SQL for this object.")
+  return own.sql
 }
 export function managementScope(storage: object): Scope {
   let scope = scopes.get(storage)
-  if (!scope) scopes.set(storage, (scope = { depth: 0, trusted: 0, ready: false }))
+  if (!scope) scopes.set(storage, (scope = { depth: 0, trusted: 0, ready: false, broken: false }))
   return scope
+}
+
+// Whether SQLite still has the transaction the scope opened.
+function nativeTransactionOpen(storage: object): boolean {
+  const own = guardSqls.get(storage)
+  if (!own) return false
+  if (own.native) return own.native()
+  return own.sql.exec(`SELECT 1 FROM ${TRANSACTION_TABLE} LIMIT 1`).toArray().length > 0
+}
+export const transactionEnded = (): VaultError => new VaultError("internal", "The transaction ended under the management guard, so nothing more runs in it.")
+// The scope is broken: its marker goes now (outside any transaction, as the
+// one it belonged to is gone), and the caller throws.
+function breakScope(storage: object): VaultError {
+  const scope = managementScope(storage)
+  scope.broken = true
+  clearGuardRows(storage)
+  return transactionEnded()
+}
+function clearGuardRows(storage: object): void {
+  const sql = guardSql(storage)
+  sql.exec(`DELETE FROM ${GUARD_TABLE}`)
+  if (!guardSqls.get(storage)?.native) sql.exec(`DELETE FROM ${TRANSACTION_TABLE}`)
+}
+// Inside an open scope: throws once it is broken, and breaks it when SQLite
+// no longer has its transaction.
+export function assertScopeOpen(storage: object): void {
+  const scope = managementScope(storage)
+  if (scope.depth === 0 || !scope.ready) return
+  if (scope.broken) throw transactionEnded()
+  if (!nativeTransactionOpen(storage)) throw breakScope(storage)
+}
+// After a callback threw inside a scope: whether SQLite still has the
+// transaction, so the scope is marked broken (and its marker gone) when not.
+export function noteScopeAfterFailure(storage: object): void {
+  const scope = managementScope(storage)
+  if (scope.depth > 0 && scope.ready && !scope.broken && !nativeTransactionOpen(storage)) breakScope(storage)
+}
+// The storage wrapper's hooks around each synchronous transaction, inside
+// SQLite's: the outermost one's start (the Worker's row that shows the
+// transaction is still there) and its successful end (the marker and that
+// row deleted before it commits, or a throw when the scope broke).
+export function openedOutermost(storage: object): void {
+  const scope = managementScope(storage)
+  scope.broken = false
+  if (scope.ready && !guardSqls.get(storage)?.native) guardSql(storage).exec(`INSERT OR REPLACE INTO ${TRANSACTION_TABLE}(id) VALUES (1)`)
+}
+export function closingOutermost(storage: object): void {
+  const scope = managementScope(storage)
+  if (!scope.ready) return
+  if (scope.broken || !nativeTransactionOpen(storage)) throw breakScope(storage)
+  clearGuardRows(storage)
+}
+// After the outermost transaction, however it ended: nothing of the guard's
+// may outlive it, even where a rollback had already ended it underneath.
+export function closedOutermost(storage: object): void {
+  const scope = managementScope(storage)
+  if (scope.ready) clearGuardRows(storage)
+  scope.broken = false
 }
 
 // Runs every guard, then writes the marker the triggers look for, inside the
 // current synchronous transaction, which removes it before it commits.
+// Neither runs unless SQLite still has the scope's transaction.
 export function beforeManagementChange(ctx: VaultContext): void {
   const scope = managementScope(ctx.storage)
   if (scope.depth === 0) throw new VaultError("internal", "The management guard runs only inside a synchronous transaction.")
+  assertScopeOpen(ctx.storage)
   for (const guard of managementGuards.values()) guard(ctx)
+  assertScopeOpen(ctx.storage)
   guardSql(ctx.storage).exec(`INSERT OR IGNORE INTO ${GUARD_TABLE}(id) VALUES (1)`)
 }
 
@@ -109,14 +180,20 @@ const PLAIN_KEYWORDS: ReadonlySet<string> = new Set(["select", "insert", "update
 // The first keyword of each statement in a query: comments become space,
 // string literals and quoted names a placeholder that is no keyword.
 export function firstKeywords(query: string): string[] {
-  const blanked = query.replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]/g, (match) => (match.startsWith("--") || match.startsWith("/*") ? " " : " ? "))
-  return blanked.split(";").filter((statement) => statement.trim() !== "").map((statement) => /^\s*([A-Za-z]+)/.exec(statement)?.[1]?.toLowerCase() ?? "?")
+  return blank(query).split(";").filter((statement) => statement.trim() !== "").map((statement) => /^\s*([A-Za-z]+)/.exec(statement)?.[1]?.toLowerCase() ?? "?")
 }
+// Comments become space, string literals and quoted names a placeholder.
+const blank = (query: string): string => query.replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]/g, (match) => (match.startsWith("--") || match.startsWith("/*") ? " " : " ? "))
 // Refuses, failing closed: a statement that names the guard's own tables,
-// anywhere in its text and whatever the scope; and, outside a migration or
-// restore, a statement that is not a plain read or row change.
+// anywhere in its text, the ROLLBACK conflict algorithm (which ends the
+// transaction it runs in) and load_extension, whatever the scope; and,
+// outside a migration or restore, a statement that is not a plain read or
+// row change.
 export function assertPlainStatement(storage: object, query: string): void {
   if (query.toLowerCase().includes(GUARD_PREFIX)) throw new VaultError("internal", "The management guard's own tables are reached only through the guard.")
+  const blanked = blank(query).toLowerCase()
+  if (/\bor\s+rollback\b/.test(blanked)) throw new VaultError("internal", "OR ROLLBACK ends the transaction it runs in, so the vault never runs it.")
+  if (/\bload_extension\s*\(/.test(blanked)) throw new VaultError("internal", "load_extension is never run.")
   if (managementScope(storage).trusted > 0) return
   const word = firstKeywords(query).find((keyword) => !PLAIN_KEYWORDS.has(keyword))
   if (word !== undefined) throw new VaultError("internal", `A ${word === "?" ? "statement without a readable keyword" : `${word.toUpperCase()} statement`} runs only in a migration or a restore.`)
@@ -176,6 +253,7 @@ export function installGuardTables(sql: SqlStorage): void {
   sql.exec(`CREATE TABLE IF NOT EXISTS ${GUARD_TABLE}(id INTEGER PRIMARY KEY CHECK (id = 1))`)
   sql.exec(`CREATE TABLE IF NOT EXISTS ${REVISION_TABLE}(id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL)`)
   sql.exec(`INSERT OR IGNORE INTO ${REVISION_TABLE}(id, n) VALUES (1, 0)`)
+  sql.exec(`CREATE TABLE IF NOT EXISTS ${TRANSACTION_TABLE}(id INTEGER PRIMARY KEY CHECK (id = 1))`)
 }
 // recursive_triggers on and read back: without it a row a REPLACE deletes
 // would not fire its delete trigger.
@@ -232,4 +310,9 @@ export function plantGuardMarkerForTests(ctx: Pick<VaultContext, "storage">): vo
 }
 export function dropGuardTriggerForTests(ctx: Pick<VaultContext, "storage">, name: string): void {
   guardSql(ctx.storage).exec(`DROP TRIGGER ${quote(name)}`)
+}
+// Runs one statement on the guard's own SQL, unchecked, so a test can do to
+// a transaction what an engine error would.
+export function runUncheckedForTests(ctx: Pick<VaultContext, "storage">, query: string): void {
+  guardSql(ctx.storage).exec(query).toArray()
 }

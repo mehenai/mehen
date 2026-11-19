@@ -112,11 +112,15 @@ function countD1(db: D1Database, count: D1Count): D1Database {
   } })
 }
 
-type Cost = { status: number; invocations: number; accessStates: number; credentialReads: number; projectReads: number; statements: number; rowsRead: number; d1: number; d1Queries: string[]; serverTiming: string | null; ms: number }
+type Cost = { status: number; invocations: number; accessStates: number; credentialReads: number; projectReads: number; statements: number; guardStatements: number; rowsRead: number; d1: number; d1Queries: string[]; serverTiming: string | null; ms: number }
 // One read's cost in the work workspace's object and in D1.
 async function cost(f: Seeded, read: () => Promise<Response>): Promise<Cost> {
   const stub = env.TENANT_VAULT.getByName(f.work.id)
   const exec = await runInDurableObject(stub, (instance) => vi.spyOn(instance.context.sql, "exec"))
+  // The object counts its statements itself: through the context's SQL and
+  // through the management guard's own, apart.
+  const counted = () => runInDurableObject(stub, (instance) => instance.context.sqlStatements())
+  const before = await counted()
   const db = f.env.DB, vaults = f.env.TENANT_VAULT, count: D1Count = { roundTrips: 0, queries: [] }
   let invocations = 0
   f.env.DB = countD1(db, count)
@@ -134,7 +138,9 @@ async function cost(f: Seeded, read: () => Promise<Response>): Promise<Cost> {
     const ms = Math.round(performance.now() - started)
     const queries = exec.mock.calls.map((call) => call[0])
     const rowsRead = exec.mock.results.reduce((n, result) => n + (result.type === "return" ? result.value.rowsRead : 0), 0)
-    return { status: response.status, invocations, accessStates: queries.filter((q) => q === ACCESS_STATE_READ).length, credentialReads: queries.filter((q) => q === CREDENTIALS_READ).length, projectReads: queries.filter((q) => q === PROJECTS_READ).length, statements: queries.length, rowsRead, d1: count.roundTrips, d1Queries: count.queries, serverTiming: response.headers.get("server-timing"), ms }
+    const after = await counted()
+    if (after.context - before.context !== queries.length) throw new Error(`the object counted ${after.context - before.context} context statements where the spy saw ${queries.length}`)
+    return { status: response.status, invocations, guardStatements: after.guard - before.guard, accessStates: queries.filter((q) => q === ACCESS_STATE_READ).length, credentialReads: queries.filter((q) => q === CREDENTIALS_READ).length, projectReads: queries.filter((q) => q === PROJECTS_READ).length, statements: queries.length, rowsRead, d1: count.roundTrips, d1Queries: count.queries, serverTiming: response.headers.get("server-timing"), ms }
   } finally {
     f.env.DB = db
     f.env.TENANT_VAULT = vaults
@@ -204,11 +210,13 @@ it("counts what the mandates list and an ask's page cost a full workspace with m
   // the reader of another's machine's ask costs one call less; for the
   // owner, that call reads the ask too, to check they may see it. Each
   // access state built reads the shares whose end is settled, one join.
-  // Not counted here, as they run on the management guard's own SQL, not
-  // the context's: each read of the access state first reads the access
-  // revision, one row by its key, so a write by any route rebuilds it, and
-  // each call checks for a guard marker left behind (areas/management-guard.ts).
+  // The management guard's own statements are counted apart: each read of
+  // the access state first reads the access revision, one row by its key,
+  // so a write by any route rebuilds it; each call checks for a guard marker
+  // left behind; and each transaction's guard rows are written and cleared
+  // (areas/management-guard.ts).
   expect(Object.fromEntries(Object.entries(costs).map(([read, c]) => [read, [c.invocations, c.accessStates, c.statements, c.d1]]))).toEqual({ mandates: [1, 1, 215, 4], ownAsk: [4, 0, 19, 11], othersAsk: [3, 0, 11, 11] })
+  expect(Object.fromEntries(Object.entries(costs).map(([read, c]) => [read, [c.guardStatements, c.statements + c.guardStatements]]))).toEqual({ mandates: [33, 248], ownAsk: [13, 32], othersAsk: [9, 20] })
   expect(costs.mandates.rowsRead).toBeLessThan(2_500)
   const cover = async (approval: string) => (await (await page(`/w/northwind/a/${approval}`)()).text()).includes('data-region="mandate-cover"')
   expect([await cover(own), await cover(others)]).toEqual([true, false])

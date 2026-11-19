@@ -122,6 +122,9 @@ export type VaultContext = {
   // synchronous transactions that rolled back, which return it to a value
   // it had. The access-state memo is stamped with it.
   accessRevision(): string
+  // How many statements this object has run through the context's SQL and
+  // through the management guard's own, counted apart (read-costs.test.ts).
+  sqlStatements(): { context: number; guard: number }
   // Present on invocation contexts only (TenantVault.invoke), one per
   // object and shared by its calls: the evaluator state accessState built,
   // the access revision when it built it, and the time it holds until.

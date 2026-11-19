@@ -20,7 +20,7 @@ import { restoreAwaitingRestart } from "./areas/vault-backup.ts"
 import { admitManagedDeviceCall, managedAuditShape, managedPurged } from "./managed-platform.ts"
 import { TenantKeys, parseRootKeys } from "./keys.ts"
 import { wakeStorageWaiters } from "./storage-waits.ts"
-import { GUARD_TABLE, accessRevisionOf, assertPlainStatement, clearLeftoverMarker, enableRecursiveTriggers, installGuardTables, installGuardTriggers, managementScope, registerGuardSql } from "./areas/management-guard.ts"
+import { GUARD_TABLE, accessRevisionOf, assertPlainStatement, assertScopeOpen, clearLeftoverMarker, closedOutermost, closingOutermost, enableRecursiveTriggers, noteScopeAfterFailure, transactionEnded, installGuardTables, installGuardTriggers, managementScope, openedOutermost, registerGuardSql } from "./areas/management-guard.ts"
 
 const CORE: Area = {
   name: "core",
@@ -51,30 +51,43 @@ const READ_STATEMENT = /^\s*SELECT\b/i
 //   the guard its own unchecked SQL (registerGuardSql).
 // It answers the SQL migrations run on (counted, unchecked) and the SQL
 // everything else runs on.
-function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolledBack: () => void): { migrations: SqlStorage; sql: SqlStorage } {
+function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolledBack: () => void): { migrations: SqlStorage; sql: SqlStorage; statements: StatementCounts } {
   const raw = storage.sql, transactionSync = storage.transactionSync.bind(storage), deleteAll = storage.deleteAll.bind(storage)
   const scope = managementScope(storage)
+  const statements: StatementCounts = { context: 0, guard: 0 }
   const wrote = () => {
     counted()
     wakeStorageWaiters(storage)
   }
   storage.transactionSync = <T>(closure: () => T): T => {
+    if (scope.depth > 0) assertScopeOpen(storage)
+    const outermost = scope.depth === 0
     scope.depth++
     try {
       return transactionSync(() => {
-        const result = closure()
+        if (outermost) openedOutermost(storage)
+        let result: T
+        try {
+          result = closure()
+        } catch (error) {
+          noteScopeAfterFailure(storage)
+          throw error
+        }
         if (result instanceof Promise || (typeof result === "object" && result !== null && typeof (result as { then?: unknown }).then === "function")) {
           throw new VaultError("internal", "A synchronous transaction's callback returned a promise.")
         }
-        if (scope.depth === 1 && scope.ready) raw.exec(`DELETE FROM ${GUARD_TABLE}`)
+        if (outermost) closingOutermost(storage)
         return result
       })
     } catch (error) {
       rolledBack()
       wrote()
-      throw error
+      // A scope that broke ends in that refusal, not in whatever the
+      // storage said about a transaction already gone.
+      throw scope.broken ? transactionEnded() : error
     } finally {
       scope.depth--
+      if (outermost) closedOutermost(storage)
     }
   }
   storage.deleteAll = (options) => {
@@ -82,10 +95,15 @@ function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolled
     scope.ready = false
     return deleteAll(options).finally(wrote)
   }
+  const exec = <T extends Record<string, SqlStorageValue>>(query: string, bindings: unknown[]): SqlStorageCursor<T> => {
+    if (!READ_STATEMENT.test(query)) wrote()
+    return raw.exec<T>(query, ...bindings)
+  }
+  // The guard's own SQL, unchecked: migrations and the start run on it too.
   const migrations: SqlStorage = {
-    exec(query, ...bindings) {
-      if (!READ_STATEMENT.test(query)) wrote()
-      return raw.exec(query, ...bindings)
+    exec<T extends Record<string, SqlStorageValue>>(query: string, ...bindings: unknown[]): SqlStorageCursor<T> {
+      statements.guard++
+      return exec<T>(query, bindings)
     },
     get databaseSize() {
       return raw.databaseSize
@@ -93,10 +111,24 @@ function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolled
     Cursor: raw.Cursor,
     Statement: raw.Statement,
   }
+  // Inside an open scope, a statement that fails may have ended SQLite's
+  // transaction (an engine error that rolls back): the scope is checked
+  // after it, and after every statement where checking costs nothing.
+  const native = typeof (storage as { nativeTransaction?: unknown }).nativeTransaction === "function" ? () => (storage as unknown as { nativeTransaction(): boolean }).nativeTransaction() : null
   const sql: SqlStorage = {
-    exec(query, ...bindings) {
+    exec<T extends Record<string, SqlStorageValue>>(query: string, ...bindings: unknown[]): SqlStorageCursor<T> {
       assertPlainStatement(storage, query)
-      return migrations.exec(query, ...bindings)
+      if (scope.depth > 0) assertScopeOpen(storage)
+      statements.context++
+      let cursor: SqlStorageCursor<T>
+      try {
+        cursor = exec<T>(query, bindings)
+      } catch (error) {
+        if (scope.depth > 0) assertScopeOpen(storage)
+        throw error
+      }
+      if (scope.depth > 0 && native !== null) assertScopeOpen(storage)
+      return cursor
     },
     get databaseSize() {
       return raw.databaseSize
@@ -105,9 +137,11 @@ function vaultStorage(storage: DurableObjectStorage, counted: () => void, rolled
     Statement: raw.Statement,
   }
   Object.defineProperty(storage, "sql", { value: sql, configurable: true, writable: true })
-  registerGuardSql(storage, migrations)
-  return { migrations, sql }
+  registerGuardSql(storage, migrations, native)
+  return { migrations, sql, statements }
 }
+// How many statements the context's SQL and the guard's own SQL have run.
+export type StatementCounts = { context: number; guard: number }
 
 // Keyed by the object's own context, made once in the constructor, which
 // carries the write counter the memo is stamped with: one memo per live
@@ -156,6 +190,7 @@ export class TenantVault extends DurableObject<Env> {
   private keys: TenantKeys | null = null
   private storageWrites = 0
   private rollbacks = 0
+  private statements: StatementCounts = { context: 0, guard: 0 }
   private readonly areas: Map<string, Area>
   readonly context: VaultContext
 
@@ -163,7 +198,8 @@ export class TenantVault extends DurableObject<Env> {
     super(ctx, env)
     const raw = ctx.storage.sql
     this.initialiseStorage(raw)
-    const { migrations, sql } = vaultStorage(ctx.storage, () => { this.storageWrites++ }, () => { this.rollbacks++ })
+    const { migrations, sql, statements } = vaultStorage(ctx.storage, () => { this.storageWrites++ }, () => { this.rollbacks++ })
+    this.statements = statements
     this.sql = sql
     this.areas = new Map(AREAS.map((a) => [a.name, a]))
     // The trusted start: the guard's tables, recursive triggers, the
@@ -205,6 +241,9 @@ export class TenantVault extends DurableObject<Env> {
       storage: this.ctx.storage,
       get storageWrites() {
         return self.storageWrites
+      },
+      sqlStatements() {
+        return { ...self.statements }
       },
       accessRevision() {
         return `${accessRevisionOf(self.ctx.storage)}:${self.rollbacks}`

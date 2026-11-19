@@ -6,7 +6,7 @@
 import { env } from "cloudflare:test"
 import { describe, expect, it } from "vitest"
 import type { VaultContext } from "../src/vault/core.ts"
-import { GRAPH_TABLES, MANAGEMENT_COLUMNS, NEUTRAL_COLUMNS, beforeManagementChange, dropGuardTriggerForTests, guardMarkersForTests, managementScope, missingGuardTriggers, plantGuardMarkerForTests, withTrustedSchema, type GraphTable } from "../src/vault/areas/management-guard.ts"
+import { GRAPH_TABLES, MANAGEMENT_COLUMNS, NEUTRAL_COLUMNS, beforeManagementChange, dropGuardTriggerForTests, guardMarkersForTests, managementScope, missingGuardTriggers, plantGuardMarkerForTests, runUncheckedForTests, withTrustedSchema, type GraphTable } from "../src/vault/areas/management-guard.ts"
 import { accessState } from "../src/vault/areas/workspace-runtime.ts"
 import { applyMigrations, invocationContext } from "../src/vault/tenant-vault.ts"
 import { projectWorkspaceOps } from "../src/vault/areas/projects-workspace.ts"
@@ -301,7 +301,67 @@ describe("schema statements and the raw handle", () => {
     // helpers are for tests alone.
     const naming = (pattern: RegExp) => Object.entries(sources).filter(([path, text]) => !path.endsWith(".test.ts") && pattern.test(text)).map(([path]) => path.replace("../src/", "")).sort()
     expect(naming(/registerGuardSql\(/)).toEqual(["vault/areas/management-guard.ts", "vault/tenant-vault.ts"])
-    expect(naming(/\w+ForTests\b/).filter((path) => /GuardMarker|GuardTrigger/.test(sources[`../src/${path}`] ?? ""))).toEqual(["vault/areas/management-guard.ts"])
+    expect(naming(/\w+ForTests\b/).filter((path) => /GuardMarker|GuardTrigger|UncheckedForTests/.test(sources[`../src/${path}`] ?? ""))).toEqual(["vault/areas/management-guard.ts"])
+  })
+})
+
+describe("statements that would end the transaction under the guard", () => {
+  const ROLLBACKS = [
+    "INSERT OR ROLLBACK INTO tenant_state(key,value) VALUES ('guard_rollback_probe','1'),('guard_rollback_probe','2')",
+    "WITH v(k) AS (VALUES ('guard_rollback_probe')) INSERT OR ROLLBACK INTO tenant_state(key,value) SELECT k,'1' FROM v UNION ALL SELECT k,'2' FROM v",
+    "UPDATE OR ROLLBACK tenant_state SET key='a' WHERE key IN ('a','b')",
+    "insert /* a comment */ or\n rollback into tenant_state(key,value) values ('x','1')",
+  ]
+  it.each(ROLLBACKS)("refuses %s in the vault's SQL", async (query) => {
+    const tenant = await fixture()
+    await inAccess(tenant, (ctx) => expect(refusal(() => ctx.sql.exec(query))).toMatch(/OR ROLLBACK/))
+  })
+
+  it("refuses load_extension, and leaves literals and comments that spell either alone", async () => {
+    const tenant = await fixture()
+    await inAccess(tenant, (ctx) => {
+      expect(refusal(() => ctx.sql.exec("SELECT load_extension('x')"))).toMatch(/load_extension/)
+      fixtureSql(ctx).exec("INSERT INTO tenant_state(key,value) VALUES ('or rollback', 'load_extension(x)') -- or rollback")
+      expect(ctx.sql.exec("SELECT value FROM tenant_state WHERE key='or rollback'").toArray()).toEqual([{ value: "load_extension(x)" }])
+    })
+  })
+
+  // What the refusal above keeps out, done under the vault: SQLite ends the
+  // transaction, and the guard must notice rather than trust its count.
+  it("breaks the scope when SQLite's transaction ends under it: no guard call or statement after, and no marker after the transaction", async () => {
+    const tenant = await fixture()
+    const seen: (string | null)[] = []
+    // The Worker's SQLite rolls the transaction back without a thrown error
+    // (bun:sqlite throws UNIQUE), and the Worker then fails the whole event:
+    // what the scope said is kept here, and the state after it read anew.
+    await inAccess(tenant, (ctx) => {
+      seen.push(refusal(() => ctx.storage.transactionSync(() => {
+        beforeManagementChange(ctx)
+        refusal(() => runUncheckedForTests(ctx, "INSERT OR ROLLBACK INTO tenant_state(key,value) VALUES ('p','1'),('p','2')"))
+        seen.push(refusal(() => beforeManagementChange(ctx)), refusal(() => ctx.sql.exec("SELECT 1")))
+        throw new Error("after rollback")
+      })))
+    }).catch(() => {})
+    expect(seen).toEqual([expect.stringMatching(/transaction ended/), expect.stringMatching(/transaction ended/), expect.stringMatching(/transaction ended/)])
+    await inAccess(tenant, (ctx) => {
+      expect(guardMarkersForTests(ctx)).toBe(0)
+      expect(refusal(() => ctx.storage.transactionSync(() => ctx.sql.exec("DELETE FROM team_members")))).toContain(GUARDED)
+    })
+  })
+
+  it("keeps the scope whole after a caught constraint failure, and the guard taken again", async () => {
+    const tenant = await fixture()
+    await inAccess(tenant, (ctx) => {
+      ctx.storage.transactionSync(() => {
+        beforeManagementChange(ctx)
+        expect(refusal(() => ctx.sql.exec("INSERT INTO tenant_state(key,value) VALUES ('dup','1'),('dup','2')"))).toMatch(/UNIQUE/)
+        beforeManagementChange(ctx)
+        ctx.sql.exec("INSERT INTO team_members(team,member) VALUES ('tm_service','mem_kim')")
+      })
+      expect(ctx.sql.exec("SELECT member FROM team_members WHERE team='tm_service'").toArray()).toEqual([{ member: "mem_kim" }])
+      expect(guardMarkersForTests(ctx)).toBe(0)
+      expect(refusal(() => ctx.storage.transactionSync(() => ctx.sql.exec("DELETE FROM team_members")))).toContain(GUARDED)
+    })
   })
 })
 
