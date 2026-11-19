@@ -46,7 +46,11 @@ describe("the workspace home", () => {
     expect(steps(await home(f, f.alex))).toEqual([["Connect an agent", false], ["Add a credential", false], ["Invite a colleague", false], ["Create a project", true]])
     await f.machine(f.alex, f.work)
     await f.credential(f.alex, f.work, "home-key", { kind: "workspace" })
-    expect(steps(await home(f, f.alex))).toEqual([["Connect an agent", true], ["Add a credential", true], ["Invite a colleague", false], ["Create a project", true]])
+    // The owner's own machine is enrolled: the card no longer offers to connect one.
+    const connected = await home(f, f.alex)
+    expect(steps(connected)).toEqual([["Add a credential", true], ["Invite a colleague", false], ["Create a project", true]])
+    expect(connected).toContain("Three short steps.")
+    expect(connected).not.toContain("to connect this machine")
     await f.invite(f.alex, f.work, { role: "member", email: "sam@northwind.example", teams: [], shares: [], expiresAt: new Date(Date.now() + 86_400_000).toISOString() })
     const done = await home(f, f.alex)
     expect(done).not.toContain('data-region="get-started"')
@@ -73,7 +77,7 @@ describe("the workspace home", () => {
     await f.machine(f.alex, f.work)
     expect(steps(await home(f, mia))[0]).toEqual(["Connect an agent", false])
     await f.machine(mia, f.work)
-    expect(steps(await home(f, mia))[0]).toEqual(["Connect an agent", true])
+    expect(steps(await home(f, mia))).toEqual([["Add a credential", false]])
   })
 
   it("shows this workspace's rows first with See all, and never another workspace's", async () => {

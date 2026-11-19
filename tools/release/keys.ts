@@ -6,7 +6,8 @@
 // writes ~/.config/mehen-release/<id>.se (the enclave-wrapped blob, useless
 // on any other machine) and <id>.json, the ReleaseKey sidecar
 // { id, alg, jwk, presence, created }, in a 0700 directory, and prints the
-// ReleaseKey literal to add to RELEASE_KEYS in packages/protocol/src/release-keys.ts
+// ReleaseKey literal to add to RELEASE_KEYS in packages/protocol/src/release-keys.ts,
+// and the line for the installer's release_keys (tools/release/install.sh),
 // in its own reviewed commit. `--user-presence` makes the enclave ask for
 // Touch ID or the password on every signature; `presence` records which,
 // and the release tool refuses to sign when the sidecar and RELEASE_KEYS
@@ -124,6 +125,13 @@ export async function readSigningKey(dir: string, id: string): Promise<{ key: Re
   return { key, blob }
 }
 
+// The line for the installer's release_keys (tools/release/install.sh):
+// the id and the key's SPKI in base64, which openssl reads as a PEM body.
+export async function installerKeyLine(key: ReleaseKey): Promise<string> {
+  const imported = await crypto.subtle.importKey("jwk", key.jwk, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"])
+  return `${key.id} ${Buffer.from(await crypto.subtle.exportKey("spki", imported)).toString("base64")}`
+}
+
 export type KeysArgs = { command: "create"; id: string; presence: ReleaseKeyPresence }
 
 export function parseKeysArgs(argv: string[]): KeysArgs {
@@ -149,7 +157,7 @@ if (import.meta.main) {
     const args = parseKeysArgs(process.argv.slice(2))
     const key = await createReleaseKey({ id: args.id, presence: args.presence, dir: releaseKeyDir(process.env), helper: releaseHelper(process.env) })
     process.stdout.write(`${JSON.stringify(key, null, 2)}\n`)
-    console.error(`keys: made ${key.id} (presence ${key.presence}) in ${releaseKeyDir(process.env)}. Add the literal above to RELEASE_KEYS in packages/protocol/src/release-keys.ts in its own reviewed commit.`)
+    console.error(`keys: made ${key.id} (presence ${key.presence}) in ${releaseKeyDir(process.env)}. Add the literal above to RELEASE_KEYS in packages/protocol/src/release-keys.ts, and this line to release_keys in tools/release/install.sh, in one reviewed commit:\n${await installerKeyLine(key)}`)
   } catch (error) {
     console.error(`keys: ${error instanceof Error ? error.message : String(error)}`)
     process.exit(1)

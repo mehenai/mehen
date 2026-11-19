@@ -8,7 +8,7 @@ import { STALE_TAB_STATUS, VaultFailure, api, setCallGuard, workspaceApi, worksp
 import { type PaletteScope, buildEntries, filterEntries, workspacePaletteAsks } from "./palette-logic.ts"
 import { SHELL_CHANNEL, ShellState, WORKSPACE_HEADER, parseShellMessage, readShellIdentity, staleRefusal, workspaceWords, type ShellIdentity } from "./shell-logic.ts"
 import { type ShellChannel, type ShellHost, initShell } from "./shell.ts"
-import { workspaceGoPlaces } from "./shortcut-keys.ts"
+import { paletteKeyWords, workspaceGoPlaces } from "./shortcut-keys.ts"
 
 const ORIGIN = "https://app.mehen.dev"
 const PERSONAL: ShellIdentity = { origin: ORIGIN, account: "acc_alex", workspace: { id: "tn_Alpha123456", slug: "alex", name: "Personal" }, pages: ["home"], reads: [] }
@@ -125,6 +125,13 @@ describe("workspace calls", () => {
 
   it("use one channel name for every tab", () => {
     expect(SHELL_CHANNEL).toBe("mehen-shell")
+  })
+})
+
+describe("the search box's key", () => {
+  it("is Command K on an Apple device and Ctrl K everywhere else", () => {
+    for (const platform of ["MacIntel", "macOS", "iPhone", "iPad"]) expect(paletteKeyWords(platform)).toBe("⌘K")
+    for (const platform of ["Linux x86_64", "Linux", "Win32", "Windows", "Chrome OS", ""]) expect(paletteKeyWords(platform)).toBe("Ctrl K")
   })
 })
 
