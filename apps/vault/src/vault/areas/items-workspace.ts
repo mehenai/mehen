@@ -209,7 +209,7 @@ export function storeCredential(ctx: VaultContext, prepared: PreparedCredential,
     assertCredentialCurrent(ctx, expected)
   else if (items.getItem(ctx, input.slug))
     throw new VaultError(NAME_UNAVAILABLE.error, NAME_UNAVAILABLE.message)
-  else settleShareExpiries(ctx)
+  beforeManagementChange(ctx)
   const now = ctx.now()
   if (expected) {
     keepReplacedSecrets(ctx, expected, action, actorString(principal))
