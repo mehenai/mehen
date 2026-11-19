@@ -3,17 +3,25 @@ on: pull_request
 permissions:
   contents: read
 jobs:
-  matrix:
+  first-start:
+    strategy:
+      fail-fast: false
+      matrix:
+        order: [fonts-first, chrome-first]
+        n: [1, 2, 3]
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
-      - run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
       - run: |
-          echo "RUNNER_TEMP=$RUNNER_TEMP"; df -hT "$RUNNER_TEMP" /tmp /dev/shm | cat; ls -ld "$RUNNER_TEMP" /tmp
-          mount | grep -E " / | /home| /tmp| /mnt" | cat
-      - run: bun probe-matrix.ts
-        timeout-minutes: 8
+          set +e
+          ms() { echo $(( ($(date +%s%N) - $1) / 1000000 )); }
+          chrome() {
+            p=$(mktemp -d); s=$(date +%s%N)
+            /usr/bin/google-chrome --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run --no-default-browser-check --disable-gpu --hide-scrollbars about:blank 2>/dev/null & pid=$!
+            until [ -s "$p/DevToolsActivePort" ]; do sleep 0.02; [ "$(ms $s)" -gt 60000 ] && break; done
+            echo "chrome $1: $(ms $s) ms"; kill $pid; wait $pid 2>/dev/null; sleep 0.3; rm -rf "$p"
+          }
+          fonts() { s=$(date +%s%N); fc-list > /dev/null; echo "fc-list $1 ($(fc-list | wc -l) fonts): $(ms $s) ms; cache files $(ls ~/.cache/fontconfig 2>/dev/null | wc -l)"; }
+          echo "fontconfig cache files at start: $(ls ~/.cache/fontconfig 2>/dev/null | wc -l); uptime $(cut -d' ' -f1 /proc/uptime) s"
+          if [ "${{ matrix.order }}" = fonts-first ]; then fonts first; chrome after-fonts; else chrome first; fonts after-chrome; fi
+          chrome warm
