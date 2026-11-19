@@ -6,7 +6,7 @@
 // ever printed.
 
 import { type Me, MANDATE_HEADER, type NextStep } from "@mehen/protocol/api"
-import { MANDATE_CAP_DEFAULTS, MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_DEFAULT_TTL_DAYS, MANDATE_LIVE_STATES, MANDATE_RATE_LIMIT, MANDATE_STATES, MANDATE_TTL_DAYS, type MandateCaps, type MandateClass, MandateClassSchema, MandateIdSchema, type MandateOpenProposal, MandateProposalIdSchema, type MandatePropose, MandateProposeSchema, type MandateReceiptView, type MandateSchedule, MandateScheduleSchema, type MandateView, isMandateTimeZone, mandateReceiptsCursor } from "@mehen/protocol/mandate-terms"
+import { MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, type MandateAsked, MANDATE_RATE_LIMIT, MANDATE_STATES, MANDATE_TTL_DAYS, type MandateCaps, type MandateClass, MandateClassSchema, MandateIdSchema, type MandateOpenProposal, MandateProposalIdSchema, type MandatePropose, MandateProposeSchema, type MandateReceiptView, type MandateSchedule, MandateScheduleSchema, type MandateView, isMandateTimeZone, mandateReceiptsCursor } from "@mehen/protocol/mandate-terms"
 import { PolicySlugSchema } from "@mehen/protocol/policy-mode"
 import { z } from "zod"
 import { type Ask, type AskUrl, askSay, askUrl, clockText, mandateAsk, mandatePageUrlFor, mandateProposalUrlFor, refusedLinkWarning, withContext } from "./ask.ts"
@@ -261,8 +261,10 @@ export function scheduleText(schedule: MandateSchedule): string {
 
 // ---------------------------------------------------------------- proposing
 
-// What a machine asks for; null is the default: every credential it can
-// use, all four classes, 90 days, the protocol's caps, at any time.
+// What a machine asks for; null is the default: the credentials and classes
+// it asked for in the last 30 days (MandateAsked), read always, 30 days, the
+// protocol's low caps, at any time. The vault refuses a credential or class
+// it did not ask for, and every credential; a person widens on the sign page.
 export type MandateRequest = {
   items: "all" | readonly string[] | null
   classes: readonly string[] | null
@@ -273,17 +275,38 @@ export type MandateRequest = {
   reason: string | null
 }
 
-export function mandateProposal(input: MandateRequest, surface: MandateSurface, help: string): MandatePropose {
+// Whether the proposal's defaults need what this machine asked for.
+export const proposalNeedsAsked = (input: MandateRequest): boolean => input.items === null || input.classes === null
+// Stands in for what was asked for while the flags are checked, before any
+// call to the vault.
+const ASKED_ANYTHING: MandateAsked = { items: ["asked"], classes: ["change", "delete", "send"] }
+
+// Checks the flags before any call to the vault: the proposal itself when no
+// default needs what this machine asked for, else null, and mandateProposal
+// with askedForMandate's answer builds it.
+export function checkMandateRequest(input: MandateRequest, surface: MandateSurface, help: string): MandatePropose | null {
+  if (!proposalNeedsAsked(input)) return mandateProposal(input, surface, help, null)
+  mandateProposal(input, surface, help, ASKED_ANYTHING)
+  return null
+}
+
+// asked: GET /v1/mandates/asked, or null when the vault does not say.
+export function mandateProposal(input: MandateRequest, surface: MandateSurface, help: string, asked: MandateAsked | null): MandatePropose {
   const flag = (name: string) => (surface === "cli" ? `--${name}` : name)
-  let items: "all" | string[] = "all"
+  if (proposalNeedsAsked(input)) {
+    if (asked === null) throw usageError(`This vault does not say what this machine has asked for, so there is no default: name ${flag("items")} and ${flag("classes")}.`, help)
+    if (asked.items.length === 0 && input.items === null) throw new CliError("forbidden", "This machine asked for nothing a mandate could cover in the last 30 days, so there is nothing to propose.", { say: "Ask for each request as usual; propose a mandate once more asks like them will follow." }, { mandateRefused: "item_unasked" })
+  }
+  let items: "all" | string[] = input.items === null ? [...(asked?.items ?? [])].sort() : "all"
   if (input.items !== null && input.items !== "all") {
-    if (input.items.length === 0 || !input.items.every((slug) => slug !== "all" && PolicySlugSchema.safeParse(slug).success)) throw usageError(`${flag("items")} takes all on its own, or credential slugs separated by commas.`, help)
+    if (input.items.length === 0 || !input.items.every((slug) => slug !== "all" && PolicySlugSchema.safeParse(slug).success)) throw usageError(`${flag("items")} takes credential slugs separated by commas.`, help)
     items = [...new Set(input.items)].sort()
   }
   const unknown = (input.classes ?? []).find((c) => !(MANDATE_CLASSES as readonly string[]).includes(c))
   if (unknown !== undefined) throw usageError(`${flag("classes")} takes read, change, send and delete; ${JSON.stringify(unknown)} is none of them.`, help)
-  const classes = MANDATE_CLASSES.filter((c) => c === "read" || (input.classes ?? MANDATE_CLASSES).includes(c))
-  const days = input.days ?? MANDATE_DEFAULT_TTL_DAYS
+  const wanted: readonly string[] = input.classes ?? asked?.classes ?? []
+  const classes = MANDATE_CLASSES.filter((c) => c === "read" || wanted.includes(c))
+  const days = input.days ?? MANDATE_PROPOSAL_DEFAULT_TTL_DAYS
   if (!(MANDATE_TTL_DAYS as readonly number[]).includes(days)) throw usageError(`${flag("days")} takes 1, 7, 30 or 90.`, help)
   const caps = { read: 0, change: 0, send: 0, delete: 0 }
   for (const [name, value] of Object.entries(input.caps)) {
@@ -292,7 +315,7 @@ export function mandateProposal(input: MandateRequest, surface: MandateSurface, 
     if (!classes.includes(cls.data)) throw usageError(`A cap on ${name} needs ${name} in ${flag("classes")}.`, help)
     if (!Number.isInteger(value) || value < 1 || value > MANDATE_CAP_MAX[cls.data]) throw usageError(`${flag("caps")} ${name} takes a whole number from 1 to ${MANDATE_CAP_MAX[cls.data]} requests a day.`, help)
   }
-  for (const c of classes) caps[c] = input.caps[c] ?? MANDATE_CAP_DEFAULTS[c]
+  for (const c of classes) caps[c] = input.caps[c] ?? MANDATE_PROPOSAL_CAP_DEFAULTS[c]
   const note = input.note.trim()
   if (note === "") throw usageError(`Give ${flag("note")}: what the mandate is for. The person signing reads it.`, help)
   const reason = input.reason?.trim() || note
@@ -352,6 +375,18 @@ function openProposalsRefused(session: MandateSession, error: unknown, surface: 
 // POST /v1/mandates/proposals: the sign page a person opens. Nothing is
 // covered until they sign it with their passkey, with these terms or theirs.
 // /v1/me is read first, so a failure there leaves no proposal without a link.
+// What this machine asked for lately, which the vault lets it propose; null
+// from a vault that does not say (an older one, or mandates off there).
+export async function askedForMandate(session: MandateSession): Promise<MandateAsked | null> {
+  try {
+    return response(askedSchema, await session.api.request<unknown>("GET", "/v1/mandates/asked"))
+  } catch (error) {
+    if (error instanceof VaultApiError && error.body.error === "not_found" && error.body.message === "No such route.") return null
+    throw error
+  }
+}
+const askedSchema = z.object({ items: z.array(PolicySlugSchema), classes: z.array(MandateClassSchema) }) satisfies z.ZodType<MandateAsked>
+
 export async function proposeMandate(session: MandateSession, proposal: MandatePropose, env: Env, surface: MandateSurface): Promise<MandateProposalResult> {
   const label = sessionLabel(env)
   const me = await session.api.request<Me>("GET", "/v1/me")

@@ -13,6 +13,10 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
+### 19 November 2026: a machine proposes a mandate only for what it asked for
+
+A machine's mandate proposal may now name only the credentials, and the kinds of request besides read, that the machine itself asked for in the last 30 days: its own held requests that carried a `mandateCover` hint, and the requests its own mandate let through. Another machine's asks never count. A proposal that names every credential, or anything else, is refused with `forbidden` and `mandateRefused` (`items_all`, `item_unasked` or `class_unasked`); the message says what to drop and `next.command` proposes only what was asked for. `GET /v1/mandates/asked` tells the machine what that is, and `mehen mandate propose` proposes exactly that by default, for 30 days at low caps. The person who signs may still widen any term on the sign page, with the passkey as before. See [Mandates](concepts/mandates.md#how-a-machine-asks-for-one).
+
 ### 19 November 2026: choose how often Mehen asks
 
 A workspace's Settings page has a new choice, **How often Mehen asks**: Ask on writes (as before, the default) or Let it work. At Let it work, a request within a credential's destinations that the workspace owner's trust would cover goes through without asking, and anything that would still need a person is refused at once with the reason, so an agent never waits. It never covers protected environments, browser fill, pushes into other services, the policy floor or machines the owner's trust does not reach, and it follows Mehen's reviewed templates as they are updated. An owner or admin chooses Let it work with a passkey; going back needs none, and every change is in the activity. It is on in a local vault and off on Mehen Cloud for now. See [How often Mehen asks](concepts/approvals.md#how-often-mehen-asks).

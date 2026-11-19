@@ -10,7 +10,7 @@ import { policyAreaGrantTermsDigest, policyRuleTermsDigest } from "@mehen/protoc
 import { VaultError } from "../src/http.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { can } from "../src/vault/access.ts"
-import { MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATES_MIGRATION, mandatesArea, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
+import { MANDATE_ASKED_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATES_MIGRATION, mandatesArea, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
 import { AREAS } from "../src/vault/registry.ts"
 import { auditLine } from "../src/ui/wording.ts"
 import { projects } from "../src/vault/areas/projects.ts"
@@ -30,7 +30,7 @@ import { accountAuth, installTestIdentity } from "./access-test-support.ts"
 import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
 import { OPEN_ISSUE, relayAs, seedGithub, setPosture, type Relayed } from "./postures-test-support.ts"
 import { PROJECT_RUN_INPUT, approvedProjectRun, projectFixture } from "./projects-workspace-fixture.ts"
-import { counts, fillRate, mandateAction, mandateOp, mandateState, notices, rateRows, receipts, signMandate, terms } from "./mandates-test-support.ts"
+import { askedFor, counts, fillRate, mandateAction, mandateOp, mandateState, notices, proposedTerms, rateRows, receipts, signMandate, terms } from "./mandates-test-support.ts"
 
 const DAY = 86_400_000
 const READ_ISSUES = { method: "GET", url: "https://api.github.com/repos/acme/app/issues", headers: [] as [string, string][] }
@@ -157,7 +157,8 @@ describe("signing a mandate", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedGithub(ctx)
-      const { device: _device, ...proposed } = terms({ items: ["github-work"] as never })
+      await askedFor(ctx, "dev_owner", "github-work")
+      const proposed = proposedTerms({ items: ["github-work"] })
       const created = await machineOp(ctx, "mandates.propose", "dev_owner", { terms: proposed, reason: "To ship the release without asking each time" }) as MandateProposalCreated
       expect(created.url).toBe(`${ctx.env.VAULT_ORIGIN}/w/work/sign-mandate?proposal=${created.id}`)
       const view = await mandateOp(ctx, "mandates.proposal", "owner", { id: created.id }) as MandateProposalView
@@ -173,7 +174,8 @@ describe("signing a mandate", () => {
   it("names the proposal a mandate was signed from on every view, to every reader, and null for one signed without", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
-      const { device: _device, ...proposed } = terms()
+      await askedFor(ctx, "dev_owner")
+      const proposed = proposedTerms()
       const created = await machineOp(ctx, "mandates.propose", "dev_owner", { terms: proposed, reason: "Release work" }) as MandateProposalCreated
       const fromProposal = (await signMandate(ctx, "owner", terms(), created.id)).mandate
       const plain = (await signMandate(ctx, "member", terms({ device: "dev_member" }))).mandate
@@ -192,7 +194,8 @@ describe("signing a mandate", () => {
   it("lets a machine have three proposals open at once, names them when it asks for a fourth, and never from a workload", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
-      const { device: _device, ...proposed } = terms()
+      await askedFor(ctx, "dev_owner")
+      const proposed = proposedTerms()
       const created: MandateProposalCreated[] = []
       for (let i = 0; i < 3; i++) created.push(await machineOp(at(ctx, ctx.now() + i), "mandates.propose", "dev_owner", { terms: proposed, reason: `Release work ${i}` }) as MandateProposalCreated)
       const refused = await refusal(() => machineOp(ctx, "mandates.propose", "dev_owner", { terms: proposed, reason: "Release work 3" }))
@@ -234,7 +237,9 @@ describe("signing a mandate", () => {
   it("hands back the open proposal with the same terms and reason, creating nothing and counting against no limit", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
-      const { device: _device, ...proposed } = terms()
+      await askedFor(ctx, "dev_owner")
+      await askedFor(ctx, "dev_member")
+      const proposed = proposedTerms()
       const first = await machineOp(ctx, "mandates.propose", "dev_owner", { terms: proposed, reason: "Release work" }) as MandateProposalCreated
       expect(first).not.toHaveProperty("existing")
       const reordered = { ...proposed, caps: { delete: proposed.caps.delete, send: proposed.caps.send, change: proposed.caps.change, read: proposed.caps.read } }
@@ -251,14 +256,17 @@ describe("signing a mandate", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await seedGithub(ctx)
-      const { device: _device, ...proposed } = terms({ items: ["github-work"] as never, classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } })
-      const older = await machineOp(ctx, "mandates.propose", "dev_owner", { terms: { ...proposed, items: "all" }, reason: "Everything" }) as MandateProposalCreated
+      await askedFor(ctx, "dev_owner", "github-work", ["change"])
+      await askedFor(ctx, "dev_owner", "key-other", ["change"])
+      await askedFor(ctx, "dev_member", "github-work", ["change"])
+      const proposed = proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } })
+      const older = await machineOp(ctx, "mandates.propose", "dev_owner", { terms: { ...proposed, items: ["github-work", "key-other"] }, reason: "Both" }) as MandateProposalCreated
       const newer = await machineOp(at(ctx, ctx.now() + 1), "mandates.propose", "dev_owner", { terms: proposed, reason: "Release work" }) as MandateProposalCreated
-      const members = await machineOp(ctx, "mandates.propose", "dev_member", { terms: { ...proposed, items: "all" }, reason: "Theirs" }) as MandateProposalCreated
+      const members = await machineOp(ctx, "mandates.propose", "dev_member", { terms: proposed, reason: "Theirs" }) as MandateProposalCreated
       const mine = (await machineOp(ctx, "mandates.mine", "dev_owner") as MandateList).proposals
       expect(mine.map((p) => p.id)).toEqual([newer.id, older.id])
       expect(mine[0]).toEqual({ id: newer.id, url: newer.url, expiresAt: newer.expiresAt, createdAt: expect.any(String), device: { id: "dev_owner", name: expect.any(String) }, classes: ["change", "read"], items: ["github-work"], hiddenItems: 0, reason: "Release work" })
-      expect(mine[1]).toMatchObject({ items: "all", hiddenItems: 0 })
+      expect(mine[1]).toMatchObject({ items: ["github-work", "key-other"], hiddenItems: 0 })
       expect((await mandateOp(ctx, "mandates.list", "owner", {}) as MandateList).proposals.map((p) => p.id)).toEqual([newer.id, older.id])
       expect((await mandateOp(ctx, "mandates.list", "member", {}) as MandateList).proposals.map((p) => p.id)).toEqual([members.id])
       expect((await mandateOp(ctx, "mandates.list", "admin", {}) as MandateList).proposals).toEqual([])
@@ -270,7 +278,9 @@ describe("signing a mandate", () => {
   it("closes a machine's other open proposals when a mandate is signed for it, and their page names that mandate", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
-      const { device: _device, ...proposed } = terms()
+      await askedFor(ctx, "dev_owner")
+      await askedFor(ctx, "dev_member")
+      const proposed = proposedTerms()
       const a = await machineOp(ctx, "mandates.propose", "dev_owner", { terms: proposed, reason: "One" }) as MandateProposalCreated
       const b = await machineOp(ctx, "mandates.propose", "dev_owner", { terms: proposed, reason: "Two" }) as MandateProposalCreated
       const theirs = await machineOp(ctx, "mandates.propose", "dev_member", { terms: proposed, reason: "Theirs" }) as MandateProposalCreated
@@ -282,6 +292,113 @@ describe("signing a mandate", () => {
       const plain = (await signMandate(ctx, "member", terms({ device: "dev_member" }))).mandate
       expect(await mandateOp(ctx, "mandates.proposal", "member", { id: theirs.id })).toMatchObject({ state: "expired", mandate: plain.id })
       expect((await refusal(() => signMandate(ctx, "owner", terms(), b.id))).code).toBe("bad_request")
+    })
+  })
+})
+
+describe("a machine proposes only what it asked for", () => {
+  const propose = (ctx: VaultContext, device: string, proposed: Record<string, unknown>) => machineOp(ctx, "mandates.propose", device, { terms: proposed, reason: "Release work" })
+  const proposals = (ctx: VaultContext) => ctx.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM mandate_proposals").one().n
+
+  it("counts each held request a mandate could cover, by credential and class, and tells the machine what it may propose", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await seedGithub(ctx)
+      expect(await machineOp(ctx, "mandates.mine_asked", "dev_owner")).toEqual({ items: [], classes: [] })
+      expect((await relayAs(ctx, "dev_owner", OPEN_ISSUE)).error?.extra.mandateCover).toMatchObject({ classes: ["change"], state: "none" })
+      expect(await machineOp(ctx, "mandates.mine_asked", "dev_owner")).toEqual({ items: ["github-work"], classes: ["change"] })
+      expect(await machineOp(ctx, "mandates.mine_asked", "dev_member")).toEqual({ items: [], classes: [] })
+      const created = await propose(ctx, "dev_owner", proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } })) as MandateProposalCreated
+      expect(created.id).toMatch(/^mdp_/)
+    })
+  })
+
+  it("refuses every credential, naming what the machine asked for, and creates nothing", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await askedFor(ctx, "dev_owner")
+      const refused = await refusal(() => propose(ctx, "dev_owner", proposedTerms({ items: "all" })))
+      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "items_all", next: { command: "mehen mandate propose --items asked-key --classes change,delete,send --note <why>" } } })
+      expect(refused.message).toBe("A machine cannot propose a mandate for every credential: drop items all and name the credentials it asked for. It asked for asked-key in the last 30 days. A person can choose wider terms on the sign page.")
+      expect(proposals(ctx)).toBe(0)
+      // With nothing asked for, there is nothing to propose instead.
+      const none = await refusal(() => propose(ctx, "dev_member", proposedTerms({ items: "all" })))
+      expect(none).toMatchObject({ code: "forbidden", extra: { mandateRefused: "items_all", next: { say: expect.stringContaining("Ask for each request as usual") } } })
+      expect(none.extra?.next).not.toHaveProperty("command")
+    })
+  })
+
+  it("refuses a credential the machine did not ask for, saying which to drop", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await seedGithub(ctx)
+      await askedFor(ctx, "dev_owner")
+      const refused = await refusal(() => propose(ctx, "dev_owner", proposedTerms({ items: ["asked-key", "github-work", "no-such-key"] })))
+      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "item_unasked" } })
+      expect(refused.message).toContain("This machine has not asked for github-work, no-such-key: drop them from the proposal.")
+      expect(proposals(ctx)).toBe(0)
+    })
+  })
+
+  it("refuses a class besides read the machine did not ask for, saying which to drop; read needs no ask", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await askedFor(ctx, "dev_owner", "asked-key", ["change"])
+      const refused = await refusal(() => propose(ctx, "dev_owner", proposedTerms()))
+      expect(refused).toMatchObject({ code: "forbidden", extra: { mandateRefused: "class_unasked", next: { command: "mehen mandate propose --items asked-key --classes change --note <why>" } } })
+      expect(refused.message).toContain("This machine has not asked to delete or send: drop delete and send from the proposal.")
+      expect(proposals(ctx)).toBe(0)
+      expect(await propose(ctx, "dev_owner", proposedTerms({ classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+      expect(await propose(ctx, "dev_owner", proposedTerms({ classes: ["read"], caps: { read: 10, change: 0, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+    })
+  })
+
+  it("forgets an ask after 30 days, and the sweep prunes it", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const now = ctx.now()
+      await askedFor(ctx, "dev_owner", "asked-key", ["change", "delete", "send"], now - 30 * DAY)
+      expect(await refusal(() => propose(ctx, "dev_owner", proposedTerms()))).toMatchObject({ code: "forbidden", extra: { mandateRefused: "item_unasked" } })
+      await askedFor(ctx, "dev_owner", "asked-key", ["change", "delete", "send"], now - 30 * DAY + 60_000)
+      expect(await propose(ctx, "dev_owner", proposedTerms())).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+      sweepMandates(at(ctx, now + 60_000))
+      expect(ctx.sql.exec("SELECT COUNT(*) AS n FROM mandate_asked").one().n).toBe(0)
+    })
+  })
+
+  it("never counts another machine's asks, even its owner's own", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await askedFor(ctx, "dev_member")
+      await askedFor(ctx, "dev_admin")
+      expect(await refusal(() => propose(ctx, "dev_owner", proposedTerms()))).toMatchObject({ code: "forbidden", extra: { mandateRefused: "item_unasked" } })
+      expect(await propose(ctx, "dev_member", proposedTerms())).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+    })
+  })
+
+  it("counts what its own mandate let through, so it can propose those terms again with one more kind", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await seedGithub(ctx)
+      await signMandate(ctx, "owner", terms({ classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } }))
+      expect((await relayAs(ctx, "dev_owner", OPEN_ISSUE)).error).toBeNull()
+      expect(await machineOp(ctx, "mandates.mine_asked", "dev_owner")).toEqual({ items: ["github-work"], classes: ["change"] })
+      // Another machine's mandate uses never count for this one.
+      expect(await machineOp(ctx, "mandates.mine_asked", "dev_member")).toEqual({ items: [], classes: [] })
+      expect(await propose(ctx, "dev_owner", proposedTerms({ items: ["github-work"], classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } }))).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+    })
+  })
+
+  it("lets the person who signs widen a narrow proposal on the sign page, with the passkey as before", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await askedFor(ctx, "dev_owner", "asked-key", ["change"])
+      const created = await propose(ctx, "dev_owner", proposedTerms({ classes: ["change", "read"], caps: { ...MANDATE_CAP_DEFAULTS, send: 0, delete: 0 } })) as MandateProposalCreated
+      const action = await mandateAction(ctx, "owner", { op: "sign", terms: terms(), proposal: created.id })
+      expect(action).toMatchObject({ type: "mandate.sign" })
+      expect(await refusal(() => mandateOp(ctx, "mandates.sign", "owner", { terms: terms(), proposal: created.id }))).toMatchObject({ code: "forbidden", message: "This needs a passkey confirmation of the exact action." })
+      const signed = (await signMandate(ctx, "owner", terms(), created.id)).mandate
+      expect(signed).toMatchObject({ items: "all", classes: ["change", "delete", "read", "send"], proposal: created.id })
     })
   })
 })
@@ -1336,6 +1453,6 @@ describe("the sweep", () => {
 
   it("is its own area after pushes, with its own migrations, each added after the last", () => {
     expect(AREAS.at(-1)).toBe(mandatesArea)
-    expect(mandatesArea.migrations).toEqual([MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION])
+    expect(mandatesArea.migrations).toEqual([MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATE_ASKED_MIGRATION])
   })
 })

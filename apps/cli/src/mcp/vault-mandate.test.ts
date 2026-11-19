@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { z } from "zod"
+import { toCliError } from "../errors.ts"
 import type { VaultSession } from "../session.ts"
 import { mandateCreated, mandateOpenProposal, mandateReceipt, mandateView } from "../testing/mandate-fixtures.ts"
 import { type VaultApi, VaultApiError } from "../vault-api.ts"
@@ -18,13 +19,16 @@ function deps(api: VaultApi): ToolDeps {
 }
 
 type Seen = { method: string; path: string; body: unknown }
-function vault(answer: (seen: Seen) => unknown): { api: VaultApi; seen: Seen[] } {
+// What this machine asked for lately, as the vault says unless a test answers.
+const ASKED = { items: ["github-work"], classes: ["change"] }
+function vault(answer: (seen: Seen) => unknown, asked: () => unknown = () => ASKED): { api: VaultApi; seen: Seen[] } {
   const seen: Seen[] = []
   const api: VaultApi = {
     request: async <T>(method: string, path: string, body?: unknown) => {
       const request = { method, path, body }
       seen.push(request)
       if (path === "/v1/me") return { name: "test-machine" } as T
+      if (path === "/v1/mandates/asked") return asked() as T
       return answer(request) as T
     },
     relay: async () => { throw new Error("unexpected relay") },
@@ -69,7 +73,7 @@ test("propose sends the protocol's terms and hands over the sign page, with a th
   const { api, seen } = vault(() => mandateCreated(VAULT, "test-space"))
   const result = await vaultMandate.call({ action: "propose", note: "Nightly triage", items: ["linear-work", "github-work"], classes: ["send"], caps: { send: 20 }, days: 7, schedule: "UTC daily 22:00-06:00" }, { ...deps(api), env: { MEHEN_SESSION: "triage-1" } }, call)
   expect(seen.map((s) => s.path)).toEqual(["/v1/me", "/v1/mandates/proposals"])
-  expect(seen.find((s) => s.path === "/v1/mandates/proposals")?.body).toEqual({ terms: { items: ["github-work", "linear-work"], classes: ["read", "send"], caps: { read: 5000, change: 0, send: 20, delete: 0 }, ttlDays: 7, schedule: { tz: "UTC", windows: [{ days: [0, 1, 2, 3, 4, 5, 6], from: "22:00", to: "06:00" }] }, note: "Nightly triage" }, reason: "Nightly triage" })
+  expect(seen.find((s) => s.path === "/v1/mandates/proposals")?.body).toEqual({ terms: { items: ["github-work", "linear-work"], classes: ["read", "send"], caps: { read: 500, change: 0, send: 20, delete: 0 }, ttlDays: 7, schedule: { tz: "UTC", windows: [{ days: [0, 1, 2, 3, 4, 5, 6], from: "22:00", to: "06:00" }] }, note: "Nightly triage" }, reason: "Nightly triage" })
   const url = `${VAULT}/w/test-space/sign-mandate?proposal=mdp_new`
   expect(result.structured).toMatchObject({ proposal: "mdp_new", url, warning: null })
   expect(result.handover).toMatchObject([{ ask: { kind: "mandate", id: "mdp_new", url, wait: null, requestedBy: { device: "test-machine", session: "triage-1" } }, then: 'vault_mandate { "action": "list" } shows it again while it is open, and the mandate once it is signed' }])
@@ -147,6 +151,27 @@ test("pause without id pauses this machine's live mandate, and refuses when ther
   const empty = vault(() => ({ mandates: [], proposals: [] }))
   await expect(vaultMandate.call({ action: "pause" }, deps(empty.api), call)).rejects.toMatchObject({ code: "not_found" })
   expect(empty.seen.filter((s) => s.path.endsWith("/pause"))).toEqual([])
+})
+
+test("propose with no items or classes names what this machine asked for, 30 days and the low caps; the input schema says so", async () => {
+  const { api, seen } = vault(() => mandateCreated(VAULT, "test-space"))
+  await vaultMandate.call({ action: "propose", note: "Nightly triage" }, deps(api), call)
+  expect(seen.map((s) => s.path)).toEqual(["/v1/mandates/asked", "/v1/me", "/v1/mandates/proposals"])
+  expect(seen.find((s) => s.path === "/v1/mandates/proposals")?.body).toEqual({ terms: { items: ["github-work"], classes: ["change", "read"], caps: { read: 500, change: 100, send: 0, delete: 0 }, ttlDays: 30, schedule: null, note: "Nightly triage" }, reason: "Nightly triage" })
+  const schema = z.toJSONSchema(vaultMandate.input, { io: "input" }) as { properties: Record<string, { description?: string }> }
+  expect(schema.properties.items?.description).toContain("The vault refuses all and any other.")
+  expect(schema.properties.classes?.description).toContain("The vault refuses others.")
+  expect(schema.properties.days?.description).toContain("30 (the default)")
+})
+
+test("refusal/propose with nothing asked for proposes nothing; a refusal for naming more carries mandateRefused", async () => {
+  const empty = vault(() => mandateCreated(VAULT, "test-space"), () => ({ items: [], classes: [] }))
+  await expect(vaultMandate.call({ action: "propose", note: "x" }, deps(empty.api), call)).rejects.toMatchObject({ code: "forbidden", extras: { mandateRefused: "item_unasked" } })
+  expect(empty.seen.map((s) => s.path)).toEqual(["/v1/mandates/asked"])
+  const next = { command: "mehen mandate propose --items github-work --classes change --note <why>", say: "Propose again without the credentials this machine did not ask for; the person signing can add them." }
+  const wide = vault(() => { throw new VaultApiError(403, { error: "forbidden", message: "This machine has not asked for linear-work: drop it from the proposal.", mandateRefused: "item_unasked", next }) })
+  const refused = await vaultMandate.call({ action: "propose", note: "x", items: ["linear-work"], classes: ["change"] }, deps(wide.api), call).catch((error: unknown) => error)
+  expect(toCliError(refused)).toMatchObject({ code: "forbidden", message: expect.stringContaining("drop it from the proposal"), next, extras: { mandateRefused: "item_unasked" } })
 })
 
 test("refusal/the 3-open, no-live and several-live refusals name vault_mandate with its arguments, never a mehen command", async () => {

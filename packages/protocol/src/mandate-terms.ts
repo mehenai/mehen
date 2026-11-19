@@ -29,6 +29,19 @@ export const MANDATE_RATE_LIMIT = 120
 export const MANDATE_RATE_WINDOW_MS = 60_000
 export const MANDATE_PROPOSAL_TTL_MS = 7 * 86_400_000
 export const MANDATE_RECEIPT_KEEP_MS = 30 * 86_400_000
+// A machine may propose a mandate only for the credentials and classes it
+// asked for (a held request a mandate could cover) or used under its own
+// mandate in this window; read is always allowed. A person widens terms on
+// the sign page.
+export const MANDATE_ASKED_WINDOW_MS = 30 * 86_400_000
+// What mehen mandate propose and vault_mandate propose by default: the
+// protocol's low end, which the person signing may raise.
+export const MANDATE_PROPOSAL_DEFAULT_TTL_DAYS: MandateTtlDays = 30
+export const MANDATE_PROPOSAL_CAP_DEFAULTS: Readonly<MandateCaps> = { read: 500, change: 100, send: 10, delete: 5 }
+// Why the vault refused a machine's proposal (forbidden, mandateRefused):
+// it named every credential, a credential or a class it did not ask for.
+export const MANDATE_PROPOSAL_REFUSALS = ["items_all", "item_unasked", "class_unasked"] as const
+export type MandateProposalRefusal = (typeof MANDATE_PROPOSAL_REFUSALS)[number]
 export const MANDATE_MAX_ITEMS = 200
 export const MANDATE_NOTE_MAX = 200
 export const MANDATE_MAX_WINDOWS = 7
@@ -204,6 +217,10 @@ export type MandateCappedAsk = { mandate: string; capped: { class: MandateClass;
 // machine's live mandate paused or tripped (mandate names it), or "sign"
 // for anything else, a mandate to sign covering these classes.
 export type MandateCoverAsk = { device: { id: string; name: string }; classes: MandateClass[]; state: "sign" | "paused" | "tripped"; mandate: string | null }
+// GET /v1/mandates/asked: what this machine may propose a mandate for, the
+// credentials by slug and the classes besides read it asked for or used in
+// the last MANDATE_ASKED_WINDOW_MS, sorted.
+export type MandateAsked = { items: string[]; classes: MandateClass[] }
 // mandate: for a signed one, the mandate signed from it; for an expired
 // one, the mandate signed for its machine since that closed it, if any.
 export type MandateProposalView = {
