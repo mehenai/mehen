@@ -194,10 +194,15 @@ export function assertPlainStatement(storage: object, query: string): void {
   const blanked = blank(query).toLowerCase()
   if (/\bor\s+rollback\b/.test(blanked)) throw new VaultError("internal", "OR ROLLBACK ends the transaction it runs in, so the vault never runs it.")
   if (/\bload_extension\s*\(/.test(blanked)) throw new VaultError("internal", "load_extension is never run.")
-  if (managementScope(storage).trusted > 0) return
+  if (managementScope(storage).trusted > 0 || query === MINIFLARE_NAME_TABLE) return
   const word = firstKeywords(query).find((keyword) => !PLAIN_KEYWORDS.has(keyword))
   if (word !== undefined) throw new VaultError("internal", `A ${word === "?" ? "statement without a readable keyword" : `${word.toUpperCase()} statement`} runs only in a migration or a restore.`)
 }
+// wrangler dev wraps each Durable Object in Miniflare's do-wrapper, which
+// records the object's name through the storage's SQL once the constructor has
+// run, and resets the object when that throws. This one statement, exactly,
+// is let through; Cloudflare runs no such wrapper.
+const MINIFLARE_NAME_TABLE = "CREATE TABLE IF NOT EXISTS __miniflare_do_name (id INTEGER PRIMARY KEY, name TEXT)"
 // Runs a restore's own statements with schema changes allowed, inside a
 // transaction, with the guard's marker held for the rows it writes, and
 // puts the guard's triggers back on whatever schema it leaves.
@@ -243,9 +248,9 @@ export function expectedGuardTriggers(tables: readonly string[]): Map<string, st
   return triggers
 }
 // The tables triggers go on: every application table, never SQLite's,
-// Cloudflare's or the guard's own.
+// Cloudflare's, wrangler dev's or the guard's own.
 function guardedTables(sql: SqlStorage): string[] {
-  return sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '${GUARD_PREFIX}*'`).toArray().map((row) => row.name)
+  return sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '__miniflare_*' AND name NOT GLOB '${GUARD_PREFIX}*'`).toArray().map((row) => row.name)
 }
 
 // The guard's tables, made once and kept.

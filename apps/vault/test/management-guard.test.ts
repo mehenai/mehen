@@ -247,6 +247,23 @@ describe("schema statements and the raw handle", () => {
     })
   })
 
+  // wrangler dev wraps each Durable Object in Miniflare's do-wrapper, which
+  // records the object's name through ctx.storage.sql after the constructor.
+  it("lets wrangler dev's own name record through storage.sql, exactly that statement and nothing like it", async () => {
+    const tenant = await fixture()
+    await inAccess(tenant, (ctx) => {
+      for (let i = 0; i < 2; i++) {
+        expect(refusal(() => ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS __miniflare_do_name (id INTEGER PRIMARY KEY, name TEXT)"))).toBeNull()
+        expect(refusal(() => ctx.storage.sql.exec("INSERT OR REPLACE INTO __miniflare_do_name (id, name) VALUES (1, ?)", tenant))).toBeNull()
+      }
+      expect(ctx.storage.sql.exec<{ name: string }>("SELECT name FROM __miniflare_do_name WHERE id = 1").one().name).toBe(tenant)
+      for (const query of ["CREATE TABLE IF NOT EXISTS __miniflare_do_name (id INTEGER PRIMARY KEY, name TEXT, x)", "CREATE TABLE IF NOT EXISTS __miniflare_do_name (id INTEGER PRIMARY KEY, name TEXT); DROP TABLE members", "CREATE TABLE IF NOT EXISTS __miniflare_other (id INTEGER PRIMARY KEY, name TEXT)", " CREATE TABLE IF NOT EXISTS __miniflare_do_name (id INTEGER PRIMARY KEY, name TEXT)"]) {
+        expect(refusal(() => ctx.storage.sql.exec(query))).toMatch(/runs only in a migration or a restore/)
+      }
+      expect(missingGuardTriggers(ctx)).toEqual([])
+    })
+  })
+
   it("lets a restore change the schema and puts every guard trigger back on what it leaves", async () => {
     const tenant = await fixture()
     await inAccess(tenant, (ctx) => {
