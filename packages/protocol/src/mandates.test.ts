@@ -207,8 +207,8 @@ describe("mandateRequestFacts and mandateClassesOf on real routes", () => {
   })
 
   // A query parameter that names the method, as Flickr's ?method= does on a
-  // GET, is read as a last segment is, its name in any letter case: the
-  // value's last part, and the one before when the last is an ID.
+  // GET, its name in any letter case, names an act or a delete in any part
+  // of its value, not only in the last.
   test.each([
     ["GET", "services/rest?method=flickr.photos.delete&photo_id=1", ["delete"]],
     ["GET", "services/rest?Method=flickr.photos.DELETE", ["delete"]],
@@ -219,7 +219,7 @@ describe("mandateRequestFacts and mandateClassesOf on real routes", () => {
     ["GET", "api?OPERATION=bulkdelete", ["delete"]],
     ["POST", "api?method=photos.delete", ["change", "delete"]],
     ["GET", "services/rest?method=flickr.photos.getList", ["read"]],
-    ["GET", "services/rest?method=flickr.delete.photos", ["read"]],
+    ["GET", "services/rest?method=flickr.delete.photos", ["delete"]],
     ["GET", "api?q=delete", ["read"]],
     ["GET", "http-api.php?action=sendsms&to=1&text=hi", ["send"]],
     ["GET", "api?method=sendMessage", ["send"]],
@@ -227,6 +227,36 @@ describe("mandateRequestFacts and mandateClassesOf on real routes", () => {
     ["GET", "api?q=sendsms", ["read"]],
   ] as [string, string, MandateClass[]][])("%s /%s gives %p", (method, path, classes) => {
     expect(classesOf(held(null, method, `https://api.example.com/${path}`, method === "POST" ? { confirm: true } : null))).toEqual(classes)
+  })
+
+  // The review's selectors: split at an underscore or a hyphen, or written
+  // in camelCase, the act or delete in the first part still counts, and one
+  // that changes who has access is sharing, never a read.
+  test.each([
+    ["delete_item", ["delete"]],
+    ["delete-item", ["delete"]],
+    ["deleteItem", ["delete"]],
+    ["edit_profile", ["change"]],
+    ["edit-profile", ["change"]],
+    ["editProfile", ["change"]],
+    ["items.remove_all", ["delete"]],
+    ["list_items", ["read"]],
+    ["get_acl", ["read"]],
+  ] as [string, MandateClass[]][])("GET /api?action=%s gives %p", (selector, classes) => {
+    expect(classesOf(held(null, "GET", `https://api.example.com/api?action=${selector}`))).toEqual(classes)
+    expect(classesOf(held(null, "GET", `https://api.example.com/api?op=${selector}&id=7`))).toEqual(classes)
+  })
+
+  test.each(["set_acl", "set-acl", "setAcl", "add_member", "grant_access", "share_doc", "update_permissions", "remove_collaborator"])("GET /api?action=%s changes who has access, so it is sharing and never", (selector) => {
+    const request = held(null, "GET", `https://api.example.com/api?action=${selector}`)
+    expect(mandateRequestFacts(request).has("sharing")).toBe(true)
+    expect(classesOf(request)).toBe("never")
+  })
+
+  test.each(["delete_item", "delete-item", "deleteItem", "edit_profile", "set_acl"])("a reads-only mandate never covers GET /api?action=%s", (selector) => {
+    const classes = classesOf(held(null, "GET", `https://api.example.com/api?action=${selector}`))
+    const covered = classes !== "never" && mandateCovers(terms({ classes: ["read"], caps: { ...MANDATE_CAP_DEFAULTS, change: 0, send: 0, delete: 0 } }), active, classes, at("2026-11-08T12:00:00Z"))
+    expect(covered).toBe(false)
   })
 
   test("a query parameter that names a money method on a GET is never", () => {

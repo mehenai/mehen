@@ -343,6 +343,23 @@ describe("the relay on a mandate", () => {
     })
   })
 
+  // The review's selectors on a service nobody has reviewed: a reads-only
+  // mandate covers a plain read there and asks for each of them.
+  it("asks, on a reads-only mandate, for a GET whose operation selector names a delete, an act or an access change in any part", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const item = await seedCredential(ctx, "selector-key")
+      ctx.sql.exec("UPDATE items SET policy=? WHERE id=?", JSON.stringify({ default: "approve", rules: [] }), item.id)
+      const { mandate } = await signMandate(ctx, "owner", terms({ items: [item.id], classes: ["read"], caps: { read: 10, change: 0, send: 0, delete: 0 } }))
+      const get = (query: string) => relayAs(ctx, "dev_owner", { method: "GET", url: `https://api.example.com/api?${query}`, headers: [] }, "selector-key")
+      expect((await get("action=list_items")).material?.mandate).toBe(mandate.id)
+      for (const selector of ["delete_item", "delete-item", "deleteItem", "edit_profile", "set_acl"]) {
+        expect([selector, (await get(`action=${selector}`)).error?.code]).toEqual([selector, "approval_required"])
+      }
+      expect(counts(ctx)).toEqual({ read: 1 })
+    })
+  })
+
   it("tells the machine a mandate could let an ask like this through, and why this one asked", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {

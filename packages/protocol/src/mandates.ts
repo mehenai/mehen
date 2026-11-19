@@ -31,9 +31,9 @@ function pathSegments(path: string): string[] {
 // The query parameters that name an RPC method, as Flickr's
 // ?method=flickr.photos.delete does on a GET, by name in lower case.
 const MANDATE_QUERY_METHOD_NAMES = new Set(["method", "action", "op", "cmd", "do", "operation"])
-// Each value of such a parameter, decoded and split into parts as a path
-// is into segments, at everything but a letter or a digit. Read only to
-// find the class: never kept, audited or shown.
+// Each value of such a parameter, decoded and split into parts at
+// everything but a letter or a digit. Read only to find the class: never
+// kept, audited or shown.
 function queryMethodParts(search: string): string[][] {
   if (!search.startsWith("?")) return []
   const decoded = (text: string): string => { try { return decodeURIComponent(text.replace(/\+/g, " ")) } catch { return text } }
@@ -130,8 +130,7 @@ function segmentNames(segment: string, words: readonly string[], names: (run: st
 }
 // A last segment that only says how much a delete before it takes.
 const MANDATE_PATH_DELETE_SCOPES = new Set(["all", "bulk", "many"])
-// The segments of a path, or of a method query value, that may name a
-// delete: the last, and the one before a last that is a listed scope, or
+// The segments of a path that may name a delete: the last, and the one before a last that is a listed scope, or
 // before up to two trailing IDs (each holding a digit), those IDs included.
 function deleteSegments(parts: readonly string[]): string[] {
   if (MANDATE_PATH_DELETE_SCOPES.has((parts.at(-1) ?? "").toLowerCase())) return parts.slice(-2)
@@ -151,6 +150,32 @@ const MANDATE_PATH_SEND_WORDS = ["forward", "copy", "answer"] as const
 const MANDATE_PATH_SEND_STARTS = ["postmessage", "schedulemessage", "sendmessage", "memessage", "postephemeral"] as const
 // A credential's name the floor's path words leave out.
 const MANDATE_PATH_CREDENTIAL_WORDS = ["passwd"] as const
+// What an operation selector may name that changes who has access, beside
+// the act words: ?action=share_doc, ?op=grantRole.
+const MANDATE_SELECTOR_SHARING_ACTS = ["share", "grant"] as const
+
+// The facts an operation selector's value gives (?action=delete_item, as
+// its parts). An API names one operation there, so a word in any part
+// names it, not only one in the last part as on a path: delete_item,
+// delete-item and deleteItem are deletes, edit_profile an act. One that
+// acts and names access (set_acl, add_member, grant_access) is sharing, as
+// it would be on a write, never a read.
+function selectorFacts(parts: readonly string[], read: boolean, rpc: MandateRpcMethod | null): MandateFact[] {
+  const facts: MandateFact[] = []
+  const names = (words: readonly string[], test: (run: string, word: string) => boolean = runNamesAct): boolean => parts.some((part) => segmentNames(part, words, test))
+  const deletes = names(MANDATE_PATH_DELETE_WORDS, runNamesDelete)
+  const acts = names(MANDATE_PATH_ACT_WORDS) || names(MANDATE_SELECTOR_SHARING_ACTS)
+  if (deletes) facts.push("destructive")
+  if (read && rpc === null && acts) facts.push("act")
+  if (read && (names(MANDATE_PATH_SEND_WORDS) || names(MANDATE_PATH_SEND_STARTS, (run, start) => run.toLowerCase().startsWith(start)))) facts.push("send")
+  // The floor's words, read in each part and in each camelCase word of it,
+  // so setAcl names acl as set_acl does.
+  const words = parts.flatMap((part) => part.split(/[^A-Za-z]+/).filter((run) => run !== "").flatMap(camelTokens))
+  const path = "/" + [...parts, ...words].join("/")
+  facts.push(...policyPathFloorReasons(path, read))
+  if ((acts || deletes) && policyPathFloorReasons(path).includes("sharing")) facts.push("sharing")
+  return facts
+}
 
 // Telegram's Bot API and Slack's Web API name the method in the path and
 // take every method on a GET, so no word list finds every act. There a
@@ -265,19 +290,18 @@ export function mandateRequestFacts(request: PolicyRuleAnchor): ReadonlySet<Mand
   // POST /v1/delete/7/8 and GET /v1/delete/all. An act is named
   // only in a last segment with no digit, where an RPC method name sits;
   // earlier segments are resources and slugs. A query parameter that names
-  // the method is read the same way, its value's parts as the segments, and
-  // for the floor's path words too (?action=sendsms is a send). On Telegram
-  // and Slack, rpcMethodFacts alone decides the act.
+  // the method is read by selectorFacts, every part of its value. On
+  // Telegram and Slack, rpcMethodFacts alone decides the act.
   if (classification.routeId === null) {
     const segments = pathSegments(d.path)
-    const queryParts = queryMethodParts(d.search)
+    const read = READ_METHODS.includes(d.method)
     const rpc = mandateRpcMethod(d.host, segments)
     if (rpc !== null) for (const fact of rpcMethodFacts(rpc)) facts.add(fact)
-    for (const parts of queryParts) for (const reason of policyPathFloorReasons("/" + parts.join("/"), READ_METHODS.includes(d.method))) facts.add(reason)
-    for (const parts of rpc?.service === "telegram-file" ? [] : [segments, ...queryParts]) {
-      const last = parts.at(-1) ?? ""
-      const namesAct = (words: readonly string[], names = runNamesAct): boolean => READ_METHODS.includes(d.method) && !holdsDigit(last) && segmentNames(last, words, names)
-      if (deleteSegments(parts).some((s) => segmentNames(s, MANDATE_PATH_DELETE_WORDS, runNamesDelete))) facts.add("destructive")
+    for (const parts of queryMethodParts(d.search)) for (const fact of selectorFacts(parts, read, rpc)) facts.add(fact)
+    if (rpc?.service !== "telegram-file") {
+      const last = segments.at(-1) ?? ""
+      const namesAct = (words: readonly string[], names = runNamesAct): boolean => read && !holdsDigit(last) && segmentNames(last, words, names)
+      if (deleteSegments(segments).some((s) => segmentNames(s, MANDATE_PATH_DELETE_WORDS, runNamesDelete))) facts.add("destructive")
       if (rpc === null && namesAct(MANDATE_PATH_ACT_WORDS)) facts.add("act")
       if (namesAct(MANDATE_PATH_SEND_WORDS) || namesAct(MANDATE_PATH_SEND_STARTS, (run, start) => run.toLowerCase().startsWith(start))) facts.add("send")
     }
