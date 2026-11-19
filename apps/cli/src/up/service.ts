@@ -119,18 +119,22 @@ export const defaultRunner: Runner = (cmd, timeoutMs) => {
   return { code: result.error ? null : result.status, out: result.error ? `${out}${out ? " " : ""}(${result.error.message})`.trim() : out }
 }
 
-// How long stopping the service may take in all, the stop itself included:
-// launchctl bootout and systemctl disable --now can return while the job
-// is still stopping, so its state is asked until it settles or this ends.
+// How long stopping the service may take in all, the stop itself and the
+// daemon-reload after it included: launchctl bootout and systemctl disable
+// --now can return while the job is still stopping, so its state is asked
+// until it settles or this ends.
 export const STOP_WAIT_MS = 10_000
 const STOP_POLL_MS = 100
-// A command started with less than this left still gets this long.
-const MIN_COMMAND_MS = 250
+// Less than this left is no time to start a command in.
+const MIN_COMMAND_MS = 20
+// What a command not started for want of time answers.
+const NO_TIME = { code: null, out: "no time was left to ask" } as const
 
 export type Waiting = { runner?: Runner; sleep?: (ms: number) => void; now?: () => number; waitMs?: number }
 
-// One wall-clock budget for a stop and the questions after it: every
-// command is given what is left of it, and nothing runs once it is spent.
+// One wall-clock budget for a stop and the questions after it: a command
+// starts only while time is left and is given no more than what is left,
+// and once it is spent nothing starts at all (NO_TIME, an unknown answer).
 function budget(options: Waiting) {
   const now = options.now ?? Date.now
   const sleep = options.sleep ?? Bun.sleepSync
@@ -139,8 +143,14 @@ function budget(options: Waiting) {
   const left = () => deadline - now()
   return {
     left,
-    run: (cmd: string[]) => runner(cmd, Math.max(MIN_COMMAND_MS, left())),
-    pause: () => sleep(Math.max(0, Math.min(STOP_POLL_MS, left()))),
+    hasTime: () => left() >= MIN_COMMAND_MS,
+    run: (cmd: string[]): { code: number | null; out: string } => (left() >= MIN_COMMAND_MS ? runner(cmd, left()) : NO_TIME),
+    // Never past the deadline, and at least 1 ms before it, so a wait
+    // always moves on to an end.
+    pause: () => {
+      const rest = left()
+      if (rest > 0) sleep(Math.max(1, Math.min(STOP_POLL_MS, rest)))
+    },
   }
 }
 
@@ -174,13 +184,19 @@ export function systemdState(answer: { code: number | null; out: string }): JobS
   return { state: "unknown", detail: `ActiveState=${active}, LoadState=${load}`, loaded: true }
 }
 
-// Asks until the job is gone or the budget is spent; the last answer wins.
+// Asks until the job is gone or the budget is spent; the last answer that
+// was asked wins. No question starts once the budget is spent: with no
+// time for even one, the answer is NO_TIME, which every reader takes as
+// unknown.
 function settle<S extends JobState>(ask: () => S, time: ReturnType<typeof budget>): S {
-  for (;;) {
-    const answer = ask()
-    if (answer.state === "gone" || time.left() <= 0) return answer
+  let last: S | null = null
+  while (time.hasTime()) {
+    last = ask()
+    if (last.state === "gone") break
     time.pause()
   }
+  // With no time to ask even once, ask() answers unknown without running.
+  return last ?? ask()
 }
 
 // Which kind this machine supports, unless MEHEN_SERVICE names one.
@@ -211,13 +227,23 @@ function startProcess(plan: ServicePlan): void {
 // by now, so its command line must be serve with this data directory as its
 // last argument, exactly (startProcess puts it last), never a prefix of it.
 export function servePid(dataDir: string): number | null {
+  const found = serveState(dataDir, (cmd) => defaultRunner(cmd, 5_000))
+  return found.state === "there" ? found.pid : null
+}
+
+// Whether the pid in the data directory is still this vault's serve: gone
+// (no pid file, or ps says no such process, or another program has the
+// pid), there, or unknown when ps did not answer.
+function serveState(dataDir: string, ask: (cmd: string[]) => { code: number | null; out: string }): { state: "gone" | "there" | "unknown"; pid: number; detail: string } {
   const path = join(dataDir, PID_FILE)
-  if (!existsSync(path)) return null
+  if (!existsSync(path)) return { state: "gone", pid: 0, detail: "no pid file" }
   const pid = Number(readFileSync(path, "utf8").trim())
-  if (!Number.isInteger(pid) || pid <= 1) return null
-  const args = defaultRunner(["ps", "-o", "args=", "-p", String(pid)], 5_000)
-  if (args.code !== 0) return null
-  return isServeOf(args.out, dataDir) ? pid : null
+  if (!Number.isInteger(pid) || pid <= 1) return { state: "gone", pid: 0, detail: "no pid in the pid file" }
+  const args = ask(["ps", "-o", "args=", "-p", String(pid)])
+  // ps -p with a pid that is not running prints nothing and exits 1.
+  if (args.code === 1 && args.out === "") return { state: "gone", pid, detail: "not running" }
+  if (args.code !== 0) return { state: "unknown", pid, detail: args.out || `ps exit ${args.code ?? "after its time ran out"}` }
+  return isServeOf(args.out, dataDir) ? { state: "there", pid, detail: "running" } : { state: "gone", pid, detail: "another program" }
 }
 
 export function isServeOf(commandLine: string, dataDir: string): boolean {
@@ -289,23 +315,21 @@ export function removeService(kind: ServiceKind, dataDir: string, home: string, 
     // one is gone only once a disable that worked has stopped it.
     if (now.state === "gone" && (!now.loaded || stop.code === 0)) {
       rmSync(systemdPath(home, env), { force: true })
-      defaultDaemonReload(options)
+      // From what is left of the same budget. Without it the stopped,
+      // disabled unit stays listed until systemd next reloads; nothing runs.
+      time.run(["systemctl", "--user", "daemon-reload"])
       return []
     }
     if (stop.code !== 0) return [`systemctl --user disable --now ${SYSTEMD_UNIT} failed (${stop.out || `exit ${stop.code ?? "after its time ran out"}`}); run it yourself, then check \`systemctl --user status ${SYSTEMD_UNIT}\``]
     if (now.state === "there") return [`${SYSTEMD_UNIT} is still running (${now.detail}) after ${seconds}; run \`systemctl --user disable --now ${SYSTEMD_UNIT}\``]
     return [`could not confirm that ${SYSTEMD_UNIT} stopped: systemctl said ${now.detail}; check \`systemctl --user status ${SYSTEMD_UNIT}\``]
   }
-  const pid = servePid(dataDir)
-  if (pid !== null) {
-    process.kill(pid, "SIGTERM")
-    while (servePid(dataDir) === pid && time.left() > 0) time.pause()
-    if (servePid(dataDir) === pid) return [`the vault (pid ${pid}) did not stop within ${seconds}; end it yourself`]
-  }
+  const ask = (cmd: string[]) => time.run(cmd)
+  const first = serveState(dataDir, ask)
+  if (first.state === "there") process.kill(first.pid, "SIGTERM")
+  const now = first.state === "there" ? settle(() => serveState(dataDir, ask), time) : first
+  if (now.state === "there") return [`the vault (pid ${now.pid}) did not stop within ${seconds}; end it yourself`]
+  if (now.state === "unknown") return [`could not confirm that the vault (pid ${now.pid}) stopped: ${now.detail}; check \`ps -p ${now.pid}\``]
   rmSync(join(dataDir, PID_FILE), { force: true })
   return []
-}
-
-function defaultDaemonReload(options: Waiting): void {
-  ;(options.runner ?? defaultRunner)(["systemctl", "--user", "daemon-reload"], 10_000)
 }

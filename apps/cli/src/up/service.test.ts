@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
+import { join } from "node:path"
 import { CliError } from "../errors.ts"
 import { errorJson, errorLines } from "../output.ts"
 import { tempDir } from "../testing/run-mehen.ts"
 import { plainText, segments, styler } from "../tty.ts"
-import { isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, defaultRunner, installService, serviceEnvironment, systemdState, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
+import { STOP_WAIT_MS, isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, defaultRunner, installService, serviceEnvironment, systemdState, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
 import { openerFor } from "./browser.ts"
 import { custodyLine, enrolContext, enrolLines, textLines, timedOut } from "./index.ts"
 import { keyringAdvice } from "../local-vault.ts"
@@ -332,23 +333,73 @@ describe("removing and reinstalling the service waits for the job to stop, and n
     expect(existsSync(systemdPath(home.path, env))).toBe(true)
   })
 
-  test("the wait is a wall-clock deadline: each command gets only what is left of it, the stop included", async () => {
+  // A runner whose every command takes `takes(timeoutMs)` of the clock,
+  // recording when it started.
+  function timed(m: ReturnType<typeof machine>, takes: (cmd: string, timeoutMs: number) => number) {
+    const started: { cmd: string; at: number; timeoutMs: number }[] = []
+    const runner: Runner = (cmd, timeoutMs) => {
+      const key = cmd.slice(0, 3).join(" ")
+      started.push({ cmd: key, at: m.at(), timeoutMs })
+      m.sleep(Math.min(timeoutMs, takes(key, timeoutMs)))
+      return m.runner(cmd, timeoutMs)
+    }
+    return { runner, started }
+  }
+
+  test("the wait is a wall-clock deadline: nothing starts after it, and nothing is given time past it, the stop included", async () => {
     home = await tempDir()
     const env = { XDG_CONFIG_HOME: home.path }
     await Bun.write(systemdPath(home.path, env), "unit")
     const m = machine({ "systemctl --user show": () => state("loaded", "deactivating") })
-    // Every command takes 1 s of the clock.
-    const slow: Runner = (cmd, timeoutMs) => {
-      m.sleep(1000)
-      return m.runner(cmd, timeoutMs)
-    }
-    const begun = m.at()
-    const problems = removeService("systemd", "/data", home.path, env, { ...m, runner: slow, waitMs: 5000 })
+    const t = timed(m, () => 1000)
+    const problems = removeService("systemd", "/data", home.path, env, { ...m, runner: t.runner, waitMs: 5000 })
     expect(problems[0]).toContain("still running")
-    expect(m.at() - begun).toBeLessThanOrEqual(5000 + 1000)
-    expect(m.ran[0]).toEqual({ cmd: "systemctl --user disable", timeoutMs: 5000 })
-    for (let i = 1; i < m.ran.length; i++) expect(m.ran[i]!.timeoutMs).toBeLessThan(m.ran[i - 1]!.timeoutMs)
-    expect(m.ran.every((r) => r.timeoutMs > 0)).toBe(true)
+    expect(m.at()).toBeLessThanOrEqual(5000)
+    expect(t.started[0]).toEqual({ cmd: "systemctl --user disable", at: 0, timeoutMs: 5000 })
+    for (const run of t.started) {
+      expect(run.at).toBeLessThan(5000)
+      expect(run.at + run.timeoutMs).toBeLessThanOrEqual(5000)
+    }
+  })
+
+  test("a stop that uses the whole budget leaves no time to confirm anything: unknown, and the unit stays", async () => {
+    home = await tempDir()
+    const env = { XDG_CONFIG_HOME: home.path }
+    await Bun.write(systemdPath(home.path, env), "unit")
+    const m = machine({ "systemctl --user disable": () => ({ code: null, out: "(timed out)" }), "systemctl --user show": () => state("loaded", "inactive") })
+    const t = timed(m, (_cmd, timeoutMs) => timeoutMs)
+    const problems = removeService("systemd", "/data", home.path, env, { ...m, runner: t.runner, waitMs: 5000 })
+    expect(t.started.map((r) => r.cmd)).toEqual(["systemctl --user disable"])
+    expect(problems[0]).toMatch(/could not confirm|failed/)
+    expect(existsSync(systemdPath(home.path, env))).toBe(true)
+    expect(m.at()).toBeLessThanOrEqual(5000)
+  })
+
+  test("a slow daemon-reload at the end is held to what is left of the same budget", async () => {
+    home = await tempDir()
+    const env = { XDG_CONFIG_HOME: home.path }
+    await Bun.write(systemdPath(home.path, env), "unit")
+    const m = machine({ "systemctl --user show": () => state("loaded", "inactive") })
+    const t = timed(m, (cmd, timeoutMs) => (cmd === "systemctl --user daemon-reload" ? 60_000 : Math.min(timeoutMs, 100)))
+    expect(removeService("systemd", "/data", home.path, env, { ...m, runner: t.runner, waitMs: 5000 })).toEqual([])
+    const reload = t.started.find((r) => r.cmd === "systemctl --user daemon-reload")
+    expect(reload).toBeDefined()
+    expect(reload!.at + reload!.timeoutMs).toBeLessThanOrEqual(5000)
+    expect(m.at()).toBeLessThanOrEqual(5000)
+  })
+
+  test("process: a ps that does not answer is not taken for gone; its pid file stays", async () => {
+    home = await tempDir()
+    await Bun.write(join(home.path, "serve.pid"), "4242")
+    const m = machine({ ps: () => ({ code: null, out: "(timed out)" }) })
+    const problems = removeService("process", home.path, home.path, {}, m)
+    expect(problems[0]).toContain("could not confirm")
+    expect(existsSync(join(home.path, "serve.pid"))).toBe(true)
+    // ps answers that no such process exists: gone, and the pid file goes.
+    const gone = machine({ ps: () => ({ code: 1, out: "" }) })
+    expect(removeService("process", home.path, home.path, {}, gone)).toEqual([])
+    expect(existsSync(join(home.path, "serve.pid"))).toBe(false)
+    expect(gone.ran.every((r) => r.timeoutMs <= STOP_WAIT_MS)).toBe(true)
   })
 
   test("the real runner ends a command at its budget", () => {
