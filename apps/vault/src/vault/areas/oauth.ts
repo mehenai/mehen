@@ -22,7 +22,7 @@ const SUSPENDED_REFRESH_WAIT_MS = 5 * 60_000
 
 // The first three made the tables of single-tenant connections, which no
 // workspace ever wrote; they stay so every workspace's migration count
-// holds, and the last drops those tables.
+// holds, and a later one (DROP_SINGLE_TENANT_TABLES) drops those tables.
 
 const oauthMigrations = [
   `CREATE TABLE oauth_connects (

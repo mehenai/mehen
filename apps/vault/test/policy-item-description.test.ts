@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { runInDurableObject } from "cloudflare:test"
 import { env } from "cloudflare:workers"
-import { evaluatePolicyFloor } from "@mehen/protocol/policy-safety"
-import { parseDestination } from "@mehen/protocol"
+import { POLICY_FLOOR, evaluatePolicyFloor } from "@mehen/protocol/policy-safety"
+import { checkBinding, parseDestination } from "@mehen/protocol"
 import { describeItem, items } from "../src/vault/areas/items.ts"
 import { freshTenant } from "./helpers.ts"
 import { policyFixture } from "./policy-fixtures.ts"
@@ -31,6 +31,26 @@ describe("item policyFloor projection", () => {
       await policyFixture(ctx, { slug: "google-key", binding: { hosts: ["www.googleapis.com"] }, policy: { default: "allow", rules: [] }, provider: null })
       const wide = describeItem(ctx, items.getItem(ctx, "google-key")!).policyFloor!.map((floor) => floor.id)
       expect(wide).toEqual(expect.arrayContaining(["google-calendar.floor-1", "google-drive.floor-1"]))
+    })
+  })
+
+  // A * in a binding admits one segment, which the relay's loose reading
+  // can split in several (a fullwidth solidus normalises to "/"): Drive's
+  // sharing floor applies to such a request, so the projection lists it.
+  it("lists the floor a request admitted by a * segment meets once its segment splits under loose reading", async () => {
+    await runInDurableObject(env.TENANT_VAULT.getByName(freshTenant()), async (instance) => {
+      const ctx = instance.context
+      const binding = { hosts: ["www.googleapis.com"], paths: ["/drive/v3/files/*"] }
+      await policyFixture(ctx, { slug: "drive-files", binding, policy: { default: "allow", rules: [] }, provider: null })
+      const dest = parseDestination("POST", "https://www.googleapis.com/drive/v3/files/123%EF%BC%8Fpermissions")
+      if (!dest.ok) throw new Error("destination")
+      expect(checkBinding(binding, dest.destination).ok).toBe(true)
+      const applied = evaluatePolicyFloor({ destination: dest.destination, body: null })
+      // The floor entries the relay applied (its other reasons are not floors a view lists).
+      const floors = applied.reasons.filter((reason) => POLICY_FLOOR.some((f) => f.id === reason))
+      expect(floors).toContain("google-drive.floor-1")
+      const projected = describeItem(ctx, items.getItem(ctx, "drive-files")!).policyFloor!.map((floor) => floor.id)
+      expect(projected).toEqual(expect.arrayContaining(floors))
     })
   })
 

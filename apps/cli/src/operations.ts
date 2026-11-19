@@ -849,60 +849,74 @@ export type UpstreamHead = {
   headers: Record<string, string>
 }
 
-// The parameters of a WWW-Authenticate header's Bearer challenge (RFC 7235
-// auth-params, values a token or a quoted string), or null when there is
-// none. Another scheme's parameters, and text inside a quoted value, are
-// never read as the Bearer challenge's.
-function bearerParams(header: string): Map<string, string> | null {
-  const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+/
-  let rest = header, bearer: Map<string, string> | null = null, current: Map<string, string> | null = null
+// A WWW-Authenticate header's challenges (RFC 7235): each a scheme, then
+// a token68 (with its "=" padding) or auth-params whose values are a token
+// or a quoted string. Text inside a quoted value is never read as a scheme
+// or a parameter.
+type Challenge = { scheme: string; params: Map<string, string> }
+const AUTH_TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+function challengesOf(header: string): Challenge[] {
+  const scheme = new RegExp(`^${AUTH_TOKEN}`), param = new RegExp(`^(${AUTH_TOKEN})\\s*=\\s*`)
+  // name=value, a value being a quoted string or a token: "YIIF==" is not one.
+  const paramWithValue = new RegExp(`^${AUTH_TOKEN}\\s*=\\s*(?:"|${AUTH_TOKEN})`)
+  const token68 = /^[A-Za-z0-9\-._~+/]+=*(?=\s*(,|$))/
+  const challenges: Challenge[] = []
+  let rest = header
   const skip = (re: RegExp) => { rest = rest.replace(re, "") }
-  while (rest.length) {
+  while (true) {
     skip(/^[\s,]+/)
-    const name = TOKEN.exec(rest)?.[0]
+    const name = scheme.exec(rest)?.[0]
     if (!name) break
     rest = rest.slice(name.length)
+    const challenge: Challenge = { scheme: name.toLowerCase(), params: new Map() }
+    challenges.push(challenge)
     skip(/^\s*/)
-    if (!rest.startsWith("=")) {
-      // A new challenge's scheme, perhaps followed by a token68.
-      current = new Map()
-      if (bearer === null && name.toLowerCase() === "bearer") bearer = current
+    // A token68 stands alone; anything else that follows the scheme is params.
+    const opaque = token68.exec(rest)?.[0]
+    if (opaque !== undefined && !paramWithValue.test(rest)) {
+      rest = rest.slice(opaque.length)
       continue
     }
-    rest = rest.slice(1)
-    skip(/^\s*/)
-    let value = ""
-    if (rest.startsWith('"')) {
-      let i = 1
-      for (; i < rest.length && rest[i] !== '"'; i++) value += rest[i] === "\\" && i + 1 < rest.length ? rest[++i] : rest[i]
-      rest = rest.slice(i + 1)
-    } else {
-      value = TOKEN.exec(rest)?.[0] ?? ""
-      rest = rest.slice(value.length)
+    for (let m = paramWithValue.test(rest) ? param.exec(rest) : null; m !== null; m = param.exec(rest)) {
+      rest = rest.slice(m[0].length)
+      let value = ""
+      if (rest.startsWith('"')) {
+        let i = 1
+        for (; i < rest.length && rest[i] !== '"'; i++) value += rest[i] === "\\" && i + 1 < rest.length ? rest[++i] : rest[i]
+        rest = rest.slice(i + 1)
+      } else {
+        value = scheme.exec(rest)?.[0] ?? ""
+        rest = rest.slice(value.length)
+      }
+      challenge.params.set(m[1]!.toLowerCase(), value)
+      // A comma before another name=value continues this challenge; before
+      // anything else, the next challenge begins.
+      skip(/^\s*/)
+      if (!rest.startsWith(",") || !paramWithValue.test(rest.replace(/^[\s,]+/, ""))) break
+      skip(/^[\s,]+/)
     }
-    current?.set(name.toLowerCase(), value)
   }
-  return bearer
+  return challenges
 }
 
 // The scopes an upstream's 403 says it needs (RFC 6750: a Bearer challenge
-// whose error is exactly insufficient_scope), or null when it does not say
-// the token's scope was too narrow.
+// whose error is exactly insufficient_scope, whichever Bearer challenge
+// that is), or null when none says the token's scope was too narrow.
 export function insufficientScope(head: Pick<UpstreamHead, "status" | "headers">): string[] | null {
   if (head.status !== 403) return null
-  const params = bearerParams(head.headers["www-authenticate"] ?? "")
-  if (params?.get("error") !== "insufficient_scope") return null
-  return (params.get("scope") ?? "").split(/\s+/).filter(Boolean)
+  const narrow = challengesOf(head.headers["www-authenticate"] ?? "").find((c) => c.scheme === "bearer" && c.params.get("error") === "insufficient_scope")
+  if (narrow === undefined) return null
+  return (narrow.params.get("scope") ?? "").split(/\s+/).filter(Boolean)
 }
 
 // The route an agent takes when the upstream refused the credential itself:
 // a 401 (revoked or expired), or a 403 saying the scope is too narrow. A key
 // is replaced by a rotation; a connection is reconnected, with the scopes
 // the upstream named (a reconnect keeps the ones it holds).
-// Each names the credential's home (and a connection its OAuth client when
-// the reader may see it), as a rotation or reconnect must ask for the one it
-// has. A connection only its platform reconnects (a managed workspace's, or
-// a custom provider's) gets no command.
+// Each names the credential's home (and a connection its OAuth client), as
+// a rotation or reconnect must ask for the one it has. A connection only
+// its platform reconnects (a managed workspace's, or a custom provider's),
+// or whose OAuth client the reader may not see, gets no command.
 export function credentialRejectedHint(head: Pick<UpstreamHead, "status" | "headers">, item: Pick<ItemDescription, "slug" | "kind" | "provider" | "home" | "connection"> | null): string | null {
   if (item === null) return null
   const scopes = insufficientScope(head)
@@ -916,8 +930,13 @@ export function credentialRejectedHint(head: Pick<UpstreamHead, "status" | "head
       if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. The platform reconnects this account; mehen show ${slug} lists the scopes it holds.`
       return `The service rejected ${item.slug}'s sign-in. The platform reconnects this account.`
     }
-    const client = item.connection?.client !== undefined ? ` --client ${shellWord(item.connection.client)}` : ""
-    const connect = `mehen connect ${shellWord(item.provider)}${client} --name ${slug}`
+    // Without its OAuth client, mehen connect would use the provider's
+    // default client rather than the connection's own: the page reconnects it.
+    if (item.connection?.client === undefined) {
+      if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. Ask a human to reconnect it with more from its page in the vault; mehen show ${slug} lists the scopes it holds.`
+      return `The service rejected ${item.slug}'s sign-in. If it was revoked, ask a human to reconnect it from its page in the vault.`
+    }
+    const connect = `mehen connect ${shellWord(item.provider)} --client ${shellWord(item.connection.client)} --name ${slug}`
     if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. Ask a human to reconnect it with more: ${connect}${scopes.length ? ` --scopes ${shellWord(scopes.join(","))}` : " --scopes <scope>"} --reason ${why}${home}; mehen show ${slug} lists the scopes it holds.`
     return `The service rejected ${item.slug}'s sign-in. If it was revoked, ask a human to reconnect it: ${connect} --reason ${why}${home}.`
   }

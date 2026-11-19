@@ -470,6 +470,12 @@ function refreshBasis(ctx: VaultContext, item: CheckedCredential) {
   const principal: AccessPrincipal = { kind: "member", memberId: member.id, account: member.account, session: "ses_retained", securityEpoch: 0, sessionCheck: null }
   if (!can(clean, principal, conn.intent === "rotate" ? { type: "credential.rotate" } : { type: "credential.create" }, conn.intent === "rotate" ? { credential: item.id } : { destinationHome: item.home }, ctx.now()).allowed || !can(clean, principal, { type: "item.read" }, { credential: client.id }, ctx.now()).allowed)
     return lost("the person who connected it may no longer maintain it")
+  // Read live at every point that revalidates (before a stored token is
+  // served, before a refresh is sent, in each commit), since recording a
+  // rejection changes neither revision: a connection that passed an
+  // earlier check never sends or serves after its client was rejected.
+  if (clientRejectedNow(ctx, client))
+    throw new ClientRejected(ctx, item.slug, client, exchangeFor(ctx, item.provider ?? CUSTOM_OAUTH_PROVIDER_ID, client).displayName)
   return { conn, basis, client, principal }
 }
 
@@ -511,8 +517,6 @@ async function refreshOrAccessToken(ctx: VaultContext, item: CheckedCredential):
   // A catalogue connection refreshes with its provider; one made with a
   // custom provider at its client's definition's token URL.
   const exchange = exchangeFor(ctx, item.provider ?? CUSTOM_OAUTH_PROVIDER_ID, before.client)
-  if (clientRejectedNow(ctx, before.client))
-    throw new ClientRejected(ctx, item.slug, before.client, exchange.displayName)
   const expired = before.conn.expires_at !== null && before.conn.expires_at <= ctx.now()
   // A refresh still in flight, or one whose answer was lost inside its
   // window: no second refresh is sent, but a stored token that has not

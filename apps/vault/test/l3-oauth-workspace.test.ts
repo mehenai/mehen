@@ -988,6 +988,43 @@ async function needsYouRows(ctx: VaultContext, role = "owner") {
   return credentialPending(ctx, memberPrincipal(ctx, role), memberInvocation(ctx, role)).flatMap((r) => r.view === "detail" ? [r.detail] : [])
 }
 
+// Two connections on one client: B has passed the first check and is
+// opening its secrets when A finds the provider rejecting the client. B
+// then sends nothing and serves nothing, whether its token had expired (it
+// would refresh) or still works (it would be served).
+for (const expired of [true, false])
+  it(`a connection that was opening its secrets when another found the client rejected ${expired ? "sends no refresh" : "serves no token"}`, async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const first = await connected(ctx)
+      const again = createWorkspaceConnect(ctx, memberPrincipal(ctx), { provider: "google-gmail", client: "google-client", slug: "gmail-other", home: "workspace" }, memberInvocation(ctx))
+      const action = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, memberPrincipal(ctx), { connect: again.connect }, memberInvocation(ctx)))
+      await startWorkspaceConnect(ctx, memberPrincipal(ctx), { connect: again.connect, state: "state-other-123456789" }, memberInvocation(ctx, "owner", action))
+      upstream()
+      await finishWorkspaceConnect(ctx, memberPrincipal(ctx), { connect: again.connect, state: "state-other-123456789", code: "code-other", error: null }, memberInvocation(ctx))
+      const second = checkedCredential(ctx, "gmail-other")!
+      ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, first.id)
+      ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", expired ? ctx.now() - 1 : ctx.now() + 30 * 60_000, second.id)
+      let sends = 0
+      setUpstreamFetch(async () => { sends++; return Response.json({ error: "invalid_client" }, { status: 401 }) })
+      // Hold B's first secret opening until A has recorded the rejection.
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const open = ctx.openField.bind(ctx)
+      let held = false
+      const spy = vi.spyOn(ctx, "openField").mockImplementation(async (...args: Parameters<typeof ctx.openField>) => { if (!held) { held = true; await gate } return open(...args) })
+      const b = workspaceAccessToken(ctx, second).then(() => "served", (error: VaultError) => error.code)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(held).toBe(true)
+      await expect(workspaceAccessToken(ctx, first)).rejects.toMatchObject({ code: "needs_reauth" })
+      expect(sends).toBe(1)
+      release()
+      expect(await b).toBe("needs_reauth")
+      expect(sends).toBe(1)
+      spy.mockRestore()
+    })
+  })
+
 it("a rejected client pauses every connection that uses it, with one notice and one row for the client", async () => {
   const f = await credentialsFixture()
   await inAccess(f.tenant, async (ctx) => {

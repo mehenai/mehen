@@ -261,10 +261,13 @@ export function pathPatternsOverlap(a: string, b: string): boolean {
 // match some request a permissive pattern (a binding path) admits, read as
 // the relay reads it: the restrictive pattern loosely, against every loose
 // form of the permissive one (a format suffix or matrix parameters cut,
-// decoded, case folded). Uncertain cases count as meeting.
+// decoded, case folded). A * in the permissive pattern admits one segment,
+// which loose reading may split into several (a fullwidth solidus
+// normalises to "/"), so it is read as **. Uncertain cases count as meeting.
 export function restrictivePathMayMeet(restrictive: string, permissive: string): boolean {
   const pattern = loosePath(restrictive)
-  return looseForms(permissive).some((form) => pathPatternsOverlap(pattern, form))
+  const anySegments = (form: string) => form.split("/").map((segment) => segment === "*" ? "**" : segment).join("/")
+  return looseForms(permissive).some((form) => pathPatternsOverlap(pattern, anySegments(form)))
 }
 
 function methodListed(methods: string[] | undefined, method: string): boolean {

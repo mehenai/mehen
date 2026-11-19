@@ -256,6 +256,9 @@ describe("restrictivePathMayMeet", () => {
     for (const bound of ["/drive/v3/files/123/watch.json", "/drive/v3/files/123/watch;alt=json", "/drive/v3/files/123/%57atch", "/Drive/V3/files/123/WATCH"]) expect(restrictivePathMayMeet("/drive/v3/**/watch", bound), bound).toBe(true)
     expect(restrictivePathMayMeet("/drive/v3/**/watch", "/drive/v3/files/123")).toBe(false)
     expect(restrictivePathMayMeet("/calendar/v3/**/watch", "/drive/v3/files/123/watch.json")).toBe(false)
+    // A * admits one segment, which loose reading may split into several.
+    expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/files/*")).toBe(true)
+    expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/about/*")).toBe(false)
     // A glob still meets what it could cover.
     expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/**")).toBe(true)
   })

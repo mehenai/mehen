@@ -127,13 +127,13 @@ describe("mehen fetch", () => {
 
   test("a connection's 403 insufficient_scope names the reconnect with the scope the service asked for", async () => {
     await enrolled()
-    vault.items.push(item("gmail-alex", { kind: "oauth-connection", provider: "google-gmail", hosts: ["gmail.googleapis.com"] }))
+    vault.items.push({ ...item("gmail-alex", { kind: "oauth-connection", provider: "google-gmail", hosts: ["gmail.googleapis.com"] }), connection: { scopes: [], expiresAt: null, refreshing: false, client: "google-client" } })
     try {
       vault.relay = () => new Response("{}", { status: 403, headers: { [UPSTREAM_HEADER]: "1", "www-authenticate": 'Bearer realm="x", error="insufficient_scope", scope="https://www.googleapis.com/auth/gmail.send"' } })
       const result = await runJv(["fetch", "gmail-alex", "POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", "--json"], env)
-      expect(json(result).hint).toBe("The service said gmail-alex lacks a scope it needs. Ask a human to reconnect it with more: mehen connect google-gmail --name gmail-alex --scopes https://www.googleapis.com/auth/gmail.send --reason '<why>'; mehen show gmail-alex lists the scopes it holds.")
+      expect(json(result).hint).toBe("The service said gmail-alex lacks a scope it needs. Ask a human to reconnect it with more: mehen connect google-gmail --client google-client --name gmail-alex --scopes https://www.googleapis.com/auth/gmail.send --reason '<why>'; mehen show gmail-alex lists the scopes it holds.")
       vault.relay = () => new Response("{}", { status: 401, headers: { [UPSTREAM_HEADER]: "1" } })
-      expect(json(await runJv(["fetch", "gmail-alex", "GET", "https://gmail.googleapis.com/gmail/v1/users/me/profile", "--json"], env)).hint).toBe("The service rejected gmail-alex's sign-in. If it was revoked, ask a human to reconnect it: mehen connect google-gmail --name gmail-alex --reason '<why>'.")
+      expect(json(await runJv(["fetch", "gmail-alex", "GET", "https://gmail.googleapis.com/gmail/v1/users/me/profile", "--json"], env)).hint).toBe("The service rejected gmail-alex's sign-in. If it was revoked, ask a human to reconnect it: mehen connect google-gmail --client google-client --name gmail-alex --reason '<why>'.")
     } finally {
       vault.items.splice(vault.items.findIndex((i) => i.slug === "gmail-alex"), 1)
     }
