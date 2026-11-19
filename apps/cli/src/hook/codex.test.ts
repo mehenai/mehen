@@ -15,14 +15,14 @@ const patch = (lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"
 
 describe("Codex's payloads", () => {
   test("Bash is a shell command and apply_patch a write of the lines it adds; other tools are not the guard's", () => {
-    expect(codexToolCall(pre("Bash", { command: "cat .env" }))).toEqual({ tool: "shell", command: "cat .env", cwd: CWD })
-    expect(codexToolCall(pre("apply_patch", { command: patch(["*** Add File: src/key.ts", `+export const key = '${KEY}'`]) }))).toEqual({ tool: "write", path: "src/key.ts", content: `export const key = '${KEY}'`, cwd: CWD })
-    expect(codexToolCall(pre("mcp__fs__read", { path: ".env" }))).toEqual({ tool: "other", cwd: CWD })
-    expect(codexToolCall(pre("update_plan", {}))).toEqual({ tool: "other", cwd: CWD })
+    expect(codexToolCall(pre("Bash", { command: "cat .env" }))).toEqual([{ tool: "shell", command: "cat .env", cwd: CWD }])
+    expect(codexToolCall(pre("apply_patch", { command: patch(["*** Add File: src/key.ts", `+export const key = '${KEY}'`]) }))).toEqual([{ tool: "write", path: "src/key.ts", content: `export const key = '${KEY}'`, cwd: CWD }])
+    expect(codexToolCall(pre("mcp__fs__read", { path: ".env" }))).toEqual([{ tool: "other", cwd: CWD }])
+    expect(codexToolCall(pre("update_plan", {}))).toEqual([{ tool: "other", cwd: CWD }])
   })
 
   test("a patch that takes a key out, or only keeps one as context, writes none", () => {
-    expect(patchWrites(patch(["*** Update File: .env.example", "@@", ` OLD=1`, `-KEY=${KEY}`, "+KEY=mehen://stripe#key"]))).toEqual({ path: ".env.example", content: "KEY=mehen://stripe#key" })
+    expect(patchWrites(patch(["*** Update File: .env.example", "@@", ` OLD=1`, `-KEY=${KEY}`, "+KEY=mehen://stripe#key"]))).toEqual([{ path: ".env.example", content: "KEY=mehen://stripe#key" }])
     expect(codexAnswer(pre("apply_patch", { command: patch(["*** Update File: a.ts", "@@", `-const key = '${KEY}'`, "+const key = process.env.KEY"]) }), block)).toBeNull()
   })
 
@@ -65,5 +65,21 @@ describe("mehen hook codex, as a process", () => {
     } finally {
       await home.remove()
     }
+  })
+})
+
+describe("review fixes: patches that touch several files", () => {
+  test("each file's additions are judged on their own, and the file that carries the key is the one named", () => {
+    const multi = patch(["*** Add File: src/clean.ts", "+export const a = 1", "*** Update File: src/config.ts", "@@", "-const key = process.env.KEY", `+const key = '${KEY}'`, "*** Delete File: old.ts"])
+    const answer = codexAnswer(pre("apply_patch", { command: multi }), block) as { hookSpecificOutput: { permissionDecisionReason: string } }
+    expect(answer.hookSpecificOutput.permissionDecisionReason).toContain("src/config.ts")
+    expect(answer.hookSpecificOutput.permissionDecisionReason).not.toContain("src/clean.ts")
+    expect(patchWrites(multi)).toEqual([{ path: "src/clean.ts", content: "export const a = 1" }, { path: "src/config.ts", content: `const key = '${KEY}'` }])
+  })
+
+  test("a moved file is named by where it goes", () => {
+    const moved = patch(["*** Update File: a.ts", "*** Move to: b.ts", "@@", `+const k = '${KEY}'`])
+    expect(patchWrites(moved)).toEqual([{ path: "b.ts", content: `const k = '${KEY}'` }])
+    expect((codexAnswer(pre("apply_patch", { command: moved }), block) as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput.permissionDecisionReason).toContain("b.ts")
   })
 })

@@ -53,7 +53,7 @@ mehen setup
 mehen guard install
 ```
 
-`mehen enrol` prints the link and the fingerprint and exits; `mehen wait` finishes once you accept. `mehen guard install` adds the [guard hooks](../guides/guard.md) to Claude Code, pi, Cursor and Codex. [Connect an agent to one workspace](../guides/connect-one-workspace.md) explains each step.
+`mehen enrol` prints the link and the fingerprint and exits; `mehen wait` finishes once you accept. `mehen guard install` adds the [guard hooks](../guides/guard.md) to Claude Code, pi, Cursor and Codex; in Codex, open `/hooks` and trust Mehen's two hooks afterwards, since Codex runs a new or changed hook only once you do. [Connect an agent to one workspace](../guides/connect-one-workspace.md) explains each step.
 
 ## A local vault and Cloud on one machine
 

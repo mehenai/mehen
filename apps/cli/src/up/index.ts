@@ -108,12 +108,17 @@ type GuardAgent = { agent?: unknown; status?: unknown; reason?: unknown }
 
 const GUARDED = new Set(["claude-code", "pi", "cursor", "codex"])
 
-// The guard's part of an agent's line: on, on once Codex trusts it, or not
-// on and why; nothing for an agent the guard does not cover.
-function guardNote(name: string, g: GuardAgent | undefined, ran: boolean): string {
+// The guard's part of an agent's line: on, on once Codex trusts it, in
+// place but at warn or off, or not on and why; nothing for an agent the
+// guard does not cover.
+function guardNote(name: string, g: GuardAgent | undefined, ran: boolean, level: unknown): string {
   if (!GUARDED.has(name)) return ""
   if (!ran) return ", guard not on (run `mehen guard install` to see why)"
-  if (g && (g.status === "added" || g.status === "updated" || g.status === "unchanged")) return name === "codex" ? ", guard on once you trust it in Codex's /hooks" : ", guard on"
+  if (g && (g.status === "added" || g.status === "updated" || g.status === "unchanged")) {
+    if (level === "off") return ", guard installed, guard off"
+    if (level === "warn") return `, guard installed, warn only${name === "codex" ? " once you trust it in Codex's /hooks" : ""}`
+    return name === "codex" ? ", guard on once you trust it in Codex's /hooks" : ", guard on"
+  }
   if (g && typeof g.reason === "string") return `, guard not on (${g.reason})`
   return ""
 }
@@ -126,7 +131,7 @@ export function agentLines(setup: Record<string, unknown> | null, guard: Record<
   const guards = new Map((Array.isArray(guard?.agents) ? (guard.agents as GuardAgent[]) : []).map((g) => [String(g.agent), g]))
   if (wired.length === 0) return "Agents: none found on this machine. Install one, then run `mehen setup`."
   const lines = wired.map((a) => {
-    return a.ok ? `  ${a.name}: wired${guardNote(a.name, guards.get(a.name), guard !== null)}` : `  ${a.name}: not wired (${a.reason ?? "see mehen setup"})`
+    return a.ok ? `  ${a.name}: wired${guardNote(a.name, guards.get(a.name), guard !== null, guard?.level)}` : `  ${a.name}: not wired (${a.reason ?? "see mehen setup"})`
   })
   return `Agents (restart them to pick Mehen up):\n${lines.join("\n")}`
 }

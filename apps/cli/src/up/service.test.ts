@@ -91,3 +91,14 @@ describe("the agent lines", () => {
     expect(agentLines(setup, null)).toContain("  cursor: wired, guard not on (run `mehen guard install` to see why)")
   })
 })
+
+describe("review fixes: the agent lines and the level", () => {
+  test("installed hooks with the level at warn or off are not reported as guard on", () => {
+    const setup = { agents: [{ name: "cursor", mcp: "added" }, { name: "codex", mcp: "added" }] }
+    const agents = [{ agent: "cursor", status: "unchanged" }, { agent: "codex", status: "unchanged" }]
+    expect(agentLines(setup, { agents, level: "block" })).toContain("  cursor: wired, guard on")
+    expect(agentLines(setup, { agents, level: "warn" })).toContain("  cursor: wired, guard installed, warn only")
+    expect(agentLines(setup, { agents, level: "off" })).toContain("  cursor: wired, guard installed, guard off")
+    expect(agentLines(setup, { agents, level: "off" })).toContain("  codex: wired, guard installed, guard off")
+  })
+})

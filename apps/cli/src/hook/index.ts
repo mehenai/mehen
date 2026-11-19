@@ -13,7 +13,8 @@ import { join } from "node:path"
 import { defaultDataDir } from "../../../local/src/config.ts"
 import type { Command } from "../command.ts"
 import { usageError } from "../errors.ts"
-import { ensureSafeRoot, resolveHome } from "../home.ts"
+import { LOCKS_DIR, ensureSafeRoot, resolveHome } from "../home.ts"
+import { withSlotLocks } from "../slot-lock.ts"
 import { printJson, printLine } from "../output.ts"
 import { selfExecutable } from "../install-state.ts"
 import { codexAnswer } from "./codex.ts"
@@ -235,8 +236,10 @@ export const guardCommand: Command = {
       const options = { home: env.HOME || homedir(), binary, remove: wanted === "remove", dryRun: args.bool("dry-run") }
       const { root } = resolveHome(env)
       ensureSafeRoot(root)
-      const results = await installGuards({ ...options, vaultDirs: vaultDirs(env), ownedFile: join(root, "guard-installed.json"), codexHome: env.CODEX_HOME || undefined })
-      if (json) printJson({ agents: results, ...(options.dryRun ? { dryRun: true } : {}) })
+      // One guard install or remove at a time, so two never read the same
+      // file and both write it.
+      const results = await withSlotLocks([join(root, LOCKS_DIR, "guard.lock")], () => installGuards({ ...options, vaultDirs: vaultDirs(env), ownedFile: join(root, "guard-installed.json"), codexHome: env.CODEX_HOME || undefined }))
+      if (json) printJson({ agents: results, level: guardLevel(env), ...(options.dryRun ? { dryRun: true } : {}) })
       else for (const result of results) {
         printLine(`${result.agent.padEnd(16)} guard ${result.status}${result.reason ? `: ${result.reason}` : ""}`)
         if (result.sandbox === "protected") printLine("                 the sandbox keeps the agent's shell out of the vault's data folder")
