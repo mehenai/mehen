@@ -384,7 +384,7 @@ finish() {
   on_path=false
   case ":$PATH:" in *":$install_dir:"*) on_path=true ;; esac
   persist_path
-  say 'Next: mehen setup (in a shell without the PATH line, use the full path above)'
+  say 'Next: mehen up, to set Mehen up on this machine (in a shell without the PATH line, use the full path above)'
   if [ -n "$rc_advice" ]; then advice_json=$(json_str "$rc_advice"); else advice_json=null; fi
   printf 'mehen-install: {"v":1,"result":"%s","version":%s,"path":%s,"onPath":%s,"env":%s,"rc":{"written":[%s],"unchanged":[%s],"skipped":[%s],"advice":%s}}\n' "$result" "$1" "$(json_str "$target")" "$on_path" "$env_json" "$rc_written" "$rc_unchanged" "$rc_skipped" "$advice_json"
 }

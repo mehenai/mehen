@@ -11,7 +11,7 @@ import {
   type RelayRequestInput,
   UPSTREAM_HEADER,
 } from "@mehen/protocol/api"
-import { MandateClassSchema, MandateIdSchema } from "@mehen/protocol/mandate-terms"
+import { MANDATE_PROPOSAL_REFUSALS, MandateClassSchema, MandateIdSchema, type MandateProposalRefusal } from "@mehen/protocol/mandate-terms"
 import { POLICY_AREA_REFUSALS, POLICY_RULE_REFUSALS, type PolicyAreaRefusal, type PolicyRuleRefusal } from "@mehen/protocol/policy-mode"
 import { PROOF_HEADER, type ProofSigner, createProof, parseProof } from "@mehen/protocol/proof"
 import type { WorkspaceEnrolStatus } from "@mehen/protocol/workspace"
@@ -198,6 +198,7 @@ export async function readApiError(response: Response, context: CallContext | nu
   if (code === "forbidden" && (POLICY_RULE_REFUSALS as readonly unknown[]).includes(body.ruleRefused)) error.ruleRefused = body.ruleRefused as PolicyRuleRefusal
   if (code === "provider_refused" && Number.isInteger(body.providerStatus) && (body.providerStatus as number) >= 100 && (body.providerStatus as number) <= 599) error.providerStatus = body.providerStatus as number
   if (code === "forbidden" && (POLICY_AREA_REFUSALS as readonly unknown[]).includes(body.areaRefused)) error.areaRefused = body.areaRefused as PolicyAreaRefusal
+  if (code === "forbidden" && (MANDATE_PROPOSAL_REFUSALS as readonly unknown[]).includes(body.mandateRefused)) error.mandateRefused = body.mandateRefused as MandateProposalRefusal
   if (Array.isArray(body.choices)) {
     error.choices = body.choices
       .filter((c): c is { slug: string; account: unknown } => typeof c === "object" && c !== null && typeof (c as { slug?: unknown }).slug === "string")

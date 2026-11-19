@@ -159,6 +159,7 @@ test("error extras are bound to their error codes", () => {
   expect(apiErrorExtrasValid({ ...base, refused: [{ ref: "a017", reason: "name not available" }] })).toBe(error === "conflict")
   expect(apiErrorExtrasValid({ ...base, ruleRefused: "rule.send" })).toBe(error === "forbidden")
   expect(apiErrorExtrasValid({ ...base, dialRefused: "protected" })).toBe(error === "forbidden")
+  expect(apiErrorExtrasValid({ ...base, mandateRefused: "item_unasked" })).toBe(error === "forbidden")
   expect(apiErrorExtrasValid({ ...base, deciders: [], transition })).toBe(false)
  }
 })

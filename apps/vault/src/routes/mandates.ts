@@ -45,6 +45,13 @@ export const mandateDeviceRoutes: Route<Handler>[] = [
     parseJson(WaitQuery, query(rc.url))
     return json(await device.call("mandates.mine_proposal", { id: rc.params["id"] }))
   } },
+  // What this machine may propose a mandate for: what it asked for lately.
+  { method: "GET", path: "/v1/mandates/asked", handler: async (rc) => {
+    const device = await deviceRequest(rc)
+    available(rc.env, device.tenant)
+    parseJson(Empty, query(rc.url))
+    return json(await device.call("mandates.mine_asked", {}))
+  } },
   { method: "GET", path: "/v1/mandates/:id", handler: async (rc) => {
     const device = await deviceRequest(rc)
     available(rc.env, device.tenant)

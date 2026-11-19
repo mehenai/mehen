@@ -57,7 +57,7 @@ export type CliErrorCode = ErrorCode | LocalErrorCode
 // review group as the vault sent it: it reaches output only on the ask,
 // once askGroup has checked its link. `cleared` is mehen fill's: whether
 // it emptied a field it had typed into before giving up.
-export type ErrorExtras = Partial<ApprovalStatus | PolicyProposalStatus> & { kind?: "policy" | "approval"; id?: string } & Pick<ApiError, "approval" | "bindingCode" | "choices" | "retryAfter" | "providerStatus" | "mandate" | "deciders"> & { mandateCover?: MandateCover; expiresAt?: string; ask?: Ask; request?: MissingClientRequest; setup?: MissingClientSetup; context?: CallContext; ruleRefused?: PolicyRuleRefusal; areaRefused?: PolicyAreaRefusal; group?: unknown; bundle?: string; approvals?: { id: string; status: ApprovalStatus["status"] }[]; cleared?: boolean }
+export type ErrorExtras = Partial<ApprovalStatus | PolicyProposalStatus> & { kind?: "policy" | "approval"; id?: string } & Pick<ApiError, "approval" | "bindingCode" | "choices" | "retryAfter" | "providerStatus" | "mandate" | "deciders" | "mandateRefused"> & { mandateCover?: MandateCover; expiresAt?: string; ask?: Ask; request?: MissingClientRequest; setup?: MissingClientSetup; context?: CallContext; ruleRefused?: PolicyRuleRefusal; areaRefused?: PolicyAreaRefusal; group?: unknown; bundle?: string; approvals?: { id: string; status: ApprovalStatus["status"] }[]; cleared?: boolean }
 
 // Carried by client_missing: the exact `mehen request` / vault_request
 // arguments for the client, and what the human needs at the provider.
@@ -147,7 +147,7 @@ export const DEFAULT_NEXT: Record<ErrorCode, NextStep> = {
 export function toCliError(error: unknown): CliError {
   if (error instanceof CliError) return error
   if (error instanceof VaultApiError) {
-    const { approval, bindingCode, choices, retryAfter, providerStatus, group, mandateCover, deciders } = error.body
+    const { approval, bindingCode, choices, retryAfter, providerStatus, group, mandateCover, deciders, mandateRefused } = error.body
     const { expiresAt } = error.body as { expiresAt?: unknown }
     const extras: ErrorExtras = {
       ...(approval ? { approval } : {}),
@@ -159,6 +159,7 @@ export function toCliError(error: unknown): CliError {
       ...(error.body.error === "approval_required" && group !== undefined ? { group } : {}),
       ...(error.body.error === "approval_required" && mandateCover !== undefined ? { mandateCover } : {}),
       ...(error.body.error === "approval_required" && deciders !== undefined ? { deciders } : {}),
+      ...(error.body.error === "forbidden" && mandateRefused !== undefined ? { mandateRefused } : {}),
       ...(error.context ? { context: error.context } : {}),
     }
     return new CliError(error.body.error, error.body.message, error.body.next ?? DEFAULT_NEXT[error.body.error] ?? null, extras)

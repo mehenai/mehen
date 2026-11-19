@@ -1,9 +1,9 @@
 import { EXIT } from "@mehen/protocol/api"
-import { MANDATE_CAP_DEFAULTS, MANDATE_RATE_LIMIT } from "@mehen/protocol/mandate-terms"
+import { MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_RATE_LIMIT } from "@mehen/protocol/mandate-terms"
 import type { ParsedArgs } from "../args.ts"
 import type { Command } from "../command.ts"
 import { usageError } from "../errors.ts"
-import { MANDATE_NEVER_COVERS, SCHEDULE_EXAMPLE, listMandates, listedMandateNeedingSigner, mandateLines, mandateNext, mandatePageLink, mandateProposal, mandateTableRows, mandateUses, openProposalLine, parseCapsFlag, parseSince, pauseLiveMandate, pauseMandate, proposeMandate, receiptTableRows, showMandate, splitFlag, stateText } from "../mandate-operations.ts"
+import { MANDATE_NEVER_COVERS, SCHEDULE_EXAMPLE, askedForMandate, checkMandateRequest, listMandates, listedMandateNeedingSigner, mandateLines, mandateNext, mandatePageLink, mandateProposal, mandateTableRows, mandateUses, openProposalLine, parseCapsFlag, parseSince, pauseLiveMandate, pauseMandate, proposeMandate, receiptTableRows, showMandate, splitFlag, stateText } from "../mandate-operations.ts"
 import { note, printAsk, printJson, printLine, table } from "../output.ts"
 import { openSession } from "../session.ts"
 import { segments } from "../tty.ts"
@@ -23,26 +23,26 @@ const REFUSED_ACTIONS: Record<string, string> = {
 function days(args: ParsedArgs): number | null {
   const text = args.string("days")
   if (text === null) return null
-  if (!/^[0-9]{1,2}$/.test(text)) throw usageError("--days takes 1, 7, 30 or 90.", HELP)
+  if (!/^[0-9]{1,2}$/.test(text)) throw usageError("--days takes 1, 7 or 30.", HELP)
   return Number(text)
 }
 
 export const mandateCommand: Command = {
   summary: "propose a mandate, list this machine's, follow what went through on trust, pause it",
   spec: {
-    usage: "mehen mandate propose --note <text> [--items all|<slug>,...] [--classes read,change,send,delete] [--days 1|7|30|90] [--caps <class>=<n>,...] [--schedule <spec>] [--reason <text>] | ls | show <mdt_id> | uses <mdt_id> [--since <time>|30m|12h|7d] | pause [<mdt_id>]",
+    usage: "mehen mandate propose --note <text> [--items <slug>,...] [--classes read,change,send,delete] [--days 1|7|30] [--caps <class>=<n>,...] [--schedule <spec>] [--reason <text>] | ls | show <mdt_id> | uses <mdt_id> [--since <time>|30m|12h|7d] | pause [<mdt_id>]",
     flags: Object.fromEntries(ALL_FLAGS.map((name) => [name, { type: "string" as const }])),
     positionals: { min: 1, max: 2 },
   },
   examples: [
-    ["mandate", "propose", "--note", "Nightly triage of the support inbox", "--items", "gmail-support,linear-work", "--classes", "read,change,send", "--caps", "send=20", "--schedule", "Europe/Paris mon-fri 08:00-19:00"],
+    ["mandate", "propose", "--note", "Nightly triage of the support inbox", "--items", "gmail-support,linear-work", "--classes", "read,change,send", "--caps", "send=10", "--schedule", "Europe/Paris mon-fri 08:00-19:00"],
     ["mandate", "ls"],
     ["mandate", "uses", "mdt_example", "--since", "1h"],
     ["mandate", "pause"],
   ],
   notes: [
-    "A mandate lets this machine's held requests through without asking, within daily caps and until a date. A person signs it once, with their passkey, for their own machine; propose prints the link to hand them and exits 0; mehen mandate ls shows it again while it is open. Proposing the same terms again hands back the same link. They may change any term before signing.",
-    `propose defaults: every credential this machine can use, all four classes (read is always included), 90 days, caps a day of ${MANDATE_CAP_DEFAULTS.read} reads, ${MANDATE_CAP_DEFAULTS.change} changes, ${MANDATE_CAP_DEFAULTS.send} sends and ${MANDATE_CAP_DEFAULTS.delete} deletes, at any time.`,
+    "A mandate lets this machine's held requests through without asking, within daily caps and until a date. A person signs it once, with their passkey, for their own machine; propose prints the link to hand them and exits 0; mehen mandate ls shows it again while it is open. Proposing the same terms and reason again hands back the same link. They may change any term before signing.",
+    `propose defaults: the credentials and classes this machine asked for in the last 30 days (read is always included), 30 days, caps a day of ${MANDATE_PROPOSAL_CAP_DEFAULTS.read} reads, ${MANDATE_PROPOSAL_CAP_DEFAULTS.change} changes, ${MANDATE_PROPOSAL_CAP_DEFAULTS.send} sends and ${MANDATE_PROPOSAL_CAP_DEFAULTS.delete} deletes, at any time. The vault refuses every credential (--items all), any credential it did not ask for, any class besides read it did not ask for, more than 30 days and caps above these; the person signing may widen the terms.`,
     `--schedule names the time zone once, then windows separated by ";": "${SCHEDULE_EXAMPLE}". Days are daily, or mon to sun with forward ranges (mon-fri) and commas; a window ending earlier than it starts runs past midnight.`,
     `A mandate never covers ${MANDATE_NEVER_COVERS}; those ask every time.`,
     `A cap reached makes that kind of request ask again until the next UTC day. More than ${MANDATE_RATE_LIMIT} requests beyond reading in a minute trips the whole mandate.`,
@@ -61,16 +61,19 @@ export const mandateCommand: Command = {
     } else if (id === undefined && action !== "pause") throw usageError(`mehen mandate ${action} takes one mandate id (mdt_...).`, HELP)
     if (action === "propose") {
       const items = args.string("items")
-      const proposal = mandateProposal({
-        items: items === "all" ? "all" : splitFlag(items),
+      const request = {
+        items: items === "all" ? "all" as const : splitFlag(items),
         classes: splitFlag(args.string("classes")),
         days: days(args),
         caps: parseCapsFlag(args.string("caps"), HELP),
         schedule: args.string("schedule"),
         note: args.string("note") ?? "",
         reason: args.string("reason"),
-      }, "cli", HELP)
-      const result = await proposeMandate(await openSession(env), proposal, env, "cli")
+      }
+      const checked = checkMandateRequest(request, "cli", HELP)
+      const session = await openSession(env)
+      const proposal = checked ?? mandateProposal(request, "cli", HELP, await askedForMandate(session))
+      const result = await proposeMandate(session, proposal, env, "cli")
       if (result.warning) note(`mehen: warning: ${result.warning}`)
       if (json) printJson({ ...result, terms: proposal.terms })
       else {

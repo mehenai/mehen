@@ -10,6 +10,8 @@ It is open source under the Apache 2.0 licence, and it runs on your own machine.
 curl -fsSL https://mehen.dev/install | sh && mehen up
 ```
 
+or, with Node.js, `npx @mehenai/cli up` (or `npm create mehen`), which runs the same signed installer the first time.
+
 `mehen up` starts a vault on this machine at `http://localhost:7787`, opens a page where you make a passkey and your workspace, enrols this machine, registers Mehen with the agents it finds and installs guard hooks that stop them reading `.env` files. The docs are at **https://docs.mehen.dev**, starting with [Run Mehen on your machine](https://docs.mehen.dev/start).
 
 ## How it works

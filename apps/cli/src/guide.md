@@ -83,6 +83,10 @@ Without `mandateCover`, no mandate would cover the request: do not propose one. 
 
 `mehen plan submit <plan.json> --json` sends up to 20 requests to the vault, which checks each without sending any upstream and holds those that need a human in one bundle (`bnd_`) at one link; the ask's check is every request's binding code in order. `mehen wait <bnd_id> --timeout 60 --json` follows it; then send each request with its `repeat` command. A denial names the approved ones, which stay usable. `mehen check --plan <plan.json>` says first how many would go through, ask or be refused.
 
+## Mandates
+
+`mehen mandate propose --note "<why>" --json` asks a person to let this machine's held requests through without asking. By default it names the credentials and kinds this machine asked for in the last 30 days, with read, for 30 days at low caps. The vault refuses every credential, a credential or kind besides read not asked for in that time, more days or higher caps (`forbidden`, `mandateRefused`): drop what the message names. Only the person signing may widen the terms. Write the block and keep asking for each request as usual.
+
 ## What `next` means
 
 Refusals include a reason. The CLI adds a next step where it can: a command, a human link or advice. Some problems need a human to repair the setup. With `--json`, errors are printed to stdout as `{ "error", "message", "next", "ask"? }`; without it, a readable line, the next step and the ask block go to stderr. `next` has:

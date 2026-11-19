@@ -14,7 +14,15 @@ Mehen is open source and runs on your own machine. One command installs it, star
 curl -fsSL https://mehen.dev/install | sh && mehen up
 ```
 
-You need macOS, or Linux with glibc (WSL included), on arm64 or x64. Windows is not supported yet. The installer checks the binary's SHA-256 and puts `mehen` in `~/.local/bin`. Mehen is not on Homebrew, and the npm package called `mehen` is an unrelated tool.
+With Node.js, the same in one command:
+
+```sh
+npx @mehenai/cli up
+```
+
+or `npm create mehen`. Both run the same installer the first time, then `mehen up`; from then on `mehen` updates itself from signed releases, however it was installed.
+
+You need macOS, or Linux with glibc (WSL included), on arm64 or x64. Windows is not supported yet. The installer checks the binary's SHA-256 and puts `mehen` in `~/.local/bin`. Mehen is not on Homebrew, and the npm package called `mehen` is an unrelated tool: Mehen's are `@mehenai/cli` and `create-mehen`.
 
 Would you rather your agent ran it? [Let your agent do it](#let-your-agent-do-it).
 

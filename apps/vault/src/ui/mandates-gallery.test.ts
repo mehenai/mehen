@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest"
 import { escapeHtml } from "./html.ts"
 import { renderDocument } from "./layout.ts"
 import { GALLERY_MANDATE, mandatesGallery } from "./mandates-gallery.ts"
-import { MANDATE_CAP_DEFAULTS, type MandateView } from "@mehen/protocol/mandate-terms"
+import { MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_CAP_DEFAULTS, type MandateView } from "@mehen/protocol/mandate-terms"
 import { mandateControls, mandateSignDefaults, mandatePage, mandateSignPage, mandatesPage } from "./pages/mandates.ts"
 import { PEOPLE_DEVICE, peopleShell } from "./people-gallery.ts"
 import { VIEWERS, galleryShell } from "./workspace-projects-gallery.ts"
@@ -117,7 +117,11 @@ describe("the mandate gallery", () => {
   it("summarises the terms in the design's words before the passkey", () => {
     const proposal = shown("ws-mandate-sign-proposal")
     const summary = proposal.slice(proposal.indexOf('data-region="mandate-summary"'))
-    expect(summary).toContain(escapeHtml("tom-laptop may read, change and send with 2 credentials, github-tom and slack-platform, without asking you, until 26 Nov 2026 UTC, at most 5,000 reads, 2,000 changes and 50 sends a day, only on Monday, Tuesday, Wednesday, Thursday and Friday from 08:00 to 19:00, Europe/London time."))
+    expect(summary).toContain(escapeHtml("tom-laptop may read, change and send with 2 credentials, github-tom and slack-platform, without asking you, until 26 Nov 2026 UTC, at most 500 reads, 100 changes and 10 sends a day, only on Monday, Tuesday, Wednesday, Thursday and Friday from 08:00 to 19:00, Europe/London time."))
+    // An open proposal is one the vault would take: within what a machine
+    // may propose.
+    const caps = Object.fromEntries([...proposal.matchAll(/data-input="mandate-cap" data-class="(\w+)" value="(\d+)"/g)].map((m) => [m[1], Number(m[2])]))
+    for (const [c, n] of Object.entries(caps)) expect(n, c).toBeLessThanOrEqual(MANDATE_PROPOSAL_CAP_DEFAULTS[c as keyof typeof MANDATE_PROPOSAL_CAP_DEFAULTS])
     expect(summary).toContain(escapeHtml(MANDATE_REVIEWED_WORDS))
     expect(summary).toContain(escapeHtml(MANDATE_UNREVIEWED_WORDS))
     expect(summary).not.toContain(escapeHtml(MANDATE_ALL_LATER_WORDS))
@@ -136,13 +140,30 @@ describe("the mandate gallery", () => {
     expect(terms(VIEWERS.owner, { ...everything, signer: { name: "Tom Barker", self: false } })).toContain('<span data-region="mandate-items">Every credential it can use whose home Tom Barker manages, now and later</span>')
   })
 
-  it("opens fresh on every class at its default cap, a note naming the machine, 90 days and nothing to sign yet", () => {
+  it("renews behind Use these terms: the form opens narrow, the old terms shown in words with the button, filled in only from the template", () => {
+    const page = shown("ws-mandate-sign-renew")
+    const live = page.slice(0, page.indexOf('<template data-region="mandate-source-form">'))
+    expect(live).toContain('data-region="mandate-source"')
+    expect(live).toContain('data-action="mandate-use-source"')
+    expect(live).toContain('data-input="mandate-ttl" value="30" checked')
+    expect(page).toContain('<template data-region="mandate-source-form">')
+  })
+
+  it("shows a closed proposal's terms only behind Use these terms, never in the live form", () => {
+    const page = shown("ws-mandate-sign-superseded")
+    const live = page.slice(0, page.indexOf('<template data-region="mandate-source-form">'))
+    expect(live).toContain('data-action="mandate-use-source"')
+    expect([...live.matchAll(/data-input="mandate-class" value="(\w+)" checked/g)].map((m) => m[1])).toEqual(["read"])
+  })
+
+  it("opens fresh on the narrowest terms: read alone, every cap at a machine's proposal default, a note naming the machine, 30 days and nothing to sign yet", () => {
     const page = shown("ws-mandate-sign")
     expect(page).toContain('data-input="mandate-class" value="read" checked disabled')
-    for (const cls of ["change", "send", "delete"]) expect(page).toMatch(new RegExp(`data-input="mandate-class" value="${cls}" checked`))
-    for (const [cls, cap] of Object.entries(MANDATE_CAP_DEFAULTS)) expect(page).toMatch(new RegExp(`data-input="mandate-cap" data-class="${cls}"[^>]* value="${cap}"`))
+    for (const cls of ["change", "send", "delete"]) expect(page).not.toMatch(new RegExp(`data-input="mandate-class" value="${cls}" checked`))
+    // Every cap starts at what a machine may propose; the larger maxima stay for a deliberate edit.
+    for (const [cls, cap] of Object.entries(MANDATE_PROPOSAL_CAP_DEFAULTS)) expect(page).toMatch(new RegExp(`data-input="mandate-cap" data-class="${cls}"[^>]* value="${cap}"`))
     expect(page).toContain(`data-input="mandate-note" maxlength="200" autocomplete="off" value="Routine work on ${PEOPLE_DEVICE.name}"`)
-    expect(page).toContain('data-input="mandate-ttl" value="90" checked')
+    expect(page).toContain('data-input="mandate-ttl" value="30" checked')
     expect(page).toContain('data-action="mandate-sign" disabled')
     expect(shown("ws-mandate-sign-not-owner")).not.toContain('data-form="mandate-sign"')
     expect(shown("ws-mandate-sign-renew")).toContain('data-region="mandate-replaces"')

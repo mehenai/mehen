@@ -58,7 +58,7 @@ On approval required, say what you want to do, then the block; `next.say` names 
 
 Either way write the block, then `mehen wait <pol_id> --timeout 60 --json`. Only the human's passkey turns one on: it is on when `mehen wait` returns `approved` with `rule`; `ruleProposal` or stage `co-sign` means a manager must still co-sign. Neither covers sends, deletes, money, sharing or credential changes. Off or refused: do not propose it again; ask as usual. A 409 saying the rule ended: send once more, which asks; never loop.
 
-When an ask carries `mandateCover` with state `none` or `unticked` and more like it will follow, watched or not, propose a mandate for only the credential and classes it names (`mehen mandate propose --items <slug> --classes <c> --note "<why>" --json`, MCP `vault_mandate`), write the block, then `mehen wait <mdp_id> --timeout 60 --json`. Any other state: hand the person its `url`.
+When an ask carries `mandateCover` with state `none` or `unticked` and more will follow, watched or not, propose a mandate for only the credential and classes it names (`mehen mandate propose --items <slug> --classes <c> --note "<why>" --json`, MCP `vault_mandate`; the vault refuses what it never asked for), write the block, never without it, then `mehen wait <mdp_id> --timeout 60 --json`. Any other state: hand the person its `url`.
 
 `mehen fetch` names the rule, task grant, posture or mandate that let a request through; `mehen show` and `mehen check` only hint: the vault decides.
 

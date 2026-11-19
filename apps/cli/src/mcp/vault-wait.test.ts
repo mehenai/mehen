@@ -150,6 +150,7 @@ test("with two workspaces and none named, vault_wait mdp_ finds the one vault_ma
       const result = await runJv(["mcp"], homeEnv, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } })}\n`)
       return (JSON.parse(result.stdout) as { result: WaitOutput }).result
     }
+    vault.overrides.set("GET /v1/mandates/asked", () => Response.json({ items: ["github-work"], classes: [] }))
     vault.overrides.set("POST /v1/mandates/proposals", () => Response.json(mandateCreated(vault.url), { status: 201 }))
     expect((await callTool("vault_mandate", { action: "propose", note: "Nightly triage", workspace: "mock-space" })).isError).toBe(false)
     expect((await callTool("vault_pending", {})).structuredContent).toMatchObject({ pending: [] })
