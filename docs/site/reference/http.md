@@ -201,6 +201,7 @@ While the platform is suspended, every device call except freeze and self-revoke
 | `Mehen-Platform-Proof` | request | A platform's signature over this exact request, on `/v1/platform` only. A platform call that also carries `Mehen-Proof` is refused. |
 | `Mehen-Error: 1` | response | The vault refused; the body is an error object ([Errors and exit codes](errors.md)). |
 | `Mehen-Upstream: 1` | response | A relayed upstream response, never a vault refusal. |
+| `Mehen-Forwarded` | response | On a `/v1/relay` refusal: `no` when the vault refused before it sent anything upstream (authentication, a rate limit, the binding, the policy, an approval, a malformed request), so the request had no effect there and may be sent again; `yes` when it refused after it sent the request (`upstream_failed`, or `too_large` for the upstream's answer), so it may have taken effect. `mehen` counts a write as not sent only on a readable refusal marked `no` that is not `internal`; a refusal without the header, from a vault older than this, counts as maybe sent. |
 | `Mehen-Item` | response | The item that acted, `<slug> (<account>)`, so the transcript says which account was used. |
 | `Mehen-Rule` | response | On a relayed response a standing rule or task grant let through without asking: the `rul_...` ids, joined with `, `. A task grant is named only to a `mehen` 0.3.17 or later. |
 | `Mehen-Posture` | response | On a relayed response how careful the credential is let through without asking: the levels, `routine` or `trust`, joined with `, `. |

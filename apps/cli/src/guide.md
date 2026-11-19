@@ -48,7 +48,7 @@ Human needed: approve a request
 
 For an account a human signs in to (Gmail, GitHub), use `mehen connect <provider> --name <slug> --reason "<why>" [--expect <account>]`. The OAuth client is picked when exactly one exists; with none, the command exits 4 with `client_missing` and `next.command` is the exact `mehen request oauth-client ...` to run first, or add `--request-client` to have the vault ask for the client and then the connection in one chain. Give the human the ask (the check is the account to sign in as), then `mehen wait <con_id> --timeout 60 --json`. The link lasts 15 minutes.
 
-`mehen pending` lists every ask this machine made that is still open; `mehen pending <id>` prints its block again. An ask this machine recorded that its vault did not confirm (the vault unreachable or refusing, or its answer leaving the ask out) is listed from this machine's record, marked `stale: true` (and "(stale)" in the table): it may be settled. `mehen pending <id>` prints a stale ask under "(stale: may be settled)" with no QR code, and its `next` says not to hand the link over as live. `vault_pending` warns and hands none of them over.
+`mehen pending` lists every ask this machine made that is still open; `mehen pending <id>` prints its block again. An ask this machine recorded that its vault did not confirm (the vault unreachable or refusing, its answer leaving the ask out, or an enrolment it no longer says waits for its owner) is listed from this machine's record, marked `stale: true` (and "(stale)" in the table): it may be settled. `mehen pending <id>` prints a stale ask under "(stale: may be settled)" with no QR code, and its `next` says not to hand the link over as live. `vault_pending` warns and hands none of them over.
 
 `mehen wait <id> --timeout 60 --json` follows any ask with an id: an intake (`int_`), approval (`apr_`), connection (`con_`), enrolment (`enr_`), policy proposal (`pol_`), adoption batch (`adp_`), bundle (`bnd_`) or mandate proposal (`mdp_`). An id the vault does not know is `not_found` (exit 1) and points at `mehen pending`, or for an `mdp_` id at `mehen mandate ls`.
 
@@ -104,7 +104,7 @@ Never guess around a refusal. Do what `next` says, or tell your human.
 | 4 | a human must act: an intake, a reconnect, an enrolment, a missing OAuth client, still waiting (a wait `timeout`: wait again), a frozen workspace (tell the human; there is nothing to wait on), or `identity_required` (the human must sign in with Google in the workspace), `account_pending`, `owner_inactive` or `project_unshared` |
 | 5 | refused by the vault's rules (binding, surface, policy, mode, environment, remote, forbidden, or `workload_required`: this machine acts only through the workloads its harness creates); retrying will not help |
 | 6 | identity: this machine is not enrolled, its proof failed, it was revoked, or its key is insecure or made for another vault; `workload_ended`: the workload this task ran as has ended, so stop |
-| 7 | transient: network, upstream or rate limit; retry once, after `retryAfter` when given. Not for `outcome_unknown` (a write that stopped without an answer) or `upstream_failed`: the request may already have taken effect, so check first (read it back, or ask the human) |
+| 7 | transient: network, upstream or rate limit; retry once, after `retryAfter` when given. Not for `outcome_unknown` (a write that may have been sent) or `upstream_failed`: the request may already have taken effect, so check first (read it back, or ask the human) |
 
 ## Workspaces
 

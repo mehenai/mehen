@@ -238,7 +238,7 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 ### `upstream_failed`
 
-**What it means.** The vault could not reach the upstream, or the upstream answered in a compression the vault cannot check for leaked credentials. In the compression case the request itself was sent. For a request with a method other than `GET`, `HEAD` or `OPTIONS`, an upstream that did not answer may still have received it, so the message and `next` say to check, and there is no `retryAfter`. Through `mehen run`, the program gets such a request's failure as [`outcome_unknown`](#outcome_unknown) with HTTP 424, not a 502.
+**What it means.** The vault could not reach the upstream, or the upstream answered in a compression the vault cannot check for leaked credentials. In the compression case the request itself was sent. For a request with a method other than `GET`, `HEAD` or `OPTIONS`, an upstream that did not answer may still have received it, so the message and `next` say to check, and there is no `retryAfter`. The vault marks it `Mehen-Forwarded: yes`, and `mehen` reports such a request's failure as [`outcome_unknown`](#outcome_unknown); through `mehen run`, with HTTP 424, not a 502.
 
 **What you do.** For a `GET`, `HEAD` or `OPTIONS`, retry later. For any other method, and in the compression case, check whether the request took effect before sending it again.
 
@@ -256,7 +256,7 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 ### `too_large`
 
-**What it means.** The request or the upstream's response is too large; responses are capped at 32 MiB.
+**What it means.** The request or the upstream's response is too large; responses are capped at 32 MiB. When it is the upstream's response to a request with a method other than `GET`, `HEAD` or `OPTIONS`, the request was sent and may have taken effect: the message says to check first, the refusal is marked `Mehen-Forwarded: yes`, and `mehen` reports it as [`outcome_unknown`](#outcome_unknown).
 
 **What you do.** Send or ask for less.
 
@@ -328,7 +328,7 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 ### `outcome_unknown`
 
-**What it means.** A request relayed with a method other than `GET`, `HEAD` or `OPTIONS` stopped without an answer: `mehen fetch --max-time` or `vault_fetch` `timeoutSeconds` ran out, or the connection to the vault broke after the request may have reached it. The vault may have sent it on, so it may already have taken effect upstream. Through `mehen run`, the local relay answers the program with HTTP 424, this body and the headers `x-should-retry: false` and `stripe-should-retry: false`, so its SDK does not send it again on its own. It does the same for such a request the vault answered with [`upstream_failed`](#upstream_failed). An answer to such a request with a 5xx that carries neither `Mehen-Upstream` nor `Mehen-Error` (something in front of the vault, such as a proxy's 502 or 504, sent it) is `outcome_unknown` too, through `mehen fetch`, `vault_fetch` and `mehen run`.
+**What it means.** A request relayed with a method other than `GET`, `HEAD` or `OPTIONS` got no answer that proves it was not sent. `mehen` counts a write as not sent only when the answer is a readable vault refusal marked `Mehen-Forwarded: no` ([HTTP](http.md#headers)) that is not an `internal` 5xx. Anything else is this code: `mehen fetch --max-time` or `vault_fetch` `timeoutSeconds` ran out, the connection to the vault broke after the request may have reached it, the answer broke off while it was read, or the vault answered a refusal marked `Mehen-Forwarded: yes`, an unmarked or unreadable one, or something with neither `Mehen-Upstream` nor `Mehen-Error` of any status. The vault may have sent it on, so it may already have taken effect upstream. Through `mehen run`, the local relay answers the program with HTTP 424, this body and the headers `x-should-retry: false` and `stripe-should-retry: false`, so its SDK does not send it again on its own. It does the same for every case above, whatever the status, while it streams a write's answer as it comes; an answer that breaks after it started reaches the program as an incomplete body, never a clean end.
 
 **What you do.** Do not send it again blind: that could send the email, create the issue or take the payment twice. Check first (read it back with a `GET`, or ask the human), and send it again only if it did not happen.
 

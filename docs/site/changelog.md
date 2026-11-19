@@ -13,9 +13,9 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
-### 19 November 2026: a relayed write the upstream did not answer no longer says retry later
+### 19 November 2026: a relayed write the upstream did not answer no longer says retry later, and a relay refusal says whether anything was sent
 
-When the vault could not get an answer from the upstream for a relayed request with a method other than `GET`, `HEAD` or `OPTIONS`, `upstream_failed` now says the request may have reached the service and to check whether it took effect before sending it again, and carries no `retryAfter`. A read still says to retry later, with `retryAfter: 5`. See [`upstream_failed`](reference/errors.md#upstream_failed).
+Every `/v1/relay` refusal now carries `Mehen-Forwarded`: `no` when the vault refused before it sent anything upstream, `yes` when it refused after (`upstream_failed`, or `too_large` for the upstream's answer to a write, which now says the request was sent and to check first). `mehen` sends a write again only after a refusal marked `no`. See [HTTP](reference/http.md#headers). When the vault could not get an answer from the upstream for a relayed request with a method other than `GET`, `HEAD` or `OPTIONS`, `upstream_failed` now says the request may have reached the service and to check whether it took effect before sending it again, and carries no `retryAfter`. A read still says to retry later, with `retryAfter: 5`. See [`upstream_failed`](reference/errors.md#upstream_failed).
 
 ### 19 November 2026: choose how often Mehen asks
 

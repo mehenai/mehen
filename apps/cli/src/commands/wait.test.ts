@@ -953,10 +953,16 @@ describe("mehen wait mdp_", () => {
     expect(result.code).toBe(EXIT.ok)
     expect(json(result)).toEqual({ id: "mdp_p1", kind: "mandate", proposal: "mdp_p1", state: "signed", mandate: "mdt_m1", expiresAt: "2026-11-15T09:00:00.000Z" })
     expect(vault.seen.filter((r) => r.path === "/v1/mandates/proposals/mdp_p1").map((r) => r.search)).toEqual(["", "?wait=1"])
+    answering(status("signed", "mdt_m1"))
+    const signed = await runJv(["wait", "mdp_p1"], env)
+    // A decision, not live authority: the vault checks each request.
+    expect(signed.stdout).toContain("Signed: a person signed mandate mdt_m1 for this machine. The vault checks each request against it when it is sent.")
+    expect(signed.stdout).not.toContain("lets this machine make requests like these without asking")
+    expect(signed.stdout).toContain("mehen mandate show mdt_m1")
     answering(status("expired", "mdt_m2"))
     const human = await runJv(["wait", "mdp_p1"], env)
     expect(human.code).toBe(EXIT.ok)
-    expect(human.stdout).toContain("Settled: a person signed mandate mdt_m2 for this machine instead, which closed this proposal.")
+    expect(human.stdout).toContain("Settled: a person signed mandate mdt_m2 for this machine instead, which closed this proposal. The vault checks each request against it when it is sent.")
     expect(human.stdout).toContain("mehen mandate show mdt_m2")
   })
 

@@ -160,3 +160,31 @@ test("an ask the vault did not confirm is stale and never handed over: a workspa
     if (record) record.revoked = false
   }
 })
+
+test("a pending enrolment gets a handover only while the vault says it waits; approved, rejected or unreachable, it is stale with none", async () => {
+  vault.enrolOutcome = { pendingPolls: 1000, result: "active" }
+  const enrolment = (JSON.parse((await runJv(["enrol", "--workspace", "personal", "--json"], env)).stdout) as { enrolment: string }).enrolment
+  const links = (result: PendingResult) => result.content.filter((c) => c.type === "resource_link").map((c) => c.uri)
+  const waiting = await pending()
+  expect(waiting.structuredContent.pending.map((a) => [a.id, a.stale])).toEqual([[enrolment, undefined]])
+  expect(links(waiting)).toHaveLength(1)
+  expect(askCardView(waiting as never)).toMatchObject({ kind: "single", ask: { id: enrolment } })
+  try {
+    for (const result of ["active", "rejected"] as const) {
+      vault.enrolOutcome = { pendingPolls: 0, result }
+      const settled = await pending()
+      expect(settled.structuredContent.pending.map((a) => [a.id, a.stale]), result).toEqual([[enrolment, true]])
+      expect(links(settled), result).toEqual([])
+      expect(askCardView(settled as never), result).toEqual({ kind: "none" })
+    }
+    vault.enrolOutcome = { pendingPolls: 1000, result: "active" }
+    // A proxy in front of an unreachable vault.
+    vault.overrides.set(`GET /v1/enrol/${enrolment}`, () => new Response("upstream down", { status: 503 }))
+    const unread = await pending()
+    expect(unread.structuredContent.pending.map((a) => [a.id, a.stale])).toEqual([[enrolment, true]])
+    expect(links(unread)).toEqual([])
+  } finally {
+    vault.overrides.clear()
+    vault.enrolOutcome = { pendingPolls: 2, result: "active" }
+  }
+})

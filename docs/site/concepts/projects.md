@@ -105,6 +105,8 @@ What `mehen run [--env staging] -- <cmd>` does:
 5. Passes lease values to the child only, with its stdout and stderr through the [redactor](#leases).
 6. On exit, ends the run and exits with the child's exit code. When it stops the child itself (maximum life, a refused renewal, a renewal that never succeeded), it exits with [the code for the reason](../guides/services.md#exit-codes) instead.
 
+The local relay streams each answer as it comes. For a write (any method but `GET`, `HEAD` or `OPTIONS`), an answer that is not the upstream's own and not a refusal the vault made before forwarding anything is HTTP 424 [`outcome_unknown`](../reference/errors.md#outcome_unknown) with `x-should-retry: false`. A write whose answer breaks off after it started streaming reaches the program as an incomplete body, never a clean end: it may have landed, so check before sending it again.
+
 Use `mehen run` with HTTP clients that honour its proxy and CA settings: Bun, Node, curl and most Python and Ruby clients do. Supported clients receive placeholders without changing application code. Clients that ignore those settings (Go on macOS, some older Python builds), or use unsupported protocol upgrades, will not authenticate through the local relay: their placeholder reaches the upstream, which rejects it as a bad key.
 
 ## Placeholders

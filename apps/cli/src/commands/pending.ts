@@ -18,6 +18,7 @@ import { type LedgerEntry, findLedgerEntry, isListedAsk, readLedger } from "../l
 import { normaliseWorkspacePending, workspaceMachineNotices, type MachineAddedNotice } from "../pending-workspace.ts"
 import { note, printAsk, printJson, printLine, table } from "../output.ts"
 import { type SessionContext, type VaultSession, openContext, sessionContext } from "../session.ts"
+import { pendingEnrolmentStatus } from "./activate.ts"
 import { type FoundPending, type LocalContext, allowedSlots, listActive, pendingIn, slotView } from "../slots.ts"
 import { VaultApiError } from "../vault-api.ts"
 import { type Text, colourEnabled, styler, visibleText } from "../tty.ts"
@@ -286,19 +287,21 @@ export async function listPending(env: Env, now = new Date(), span?: PendingSpan
     refusedLinks += found.refusedLinks
     if (found.source === "vault") source = "vault"
   }
-  // Every pending slot's enrolment is read locally and asks no vault, so a
-  // refusing vault elsewhere never hides it.
+  // Every pending slot's enrolment, from this machine's record, confirmed by
+  // a read of its status that never finishes it: only one the vault says
+  // still waits for its owner is current; approved, ended or unread, stale.
   const device = requestedBy(env).device
   const enrolments: PendingItem[] = []
   for (const slot of pendingSlots) {
     const view = await slotView(slot, device)
-    if (view.state === "pending") enrolments.push({ ask: view.ask, slug: null })
+    if (view.state !== "pending") continue
+    const waiting = (await pendingEnrolmentStatus(env, slot.dir, slot.record)) === "pending"
+    enrolments.push({ ask: view.ask, slug: null, ...(waiting ? {} : { stale: true as const }) })
   }
-  // Only when no active vault answered and nothing else can be returned is
-  // the first refusal the answer: offline, the asks this machine recorded
-  // are still shown, marked stale, so a link can be handed over again.
-  const offline = unavailable.every((u) => u.error === "network") && items.length > 0
-  if (active.length > 0 && unavailable.length === active.length && enrolments.length === 0 && !offline) throw firstFailure
+  // Only when no active vault answered and nothing at all can be returned is
+  // the first refusal the answer: otherwise the asks this machine recorded
+  // are shown, marked stale.
+  if (active.length > 0 && unavailable.length === active.length && items.length === 0 && enrolments.length === 0) throw firstFailure
   items.push(...enrolments)
   const vaultUrl = active[0]?.config.vault ?? pendingSlots[0]?.record.origin ?? resolveVaultUrl(env, null)
   return { items, notices, groups, source, vaultUrl, refusedLinks, unavailable }
@@ -310,6 +313,8 @@ function shortWhat(ask: Ask): string {
 }
 
 const STALE_ASK_NEXT: NextStep = { say: "The vault did not confirm this ask is open; it may already be settled. Do not hand the link over as live: run mehen pending again once the vault answers." }
+// An enrolment the vault does not say still waits: approved, ended or unread.
+const staleNext = (ask: Ask): NextStep => ask.kind !== "enrol" || ask.wait === null ? STALE_ASK_NEXT : { command: ask.wait, say: `The vault does not confirm this enrolment still waits for its owner. Do not hand its link over: \`${ask.wait}\` finishes it if it was approved, or says how it ended.` }
 
 export const pendingCommand: Command = {
   summary: "list the asks still waiting for a human, or show one again (mehen pending [<id>|<slug>])",
@@ -328,7 +333,7 @@ export const pendingCommand: Command = {
         throw new CliError("not_found", `Nothing is pending for ${JSON.stringify(wanted)}.`, { command: "mehen pending", say: "List what is still waiting for a human with `mehen pending`." })
       }
       const { ask, stale } = found
-      if (json) printJson({ ask: stale ? { ...ask, stale: true } : ask, next: stale ? STALE_ASK_NEXT : askNext(ask, { now }), ...(notices.length ? { notices } : {}) })
+      if (json) printJson({ ask: stale ? { ...ask, stale: true } : ask, next: stale ? staleNext(ask) : askNext(ask, { now }), ...(notices.length ? { notices } : {}) })
       else {
         for (const notice of notices) printLine(pendingNoticeText(notice))
         if (stale) printLine("(stale: may be settled)")

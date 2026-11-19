@@ -454,7 +454,9 @@ export function outcomeLines(result: WaitResult, s: Styler, options: { now?: Dat
   }
   if (result.kind === "mandate") {
     const { mandate, state } = result.status
-    const lead = state === "signed" ? segments(s.ok("Signed"), `: mandate ${mandate} lets this machine make requests like these without asking.`) : segments(s.ok("Settled"), `: a person signed mandate ${mandate} for this machine instead, which closed this proposal.`)
+    // The person's decision, not a promise: the vault checks each request.
+    const checks = " The vault checks each request against it when it is sent."
+    const lead = state === "signed" ? segments(s.ok("Signed"), `: a person signed mandate ${mandate} for this machine.${checks}`) : segments(s.ok("Settled"), `: a person signed mandate ${mandate} for this machine instead, which closed this proposal.${checks}`)
     return [lead, then(`mehen mandate show ${mandate}, then repeat the requests`)]
   }
   if (result.kind === "enrol") {
