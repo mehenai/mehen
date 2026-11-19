@@ -57,7 +57,7 @@ for (const shell of shells) {
   test(`${shell}: installs; a second run over the verified install is already-installed and downloads nothing; quiet prints only the receipt`, async () => {
     const first = await run(shell, { MEHEN_VERSION: "1.2.3" })
     expect(first.code).toBe(0)
-    expect(first.stdout).toContain("Next: mehen setup")
+    expect(first.stdout).toContain("Next: mehen up")
     expect(first.stdout).toContain("PATH:")
     expect(await readFile(join(bin(), "mehen"))).toEqual(Buffer.from(raw))
     expect(await readFile(join(bin(), ".mehen.sha256"), "utf8")).toBe(`${hash(raw)}\n`)

@@ -1,0 +1,16 @@
+{
+  "name": "@mehenai/cli",
+  "version": "0.4.0",
+  "description": "Mehen: your agent uses your API keys without ever receiving them. Runs the signed mehen, installing it first.",
+  "homepage": "https://mehen.dev",
+  "repository": { "type": "git", "url": "git+https://github.com/mehenai/mehen.git", "directory": "deploy/npm/cli" },
+  "bugs": "https://github.com/mehenai/mehen/issues",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": { "mehen": "bin/mehen.mjs" },
+  "exports": { "./lib.mjs": "./lib.mjs" },
+  "files": ["bin", "lib.mjs", "README.md"],
+  "engines": { "node": ">=18" },
+  "os": ["darwin", "linux"],
+  "keywords": ["mehen", "ai-agents", "credentials", "secrets", "mcp", "claude-code", "vault"]
+}
