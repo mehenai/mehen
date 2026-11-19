@@ -3,28 +3,17 @@ on: pull_request
 permissions:
   contents: read
 jobs:
-  gallery-like:
+  matrix:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
       - run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - run: bun install --frozen-lockfile
-      - name: the gallery launcher, first thing, as CI runs it
-        run: bun probe-launch.ts
-      - name: the same with TMPDIR at /tmp
-        run: TMPDIR=/tmp bun probe-launch.ts
-      - name: shell start with TMPDIR at the runner's temp, then /tmp
-        run: |
-          for d in "$RUNNER_TEMP" /tmp "$RUNNER_TEMP" /tmp; do
-            p=$(mktemp -d -p "$d"); s=$(date +%s%N)
-            TMPDIR=$d /usr/bin/google-chrome --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run about:blank 2>"$d/err.$$" & pid=$!
-            until [ -s "$p/DevToolsActivePort" ]; do sleep 0.02; [ $(( ($(date +%s%N)-s)/1000000 )) -gt 60000 ] && break; done
-            echo "profile in $d: $(( ($(date +%s%N)-s)/1000000 )) ms"; kill $pid; wait $pid 2>/dev/null; grep -v dbus "$d/err.$$" | head -5
-          done
-          df -h "$RUNNER_TEMP" /tmp | cat
-      - name: the CLI's real Chrome test, alone
-        run: bun test --timeout 30000 apps/cli/src/browser/page-check.chrome.test.ts 2>&1 | tail -5
+      - run: |
+          echo "RUNNER_TEMP=$RUNNER_TEMP"; df -hT "$RUNNER_TEMP" /tmp /dev/shm | cat; ls -ld "$RUNNER_TEMP" /tmp
+          mount | grep -E " / | /home| /tmp| /mnt" | cat
+      - run: bun probe-matrix.ts
+        timeout-minutes: 8
