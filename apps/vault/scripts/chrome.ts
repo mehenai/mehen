@@ -3,11 +3,9 @@
 // where Chrome is, how it starts with a throwaway profile, and a small
 // client for the protocol's messages and events.
 
-import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
-import { mkdir, readFile, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import path from "node:path"
+import { startChrome } from "../../../tools/ci/chrome.ts"
 
 // Where macOS and the Linux packages put Chrome or Chromium, as a path or a
 // command on PATH.
@@ -72,51 +70,28 @@ export class Cdp {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
+// Started the one way every script and test starts Chrome
+// (tools/ci/chrome.ts): a profile of its own, a wait sized for a fresh CI
+// runner's slow first read of Chrome from disk, and what Chrome printed
+// when it does not start.
 export async function launchChrome(chromePath: string): Promise<{ cdp: Cdp; close: () => Promise<void> }> {
-  const profile = path.join(tmpdir(), `mehen-gallery-${process.pid}`)
-  await rm(profile, { recursive: true, force: true })
-  await mkdir(profile, { recursive: true })
-  // Chrome will not start its sandbox as root, which a CI container may be.
-  const sandbox = process.getuid?.() === 0 ? ["--no-sandbox"] : []
-  const child = spawn(chromePath, ["--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", `--user-data-dir=${profile}`, ...sandbox, "about:blank"], {
-    stdio: "ignore",
-  })
-  const portFile = path.join(profile, "DevToolsActivePort")
-  let port: string | null = null
-  let browserPath: string | null = null
-  for (let i = 0; i < 100 && port === null; i++) {
-    await sleep(100)
-    try {
-      const lines = (await readFile(portFile, "utf8")).trim().split("\n")
-      port = lines[0] ?? null
-      browserPath = lines[1] ?? null
-    } catch {
-      // Chrome has not written the file yet.
-    }
+  const chrome = await startChrome(chromePath, { flags: ["--disable-gpu", "--hide-scrollbars"], profilePrefix: "mehen-gallery-" })
+  const ws = new WebSocket(chrome.endpoint)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve())
+      ws.addEventListener("error", () => reject(new Error(`could not connect to Chrome's devtools socket at ${chrome.endpoint}`)))
+    })
+  } catch (error) {
+    await chrome.close()
+    throw error
   }
-  if (port === null || browserPath === null) {
-    child.kill()
-    throw new Error(`Chrome did not open its devtools port (looked for ${portFile})`)
-  }
-  const ws = new WebSocket(`ws://127.0.0.1:${port}${browserPath}`)
-  await new Promise<void>((resolve, reject) => {
-    ws.addEventListener("open", () => resolve())
-    ws.addEventListener("error", () => reject(new Error("could not connect to Chrome's devtools socket")))
-  })
   const cdp = new Cdp(ws)
   return {
     cdp,
     close: async () => {
-      try {
-        await cdp.send("Browser.close")
-      } catch {
-        child.kill()
-      }
-      await rm(profile, { recursive: true, force: true })
+      await Promise.race([cdp.send("Browser.close").catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5_000))])
+      await chrome.close()
     },
   }
 }

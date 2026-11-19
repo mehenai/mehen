@@ -6,16 +6,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { createHash, X509Certificate } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import type { Server, Subprocess } from "bun"
+import type { Server } from "bun"
 import { type FillRequest, fillSealContext } from "@mehen/protocol/fill"
 import { importSealPublicKey, seal } from "@mehen/protocol/seal"
 import { CliError } from "../errors.ts"
 import { createRunCa } from "../relay/ca.ts"
 import type { VaultApi } from "../vault-api.ts"
-import { CHROME_START_MS, startChrome } from "../testing/chrome.ts"
+import { CHROME_START_MS, type StartedChrome, startChrome } from "../../../../tools/ci/chrome.ts"
 import { CdpConnection } from "./cdp.ts"
 import { type FillOptions, fill } from "./fill.ts"
 import { checkField, locateField, pageFrames } from "./page-check.ts"
@@ -30,7 +27,7 @@ type Site = { server: Server<undefined>; origin: string }
 let login: Site
 let other: Site
 let profile: string
-let chrome: Subprocess
+let chrome: StartedChrome | undefined
 let control: CdpConnection
 let session: string
 let pageTarget: string
@@ -149,10 +146,9 @@ describe.skipIf(CHROME === undefined)("mehen fill in a real Chrome", () => {
     login = await site("login.test", ca, loginPages)
     other = await site("other.test", ca, otherPages)
     const spki = createHash("sha256").update(new X509Certificate((await ca.issueLeaf("login.test")).certPem).publicKey.export({ type: "spki", format: "der" })).digest("base64")
-    profile = await mkdtemp(join(tmpdir(), "mehen-fill-chrome-"))
-    const started = await startChrome(CHROME as string, profile, ["--site-per-process", "--host-resolver-rules=MAP *.test 127.0.0.1", `--ignore-certificate-errors-spki-list=${spki}`])
-    chrome = started.process
-    control = await CdpConnection.open(started.endpoint)
+    chrome = await startChrome(CHROME as string, { flags: ["--site-per-process", "--host-resolver-rules=MAP *.test 127.0.0.1", `--ignore-certificate-errors-spki-list=${spki}`], profilePrefix: "mehen-fill-chrome-" })
+    profile = chrome.profile
+    control = await CdpConnection.open(chrome.endpoint)
     const { targetInfos } = await control.send<{ targetInfos: { targetId: string; type: string }[] }>("Target.getTargets")
     pageTarget = (targetInfos.find((info) => info.type === "page") as { targetId: string }).targetId
     session = (await control.send<{ sessionId: string }>("Target.attachToTarget", { targetId: pageTarget, flatten: true })).sessionId
@@ -164,11 +160,9 @@ describe.skipIf(CHROME === undefined)("mehen fill in a real Chrome", () => {
 
   afterAll(async () => {
     control?.close()
-    chrome?.kill()
-    await chrome?.exited
+    await chrome?.close()
     login?.server.stop(true)
     other?.server.stop(true)
-    if (profile) await rm(profile, { recursive: true, force: true })
   })
 
   test("types each field into the field that is for it, checked in one task, and returns no value", async () => {

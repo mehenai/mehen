@@ -23,6 +23,12 @@ jobs:
       # Linux's /tmp is one; macOS gives each user a private TMPDIR. Tests make
       # their config directories with tmpdir(), so point it at the runner's own.
       - run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      # A fresh runner reads each block of its disk slowly the first time
+      # (20 to 60 MB/s), so a first Chrome start, which reads about 450 MB,
+      # took 0.6 to 25 s; once Chrome's files have been read it takes 0.3 s.
+      # Read them in the background while the job sets up (tools/ci/chrome.ts).
+      - name: Read Chrome from disk in the background
+        run: (for c in google-chrome chromium; do d=$(dirname "$(readlink -f "$(command -v "$c")")" 2>/dev/null) && find -L "$d" -type f -exec cat {} + > /dev/null 2>&1; done &) || true
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
@@ -68,6 +74,9 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      # Read Chrome's files once now, while the UI builds, so its first start
+      # does not wait on the runner's slow first read of the disk
+      # (tools/ci/chrome.ts says why; the check job does the same).
       - name: Find Chrome
         id: chrome
         run: |
@@ -75,6 +84,7 @@ jobs:
             if p="$(command -v "$c")"; then
               echo "Using $p"
               echo "path=$p" >> "$GITHUB_OUTPUT"
+              (find -L "$(dirname "$(readlink -f "$p")")" -type f -exec cat {} + > /dev/null 2>&1 &)
               exit 0
             fi
           done
