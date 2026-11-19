@@ -810,6 +810,77 @@ it("Microsoft's interaction_required, consent_required and login_required end th
   expect(getOAuthProvider("microsoft-graph")?.refresh.terminalErrors).toEqual(["invalid_grant", "interaction_required", "consent_required", "login_required"])
 })
 
+// A refresh answered interaction_required, as Microsoft's token endpoint
+// sends it: a Microsoft connection needs a reconnect at once; a Google one,
+// whose list does not name it, waits to retry.
+for (const [provider, outcome] of [["microsoft-graph", "needs_reauth"], ["google-gmail", "refresh_retrying"]] as const)
+  it(`a ${provider} refresh answered interaction_required ends in ${outcome}`, async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const item = await connected(ctx)
+      ctx.sql.exec("UPDATE items SET provider=? WHERE id=?", provider, item.id)
+      // The client's binding admits its provider's token endpoint.
+      ctx.sql.exec("UPDATE items SET binding=? WHERE slug='google-client'", JSON.stringify(getTemplate(provider === "microsoft-graph" ? "microsoft-oauth-client" : "google-oauth-client")!.binding))
+      ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
+      setUpstreamFetch(async () => Response.json({ error: "interaction_required", error_description: "AADSTS50076: Due to a configuration change made by your administrator, you must use multi-factor authentication." }, { status: 400 }))
+      await expect(workspaceAccessToken(ctx, checkedCredential(ctx, item.slug)!)).rejects.toMatchObject({ code: outcome })
+      expect(checkedCredential(ctx, item.slug)?.status).toBe(outcome)
+    })
+  })
+
+// The notices about a connection go to whoever may reconnect it, worked out
+// with no session: an identity rule that covers owners and admins does not
+// keep them from it. A removed admin, a guest and a member who may not
+// rotate a workspace credential are never sent one.
+const NOTICE_TRIGGERS: Record<"connection_lost" | "oauth_client_rejected" | "connection_failing", (ctx: VaultContext, item: Awaited<ReturnType<typeof connected>>) => Promise<void>> = {
+  connection_lost: async (ctx, item) => {
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_grant" }, { status: 400 }))
+    await expect(workspaceAccessToken(ctx, checkedCredential(ctx, item.slug)!)).rejects.toMatchObject({ code: "needs_reauth" })
+  },
+  oauth_client_rejected: async (ctx, item) => {
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_client" }, { status: 401 }))
+    await expect(workspaceAccessToken(ctx, checkedCredential(ctx, item.slug)!)).rejects.toMatchObject({ code: "needs_reauth" })
+  },
+  connection_failing: async (ctx, item) => {
+    const start = Date.UTC(2027, 0, 4, 12)
+    for (let day = 0; day < 4; day++) {
+      const then = { ...ctx, now: () => start + day * 86_400_000 }
+      setUpstreamFetch(async () => new Response("busy", { status: 503 }))
+      ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=?,payload=json_remove(payload,'$.retryAt') WHERE item=?", then.now() - 1, item.id)
+      await expect(workspaceAccessToken(then, checkedCredential(ctx, item.slug)!)).rejects.toMatchObject({ code: "refresh_retrying" })
+    }
+  },
+}
+it("a project connection's lost notice reaches its project manager an identity rule covers, and not a member who only uses the project", async () => {
+  const { setSetting } = await import("../src/vault/areas/workspace-runtime.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await connected(ctx, "project")
+    setSetting(ctx, "identity_rule", { provider: "google", domains: ["example.com"], roles: ["owner", "admin", "member"] })
+    setSetting(ctx, "identity_rule_rev", 2)
+    await NOTICE_TRIGGERS.connection_lost(ctx, item)
+    const sent = ctx.sql.exec<{ account: string; payload: string }>("SELECT account,payload FROM notice_outbox").toArray().filter((n) => (JSON.parse(n.payload) as { kind: string }).kind === "connection_lost")
+    // Kim manages prj_a; the member's edit share and the guest's do not reach a rotation.
+    expect(sent.map((n) => n.account).sort()).toEqual(["acc_admin", "acc_kim", "acc_owner"])
+  })
+})
+for (const [kind, trigger] of Object.entries(NOTICE_TRIGGERS))
+  it(`${kind} reaches the owner and admin an identity rule covers, and no removed admin, guest or member`, async () => {
+    const { setSetting } = await import("../src/vault/areas/workspace-runtime.ts")
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const item = await connected(ctx)
+      setSetting(ctx, "identity_rule", { provider: "google", domains: ["example.com"], roles: ["owner", "admin"] })
+      setSetting(ctx, "identity_rule_rev", 2)
+      ctx.sql.exec("UPDATE members SET role='admin',status='removed' WHERE id='mem_kim'")
+      await trigger(ctx, item)
+      const sent = ctx.sql.exec<{ account: string; payload: string }>("SELECT account,payload FROM notice_outbox").toArray().filter((n) => (JSON.parse(n.payload) as { kind: string }).kind === kind)
+      expect(sent.map((n) => n.account).sort()).toEqual(["acc_admin", "acc_owner"])
+    })
+  })
+
 // Who was told what: the outbox rows of these kinds, and the owner's Needs you rows.
 function connectionNotices(ctx: VaultContext) {
   return ctx.sql.exec<{ account: string; payload: string }>("SELECT account,payload FROM notice_outbox ORDER BY created_at,id").toArray().map((n) => ({ account: n.account, payload: JSON.parse(n.payload) as { kind: string } & Record<string, unknown> })).filter((n) => n.payload.kind === "connection_lost" || n.payload.kind === "oauth_client_rejected")

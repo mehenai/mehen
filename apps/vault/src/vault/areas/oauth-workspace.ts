@@ -13,7 +13,7 @@ import { assertCredentialCurrent, assertCredentialReservation, assertNameBudget,
 import { devicePolicyState } from "./devices.ts"
 import { assertManagedConnectRoom, managedItemsFull, overLimit, subjectWrite } from "./managed.ts"
 import { heldManagedPlatform, managedPolicyView } from "../managed-platform.ts"
-import { managedSetting, nameMiss, queueNotice, recordExposure, requireStepUp, workspaceRef, type WorkspaceInvocationContext, type WorkspaceRuntimePrincipal } from "./workspace-runtime.ts"
+import { capabilityState, managedSetting, nameMiss, queueNotice, recordExposure, requireStepUp, workspaceRef, type WorkspaceInvocationContext, type WorkspaceRuntimePrincipal } from "./workspace-runtime.ts"
 type Flow = {
   requestItemId?: string
   fresh?: boolean
@@ -671,10 +671,12 @@ function connectedAtOf(ctx: VaultContext, item: string, basis: ConnectionBasis):
 
 // The accounts that may start a reconnect of this credential (or replace
 // this client): whoever manages where it belongs, the same people its Needs
-// you row is listed to (credentials-pending.ts).
+// you row is listed to (credentials-pending.ts). There is no session here,
+// so each member's identity gate is left out (capabilityState); the real
+// session and passkey checks apply to the reconnect itself.
 function reconnectors(ctx: VaultContext, credential: string): string[] {
   const state = credentialAccessState(ctx)
-  return state.members.filter(m => m.status === "active" && m.standing.effectiveRole !== "guest" && can(state, { kind: "member", memberId: m.id, account: m.account, session: "ses_notice", securityEpoch: 0, sessionCheck: null }, { type: "credential.rotate" }, { credential }, ctx.now()).allowed).map(m => m.account)
+  return state.members.filter(m => m.status === "active" && m.standing.effectiveRole !== "guest" && can(capabilityState(state, m.id), { kind: "member", memberId: m.id, account: m.account, session: "ses_notice", securityEpoch: 0, sessionCheck: null }, { type: "credential.rotate" }, { credential }, ctx.now()).allowed).map(m => m.account)
 }
 
 // What an agent is told about a connection that already needs a person:
