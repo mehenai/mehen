@@ -241,7 +241,11 @@ describe("HttpVaultApi relay", () => {
     answer(409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, refusal)
     expect((await write()).code).toBe("approval_required")
     const unknown: [string, number, Record<string, string>, string][] = [
-      ["a refusal from a vault that does not mark them", 409, { [ERROR_HEADER]: "1" }, refusal],
+      ["an unmarked refusal from a vault that does not say whether it forwarded, with a code it raises after forwarding", 502, { [ERROR_HEADER]: "1" }, JSON.stringify({ error: "upstream_failed", message: "Could not reach the upstream." })],
+      ["an unmarked refusal with a code that vault never raised on a relay", 409, { [ERROR_HEADER]: "1" }, JSON.stringify({ error: "intake_required", message: "x" })],
+      ["an unmarked refusal whose body cannot be read", 409, { [ERROR_HEADER]: "1" }, "<html>"],
+      ["an unmarked refusal with an unknown code", 409, { [ERROR_HEADER]: "1" }, JSON.stringify({ error: "brand_new", message: "x" })],
+      ["the vault's own failure, unmarked", 500, { [ERROR_HEADER]: "1" }, JSON.stringify({ error: "internal", message: "It broke." })],
       ["a refusal marked as after forwarding", 413, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "yes" }, JSON.stringify({ error: "too_large", message: "The answer was too large." })],
       ["a marked refusal whose body cannot be read", 409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, "<html>"],
       ["a marked refusal with an unknown code", 409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, JSON.stringify({ error: "brand_new", message: "x" })],
@@ -259,6 +263,39 @@ describe("HttpVaultApi relay", () => {
     answer(429, {}, "from a proxy")
     const read = toCliError(await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
     expect(read.code).toBe("internal")
+  })
+
+  // A vault from before Mehen-Forwarded marks its refusals with Mehen-Error
+  // only: a code it raises only before forwarding is its refusal of the
+  // write, which never went upstream.
+  test("an older vault's approval_required on a write is the ask, and the agent can wait on it", async () => {
+    const api = await client()
+    vault.relayForwarded = null
+    try {
+      vault.overrides.set("POST /v1/relay", () => new Response(JSON.stringify({ error: "approval_required", message: "Needs a human.", approval: "apr_old1", next: { url: `${vault.url}/w/mock-space/a/apr_old1`, command: "mehen wait apr_old1", say: "Ask." } }), { status: 409, headers: { [ERROR_HEADER]: "1" } }))
+      const asked = toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
+      expect([asked.code, asked.extras.approval, asked.next?.command]).toEqual(["approval_required", "apr_old1", "mehen wait apr_old1"])
+      for (const code of ["forbidden", "rate_limited", "cli_outdated", "conflict", "bad_request"] as const) {
+        vault.overrides.set("POST /v1/relay", () => new Response(JSON.stringify({ error: code, message: "Refused." }), { status: 409, headers: { [ERROR_HEADER]: "1" } }))
+        expect(toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e)).code).toBe(code)
+      }
+    } finally {
+      vault.relayForwarded = "no"
+    }
+  })
+
+  test("an older vault's upstream_failed or response too_large on a write is outcome_unknown", async () => {
+    const api = await client()
+    vault.relayForwarded = null
+    try {
+      for (const [code, status] of [["upstream_failed", 502], ["too_large", 413]] as const) {
+        vault.overrides.set("POST /v1/relay", () => new Response(JSON.stringify({ error: code, message: "After forwarding." }), { status, headers: { [ERROR_HEADER]: "1" } }))
+        const failed = toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
+        expect([code, failed.code, failed.next?.say]).toEqual([code, "outcome_unknown", OUTCOME_UNKNOWN_SAY])
+      }
+    } finally {
+      vault.relayForwarded = "no"
+    }
   })
 
   test("a write's upstream_failed loses any retryAfter the vault sent, as its next says to check first", async () => {

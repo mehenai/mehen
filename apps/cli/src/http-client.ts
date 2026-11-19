@@ -133,6 +133,27 @@ type ApiErrorWithExpiry = ApiError & { expiresAt?: string }
 const CappedMandateSchema = z.object({ id: MandateIdSchema, capped: z.array(MandateClassSchema).min(1) })
 
 // Whether a Mehen-Error body is one mehen can read: a known code and a message.
+// A vault from before Mehen-Forwarded (0.4.0 and earlier) marks its own
+// refusals with Mehen-Error and nothing else. There, after the upstream
+// fetch, the relay route raises only upstream_failed and too_large (a
+// response too large, relay/forward.ts), and anything unexpected became
+// internal; every other code it can send on /v1/relay comes from a check
+// before forwarding: the Worker's rate limits and version gate, the device
+// request's proof and body, the relay route's own input checks and the
+// workspace's authorisation of the request (relay.authorise). Read from
+// the vault's relay code at 124e548a; relay-codes.test.ts pins both lists
+// against the current vault's relay path.
+export const RELAY_PRE_FORWARD_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  "bad_request", "unauthenticated", "proof_invalid", "device_pending", "device_revoked", "forbidden", "not_found", "conflict", "ambiguous",
+  "binding_refused", "policy_denied", "approval_required", "mode_refused", "environment_refused", "remote_mismatch", "needs_reauth",
+  "refresh_retrying", "frozen", "rate_limited", "account_pending", "owner_inactive", "identity_required", "project_unshared", "cli_outdated",
+  "workload_ended", "workload_required", "platform_suspended", "quota_exceeded", "origin_mismatch", "totp_unreadable", "provider_refused",
+])
+// What such a vault may send after the request went upstream (upstream_failed,
+// a response too_large, internal), and codes its relay never raised, which
+// are not trusted from an unmarked answer either.
+export const RELAY_MAY_HAVE_BEEN_SENT_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>(["upstream_failed", "too_large", "internal", "surface_refused", "intake_required"])
+
 function readableError(text: string): boolean {
   try {
     const body = JSON.parse(text) as unknown
@@ -237,10 +258,11 @@ export class HttpVaultApi implements VaultApi {
 
   // A write's answer is safe to send again only when the vault says, in a
   // refusal it can be read from, that it refused before forwarding anything
-  // (Mehen-Forwarded: no), and that refusal is not its own failure. Every
+  // (Mehen-Forwarded: no), and that refusal is not its own failure; or, from
+  // a vault that sends no Mehen-Forwarded, a readable refusal whose code it
+  // only ever raised before forwarding (RELAY_PRE_FORWARD_CODES). Every
   // other answer to a write that is not the upstream's own may have come
-  // after it took effect: RelayOutcomeUnknownError. A vault that does not
-  // mark its refusals errs that way too.
+  // after it took effect: RelayOutcomeUnknownError.
   async relay(request: RelayRequestInput, options?: VaultRequestOptions): Promise<Response> {
     const write = !retrySafeMethod(request.method)
     const response = await this.send("POST", "/v1/relay", JSON.stringify(request), options, write)
@@ -250,7 +272,8 @@ export class HttpVaultApi implements VaultApi {
       const text = await response.text().catch(() => null)
       const error = await readApiError(new Response(text, response), this.options.context ?? null, request.item ?? null)
       const readable = text !== null && readableError(text)
-      const beforeForwarding = response.headers.get(FORWARDED_HEADER)?.trim().toLowerCase() === "no"
+      const forwarded = response.headers.get(FORWARDED_HEADER)?.trim().toLowerCase()
+      const beforeForwarding = forwarded === "no" || (forwarded === undefined && RELAY_PRE_FORWARD_CODES.has(error.body.error))
       if (readable && beforeForwarding && !(error.body.error === "internal" && response.status >= 500)) throw error
       throw new RelayOutcomeUnknownError(readable ? error.body.message : `The vault answered the write with HTTP ${response.status} and an error mehen cannot read.`)
     }
