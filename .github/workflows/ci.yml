@@ -29,7 +29,9 @@ jobs:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test packages/protocol packages/client apps/cli
+      # Many CLI tests start the real mehen several times over; on a two-core
+      # hosted runner some take longer than bun's 5 s default.
+      - run: bun test --timeout 30000 packages/protocol packages/client apps/cli
       # The vault engine on Bun, end to end with the real CLI (apps/local),
       # with the UI a release carries.
       - run: bun run --cwd apps/vault build:ui
