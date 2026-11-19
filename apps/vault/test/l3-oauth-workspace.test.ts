@@ -16,9 +16,18 @@ async function client(ctx: VaultContext, home: Parameters<typeof credentialInput
   return ctx.storage.transactionSync(() => storeCredential(ctx, prepared, memberPrincipal(ctx), "item.create"))
 }
 
-// As a refresh does when the provider answers invalid_client.
+// Both writes a refresh makes when the provider answers invalid_client: the
+// client itself marked needs_reauth with its reason, and the rejection kept
+// at the client's value version.
 function rejectClient(ctx: VaultContext, slug: string) {
-  ctx.sql.exec("INSERT INTO workspace_oauth_client_rejections(client,client_revision,at) SELECT id,config_rev,? FROM items WHERE slug=?", ctx.now(), slug)
+  ctx.sql.exec("UPDATE items SET status='needs_reauth',review_reason=?,review_at=? WHERE slug=?", "Gmail rejected this OAuth client (its secret is wrong, expired or deleted), so the connections that use it are paused: replace its secret, then reconnect them", ctx.now(), slug)
+  ctx.sql.exec("INSERT INTO workspace_oauth_client_rejections(client,client_version,at) SELECT id,version,? FROM items WHERE slug=?", ctx.now(), slug)
+}
+// A replaced client secret, as the person's replace stores it.
+async function replaceClientSecret(ctx: VaultContext, slug = "google-client") {
+  const stored = checkedCredential(ctx, slug)!
+  const replaced = await prepareCredential(ctx, { ...stored, secretFields: { client_secret: `new-secret-${stored.version}` } }, stored)
+  ctx.storage.transactionSync(() => storeCredential(ctx, replaced, memberPrincipal(ctx), "item.rotate"))
 }
 async function started(ctx: VaultContext, home: "workspace" | "private" | "project" = "workspace", clientHome: Parameters<typeof credentialInput>[1] = { kind: "workspace" }) {
   await client(ctx, clientHome)
@@ -1155,11 +1164,9 @@ it("refuses to start or finish a connect whose chosen client is rejected, sendin
     expect(sends).toBe(0)
     expect(ctx.sql.exec<{ status: string }>("SELECT status FROM workspace_credential_requests WHERE id=?", c.connect).toArray()[0]?.status).toBe("open")
     // A new secret lifts it. The old link was made for the client as it was,
-    // so it is refused as changed; a new one starts.
-    const stored = checkedCredential(ctx, "google-client")!
-    const replaced = await prepareCredential(ctx, { ...stored, secretFields: { client_secret: "new-client-secret" } }, stored)
-    ctx.storage.transactionSync(() => storeCredential(ctx, replaced, p, "item.rotate"))
-    expect(() => workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: c.connect }, i)).toThrowError("The credential changed; review and try again.")
+    // so it ended with the reason; a new one starts.
+    await replaceClientSecret(ctx)
+    expect(workspaceOAuthOps["oauth.connectView"].handler(ctx, p, { connect: c.connect }, i)).toMatchObject({ status: "failed", message: expect.stringContaining("ask for a new link") })
     const fresh = createWorkspaceConnect(ctx, p, { provider: "google-gmail", client: "google-client", slug: "gmail-test", home: "workspace", fresh: true }, i)
     const again = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: fresh.connect }, i))
     expect(await startWorkspaceConnect(ctx, p, { connect: fresh.connect, state: "state-after-1234567890" }, memberInvocation(ctx, "owner", again))).toMatchObject({ authorizeUrl: expect.any(String) })
@@ -1182,6 +1189,74 @@ it("keeps an owner's stop row for a private connect whose chosen client is rejec
     rejectClient(ctx, "google-client")
     const rows = credentialPending(ctx, memberPrincipal(ctx), memberInvocation(ctx))
     expect(rows.filter((r) => r.view === "stop").map((r) => r.view === "stop" ? r.stop.id : null)).toEqual([c.connect])
+  })
+})
+
+// A real rejected refresh, then a connect through that client: refused as
+// rejected, not as an unusable client, and nothing reaches the provider.
+it("refuses a connect through a client a real refresh found rejected, saying so", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await connected(ctx)
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_client" }, { status: 401 }))
+    await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth" })
+    expect(checkedCredential(ctx, "google-client")?.status).toBe("needs_reauth")
+    const p = memberPrincipal(ctx), i = memberInvocation(ctx)
+    let sends = 0
+    setUpstreamFetch(async () => { sends++; return new Response("no", { status: 500 }) })
+    // Asked for now, the connect is refused at once with the reason, not handed out as a link that cannot start.
+    expect(() => createWorkspaceConnect(ctx, p, { provider: "google-gmail", client: "google-client", slug: "gmail-new", home: "workspace" }, i)).toThrowError(expect.objectContaining({ code: "conflict", message: expect.stringContaining("rejected") }))
+    expect(sends).toBe(0)
+  })
+})
+
+// Replacing (or restoring, or removing) a client's secret ends the connects
+// made for the client as it was: they could never start, so the machine's
+// wait ends at once with the reason, Needs you offers the plain Reconnect,
+// and a new mehen connect makes a new link without --new.
+it("ends the connects pinned to a client when its secret is replaced, with the reason, and a new connect follows", async () => {
+  const { deviceInvocation, devicePrincipal } = await import("./credentials-test-support.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await connected(ctx)
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
+    setUpstreamFetch(async () => Response.json({ error: "invalid_grant" }, { status: 400 }))
+    await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth" })
+    const machine = devicePrincipal("dev_admin"), asked = await deviceInvocation(ctx, "dev_admin")
+    const old = createWorkspaceConnect(ctx, machine, { provider: "google-gmail", client: "google-client", slug: "gmail-test", home: "workspace", reason: "Reconnect the inbox" }, asked)
+    rejectClient(ctx, "google-client")
+    await replaceClientSecret(ctx)
+    const status = await workspaceOAuthOps["oauth.connectStatus"].handler(ctx, machine, { connect: old.connect, wait: true }, asked)
+    expect(status).toMatchObject({ status: "failed", message: expect.stringContaining("ask for a new link") })
+    // Needs you: the plain Reconnect row, to the item's page, not the dead link.
+    expect((await needsYouRows(ctx)).map((r) => [r.kind, r.id, r.url])).toEqual([["reconnect", "gmail-test", "https://vault.test/w/work/items/gmail-test"]])
+    // The same machine asks again, without --new: a new link, which starts.
+    const again = createWorkspaceConnect(ctx, machine, { provider: "google-gmail", client: "google-client", slug: "gmail-test", home: "workspace", reason: "Reconnect the inbox" }, asked)
+    expect(again.connect).not.toBe(old.connect)
+    const p = memberPrincipal(ctx), i = memberInvocation(ctx)
+    expect(WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: again.connect }, i))).toMatchObject({ type: "connect.start" })
+  })
+})
+
+// The rejection is the client's secret's, not its settings': a description
+// edit keeps it, and only a new secret, a restore or a removal lifts it.
+it("keeps a guest's private client rejected, its repair row and the connect page's notice, across a description edit", async () => {
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const home = { kind: "member" as const, member: "mem_guest" }
+    await client(ctx, home, "guest-client")
+    const g = memberPrincipal(ctx, "guest"), gi = memberInvocation(ctx, "guest")
+    const c = createWorkspaceConnect(ctx, g, { provider: "google-gmail", client: "guest-client", slug: "gmail-guest", home: "private" }, gi)
+    rejectClient(ctx, "guest-client")
+    const view = () => workspaceOAuthOps["oauth.connectView"].handler(ctx, g, { connect: c.connect }, gi)
+    expect(view()).toMatchObject({ clientRejected: { client: "guest-client" } })
+    // A metadata edit, as the item's settings change stores it: a new configuration revision, the same value.
+    const before = checkedCredential(ctx, "guest-client")!
+    ctx.sql.exec("UPDATE items SET description=?,config_rev=config_rev+1,updated_at=? WHERE id=?", "Our team's app", ctx.now(), before.id)
+    expect(checkedCredential(ctx, "guest-client")).toMatchObject({ version: before.version, configRev: before.configRev + 1 })
+    expect((await needsYouRows(ctx, "guest")).map((r) => [r.kind, r.id])).toEqual([["review", "guest-client"]])
+    expect(view()).toMatchObject({ clientRejected: { client: "guest-client" } })
   })
 })
 
@@ -1221,7 +1296,7 @@ for (const reason of ["Gmail rejected this OAuth client (its secret is wrong, ex
       const replaced = await prepareCredential(ctx, { ...created, secretFields: { client_secret: "new-client-secret" } }, created)
       ctx.storage.transactionSync(() => storeCredential(ctx, replaced, memberPrincipal(ctx), "item.rotate"))
       ctx.sql.exec("UPDATE items SET status='needs_reauth',review_reason=?,review_at=? WHERE id=?", reason, ctx.now(), created.id)
-      ctx.sql.exec("INSERT INTO workspace_oauth_client_rejections(client,client_revision,at) SELECT id,config_rev,? FROM items WHERE id=?", ctx.now(), created.id)
+      ctx.sql.exec("INSERT INTO workspace_oauth_client_rejections(client,client_version,at) SELECT id,version,? FROM items WHERE id=?", ctx.now(), created.id)
       const terms = { version: checkedCredential(ctx, "google-client")!.version, previous: created.version }
       const action = WorkspaceStepUpActionSchema.parse(await workspaceItemOps["items.action"].handler(ctx, memberPrincipal(ctx), { slug: "google-client", action: "restore", ...terms }, memberInvocation(ctx)))
       await workspaceItemOps["items.restore"].handler(ctx, memberPrincipal(ctx), { slug: "google-client", ...terms }, memberInvocation(ctx, "owner", action))
@@ -1315,8 +1390,8 @@ it("an agent that meets a paused connection is sent to the rejected client, not 
     setUpstreamFetch(async () => Response.json({ error: "invalid_client" }, { status: 401 }))
     await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth" })
     expect(connectionNeedsReauth(ctx, checkedCredential(ctx, item.slug)!, { principal: memberPrincipal(ctx), invocation: memberInvocation(ctx) }).toJSON()).toMatchObject({ error: "needs_reauth", next: { url: "https://vault.test/w/work/items/google-client" } })
-    // A new client secret is a new revision: the connection now needs reconnecting.
-    ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='google-client'")
+    // A new client secret lifts the rejection: the connection now needs reconnecting.
+    await replaceClientSecret(ctx)
     expect(connectionNeedsReauth(ctx, checkedCredential(ctx, item.slug)!).toJSON()).toEqual({ error: "needs_reauth", message: `"gmail-test" needs to be connected again: its OAuth client was rejected by Gmail: replace the client's secret, then reconnect.`, next: { url: "https://vault.test/w/work/items/gmail-test", say: "Reconnect this credential in the workspace." } })
   })
 })

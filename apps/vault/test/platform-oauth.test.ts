@@ -352,6 +352,24 @@ describe("platform connect finish", () => {
     expect(provider.sent).toEqual([])
   })
 
+  // A platform connect pins its client too: once that client's secret is
+  // replaced, the connect ends with the reason, and the callback finds it ended.
+  it("ends an open platform connect when its client's secret is replaced, saying so", async () => {
+    const f = await subject()
+    await f.googleClient()
+    const provider = google()
+    const started = await f.start({ provider: "google-gmail", slug: "gmail" })
+    await inAccess(f.tenant, async (ctx) => {
+      const { prepareCredential, storeCredential } = await import("../src/vault/areas/items-workspace.ts")
+      const client = checkedCredential(ctx, "google-oauth-client")!
+      const replaced = await prepareCredential(ctx, { ...client, secretFields: { client_secret: "google-client-secret-replaced" } }, client)
+      ctx.storage.transactionSync(() => storeCredential(ctx, replaced, { kind: "system", reason: "test" } as never, "item.rotate"))
+    })
+    expect(await f.status(started.connect)).toMatchObject({ status: "failed", message: expect.stringContaining("ask for a new link") })
+    expect(await f.refused("platform.connects.finish", { body: provider.consent(started.authorizeUrl) })).toMatchObject({ error: expect.any(String) })
+    expect(provider.tokenBodies).toEqual([])
+  })
+
   it("cancel spends the state, so a late callback is a conflict", async () => {
     const f = await subject()
     await f.googleClient()
