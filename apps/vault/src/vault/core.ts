@@ -38,13 +38,6 @@ export type MemberPrincipal = {
   stepUp: StepUpActionInput | null
 }
 
-// Who asked for an intake or a connect: a device, keyed by its id, or a
-// member from the vault's own pages, keyed under a prefix no device id can
-// carry (areas/intake.ts, requesterOf). Rows are keyed by `key`, so reuse,
-// supersede and polling never cross from one requester to another. `name`
-// and `session` are what a row records about a device; empty for a member.
-export type Requester = { principal: DevicePrincipal | MemberPrincipal; key: string; name: string; session: string | null }
-
 // `actor`, when set, is who the system acts for, as the audit records it
 // (a platform admin deleting a subject from the console: admin:<account>);
 // otherwise the audit says "system".

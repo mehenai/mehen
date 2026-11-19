@@ -6,11 +6,11 @@
 // Changing a signature here changes every area that calls it: say so in the PR.
 
 import type { ItemBrowser, Mode } from "@mehen/protocol"
-import type { ApprovalEmail, BindingInput, DeviceScope, Injection, IntakeCreated, IntakeStatus, ItemSummary, NextStep, PolicyInput, SecretFieldInfo } from "@mehen/protocol/api"
+import type { ApprovalEmail, BindingInput, DeviceScope, Injection, ItemSummary, NextStep, PolicyInput, SecretFieldInfo } from "@mehen/protocol/api"
 import type { Destination } from "@mehen/protocol/binding"
 import type { PolicySecuritySnapshot } from "@mehen/protocol/policy-mode"
 import type { ItemKind } from "@mehen/protocol/kinds"
-import type { DevicePrincipal, Principal, Requester, VaultContext } from "./core.ts"
+import type { DevicePrincipal, Principal, VaultContext } from "./core.ts"
 
 // ---------------------------------------------------------------- [L2 items] areas/items.ts
 
@@ -77,32 +77,6 @@ export type ItemsService = {
   summarise(item: ItemRecord): ItemSummary
 }
 
-// ---------------------------------------------------------------- [L2 intake] areas/intake.ts
-
-export type IntakeOutcome = {
-  status: IntakeStatus["status"]
-  // The slug the completed intake saved; null otherwise.
-  item: string | null
-  // The tags the item is (or will be) stored with, sorted.
-  tags: string[]
-  url: string
-  expiresAt: number
-  completedAt: number | null
-}
-
-export type IntakesService = {
-  // An intake for an oauth-client item made from `provider` (a client
-  // template), chained to `connect` so its page leads on to that connect.
-  // Validates as a device's own POST /v1/intakes does. The requester's open
-  // intake for the same slug is reused when it asks for the same thing;
-  // one asking for something else is refused, or superseded with `fresh`.
-  // The requester (a device, or a member from the vault's pages) is the one
-  // making the connect; the row records its key, name and session.
-  createForConnect(ctx: VaultContext, requester: Requester, input: { slug: string; provider: string; reason: string; tags: string[]; connect: string; fresh: boolean }): IntakeCreated
-  // Null when no such intake exists.
-  outcome(ctx: VaultContext, intake: string): IntakeOutcome | null
-}
-
 // ---------------------------------------------------------------- [L1 devices] areas/devices.ts
 
 // True when the device's scope (tags, modes) covers this item in this mode.
@@ -165,15 +139,6 @@ export type ProjectsService = {
   // variable points at this item slug: an item named directly (item mode)
   // never reaches them. Read on every call.
   fencesAgainstItem(ctx: VaultContext, item: string): string[]
-}
-
-// ---------------------------------------------------------------- [L3 oauth] areas/oauth.ts
-
-export type OAuthService = {
-  // A fresh access token for an oauth-connection item: single-flight
-  // refresh when it is within its skew, VaultError("needs_reauth") with a
-  // reconnect link when the grant is dead.
-  accessToken(ctx: VaultContext, item: ItemRecord): Promise<string>
 }
 
 export type { NextStep }
