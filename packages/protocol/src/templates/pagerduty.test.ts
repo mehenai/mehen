@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { pagerduty } from "./pagerduty.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -54,6 +55,41 @@ describe("pagerduty", () => {
       ["POST", `${API}/extensions`, "deny"],
       ["DELETE", `${API}/oauth_delegations`, "deny"],
       ["POST", `${API}/Webhook_Subscriptions`, "deny"],
+    ])
+  })
+})
+
+describe("pagerduty review fixes", () => {
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${API}/incidents/P1/log_entries`, "allow"],
+      ["GET", `${API}/schedules/S1`, "allow"],
+      ["GET", `${API}/services`, "approve"],
+      ["GET", `${API}/mehen-unlisted`, "approve"],
+    ])
+  })
+
+  it("holds orchestration, ruleset, integration and runner reads that return routing or integration keys whatever the item's policy says", () => {
+    for (const path of [
+      "/event_orchestrations",
+      "/event_orchestrations/E1",
+      "/event_orchestrations/E1/integrations",
+      "/event_orchestrations/E1/integrations/I1",
+      "/services/S1/integrations/I1",
+      "/rulesets",
+      "/rulesets/R1",
+      "/automation_actions/runners/U1",
+      "/extensions/X1",
+      "/webhook_subscriptions/W1",
+    ]) expect({ path, action: underBroadAllow(pagerduty, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
+  })
+
+  it("refuses creating integrations and automation runners", () => {
+    expectAll([
+      ["POST", `${API}/services/S1/integrations`, "deny"],
+      ["PUT", `${API}/services/S1/integrations/I1`, "deny"],
+      ["POST", `${API}/event_orchestrations/E1/integrations`, "deny"],
+      ["POST", `${API}/automation_actions/runners`, "deny"],
     ])
   })
 })

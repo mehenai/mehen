@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { discord } from "./discord.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -65,6 +66,36 @@ describe("discord", () => {
       ["POST", `${API}/oauth2/token`, "deny"],
       ["DELETE", `${API}/guilds/1`, "deny"],
       ["POST", `${API}/channels/1/Webhooks`, "deny"],
+    ])
+  })
+})
+
+describe("discord review fixes", () => {
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${API}/guilds/1/channels`, "allow"],
+      ["GET", `${API}/channels/1/messages/2`, "allow"],
+      ["GET", `${API}/guilds/1/integrations`, "approve"],
+      ["GET", "https://discord.com/api/channels/1/messages", "approve"],
+    ])
+  })
+
+  it("refuses webhook reads, which carry each webhook's token, whatever the item's policy says", () => {
+    for (const path of [
+      "/channels/1/webhooks",
+      "/guilds/1/webhooks",
+      "/webhooks/2",
+    ]) expect({ path, action: underBroadAllow(discord, "GET", `${API}${path}`) }).toEqual({ path, action: "deny" })
+  })
+
+  it("refuses following a channel, thread-member changes and changes that can rewrite permission overwrites", () => {
+    expectAll([
+      ["POST", `${API}/channels/1/followers`, "deny"],
+      ["PUT", `${API}/channels/1/thread-members/2`, "deny"],
+      ["DELETE", `${API}/channels/1/thread-members/@me`, "deny"],
+      ["PATCH", `${API}/channels/1`, "deny"],
+      ["POST", `${API}/guilds/1/channels`, "deny"],
+      ["PATCH", `${API}/guilds/1/channels`, "deny"],
     ])
   })
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { sendgrid } from "./sendgrid.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -64,5 +65,23 @@ describe("sendgrid", () => {
       ["PUT", `${API}/user/password`, "deny"],
       ["POST", `${API}/API_KEYS`, "deny"],
     ])
+  })
+})
+
+describe("sendgrid reads", () => {
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${API}/templates/d-1`, "allow"],
+      ["GET", `${API}/suppression/bounces`, "allow"],
+      ["GET", `${API}/api_keys`, "approve"],
+      ["GET", `${API}/mehen-unlisted`, "approve"],
+    ])
+  })
+
+  it("holds webhook settings whatever the item's policy says", () => {
+    for (const path of [
+      "/user/webhooks/event/settings",
+      "/user/webhooks/parse/settings",
+    ]) expect({ path, action: underBroadAllow(sendgrid, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
   })
 })

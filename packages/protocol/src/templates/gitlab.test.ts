@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { gitlab } from "./gitlab.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -78,6 +79,59 @@ describe("gitlab", () => {
       ["DELETE", `${API}/projects/42`, "deny"],
       ["POST", `${API}/projects/42/%68ooks`, "deny"],
       ["POST", `${API}/projects/42/Hooks`, "deny"],
+    ])
+  })
+})
+
+const GRAPHQL = "https://gitlab.com/api/graphql"
+
+describe("gitlab review fixes", () => {
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${API}/projects/42/repository/files/README.md/raw?ref=main`, "allow"],
+      ["GET", `${API}/projects/42/issues/7/notes`, "allow"],
+      ["GET", `${API}/projects/42/jobs/9/trace`, "allow"],
+      ["GET", `${API}/groups/7/projects`, "allow"],
+      ["GET", `${API}/projects/42/pipeline_schedules/3`, "approve"],
+      ["GET", `${API}/projects/42/mehen-unlisted`, "approve"],
+    ])
+  })
+
+  it("holds trigger tokens, pipeline and schedule variables and other secret reads whatever the item's policy says", () => {
+    for (const path of [
+      "/projects/42/triggers",
+      "/projects/42/triggers/5",
+      "/projects/42/pipelines/9/variables",
+      "/projects/42/pipeline_schedules/3",
+      "/projects/42/variables",
+      "/groups/7/variables",
+      "/projects/42/secure_files/1/download",
+      "/projects/42/remote_mirrors",
+      "/projects/42/deploy_tokens",
+      "/projects/42/cluster_agents/1/tokens",
+    ]) expect({ path, action: underBroadAllow(gitlab, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
+  })
+
+  it("refuses GraphQL mutations, aliased, combined with a query or in a body it cannot read, and still asks for queries", () => {
+    const ask = (body: unknown): string => decide("POST", GRAPHQL, body)
+    expect(ask({ query: "query { currentUser { username } }" })).toBe("approve")
+    expect(ask({ query: "mutation { createIssue(input: {projectPath: \"a/b\", title: \"x\"}) { issue { id } } }" })).toBe("deny")
+    expect(ask({ query: "mutation M { alias: projectMemberCreate(input: {}) { errors } }" })).toBe("deny")
+    expect(ask({ query: "query Q { currentUser { id } } mutation M { x: tokenCreate { token } }", operationName: "Q" })).toBe("deny")
+    expect(ask("not json at all")).toBe("deny")
+    expect(underBroadAllow(gitlab, "POST", GRAPHQL, { query: "mutation { x }" })).toBe("deny")
+    expect(underBroadAllow(gitlab, "POST", GRAPHQL, { query: "{ currentUser { id } }" })).toBe("approve")
+  })
+
+  it("refuses protected-branch, tag and environment changes, and project and group settings updates", () => {
+    expectAll([
+      ["POST", `${API}/projects/42/protected_branches`, "deny"],
+      ["PATCH", `${API}/projects/42/protected_branches/main`, "deny"],
+      ["DELETE", `${API}/projects/42/protected_branches/main`, "deny"],
+      ["POST", `${API}/projects/42/protected_tags`, "deny"],
+      ["POST", `${API}/projects/42/protected_environments`, "deny"],
+      ["PUT", `${API}/projects/42`, "deny"],
+      ["PUT", `${API}/groups/7`, "deny"],
     ])
   })
 })

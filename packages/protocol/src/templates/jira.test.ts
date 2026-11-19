@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { jira } from "./jira.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -48,15 +49,47 @@ describe("jira", () => {
   it("refuses webhooks, users, groups, roles, permission schemes, apps and deleting a project", () => {
     expectAll([
       ["POST", `${API}/api/3/webhook`, "deny"],
-      ["POST", `${API}/webhooks/1.0/webhook`, "deny"],
       ["POST", `${API}/api/3/user`, "deny"],
       ["POST", `${API}/api/3/group/user?groupId=g`, "deny"],
       ["POST", `${API}/api/3/project/ACME/role/10002`, "deny"],
       ["PUT", `${API}/api/3/project/ACME/permissionscheme`, "deny"],
       ["POST", `${API}/api/3/permissionscheme`, "deny"],
-      ["POST", `${API}/atlassian-connect/1/app/module/dynamic`, "deny"],
       ["DELETE", `${API}/api/3/project/ACME`, "deny"],
       ["POST", `${API}/api/3/Webhook`, "deny"],
+    ])
+  })
+})
+
+describe("jira review fixes", () => {
+  it("binds the platform REST API v3 only: not v2, the webhooks API, apps or Service Management", () => {
+    expect(reaches("GET", `${API}/api/3/issue/ACME-1`)).toBe(true)
+    for (const path of ["/api/2/issue/ACME-1", "/api/latest/issue/ACME-1", "/webhooks/1.0/webhook", "/atlassian-connect/1/app/module/dynamic", "/plugins/1.0/", "/servicedeskapi/servicedesk", "/agile/1.0/board"]) {
+      expect({ path, reaches: reaches("GET", `${API}${path}`) }).toEqual({ path, reaches: false })
+    }
+  })
+
+  it("says the binding covers every Jira site the token can reach", () => {
+    expect(jira.setup?.steps.map((s) => s.body).join(" ")).toContain("every Jira site")
+  })
+
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${API}/api/3/myself`, "allow"],
+      ["GET", `${API}/api/3/issue/ACME-1/comment`, "allow"],
+      ["GET", `${API}/api/3/project/ACME/versions`, "allow"],
+      ["GET", `${API}/api/3/mehen-unlisted`, "approve"],
+    ])
+  })
+
+  it("refuses role actors, issue security schemes and filter permissions", () => {
+    expectAll([
+      ["POST", `${API}/api/3/role/10002/actors`, "deny"],
+      ["DELETE", `${API}/api/3/role/10002/actors`, "deny"],
+      ["PUT", `${API}/api/3/project/ACME/role/10002`, "deny"],
+      ["POST", `${API}/api/3/issuesecurityschemes`, "deny"],
+      ["PUT", `${API}/api/3/issuesecurityschemes/1/level`, "deny"],
+      ["POST", `${API}/api/3/filter/10000/permission`, "deny"],
+      ["DELETE", `${API}/api/3/filter/10000/permission/1`, "deny"],
     ])
   })
 })

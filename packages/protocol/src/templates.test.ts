@@ -7,6 +7,7 @@ import { type BindingInput, PolicySchema, type PolicyInput } from "./api.ts"
 import { type Binding, type Policy, type RuleAction, checkBinding, evaluatePolicy, parseDestination, validHostPattern } from "./binding.ts"
 import { resolvePolicyRequest } from "./policy-safety.ts"
 import { isReservedHeader } from "./headers.ts"
+import { blanketReadAllows } from "../test/template-policy.ts"
 import { secretPrefix } from "./placeholder.ts"
 import { ClientSetupStepSchema } from "./platform.ts"
 import { CLIENT_SETUP_CALLBACK, OAUTH_PROVIDERS, TEMPLATES, TEMPLATE_CATEGORIES, connectionPolicy, getOAuthProvider, getTemplate } from "./templates.ts"
@@ -170,6 +171,16 @@ describe("every template and provider, checked the same way", () => {
         expect({ id: s.id, path, inBinding: inBinding(s, method, path) }).toEqual({ id: s.id, path, inBinding: true })
         expect({ id: s.id, method, path, action: decide(s.policy, method, urlOf(s, path)).action }).toEqual({ id: s.id, method, path, action: "approve" })
       }
+    }
+  })
+
+  // Reads by allowlist, for the reasons the policy model gives: these APIs
+  // have reads that hand back tokens, keys and signing secrets.
+  it("allows reads only on named routes in gitlab, pagerduty, jira, twilio, sendgrid, discord, figma and pypi", () => {
+    for (const id of ["gitlab", "pagerduty", "jira", "twilio", "sendgrid", "discord", "figma", "pypi"]) {
+      const template = getTemplate(id)
+      if (!template) throw new Error(id)
+      expect({ id, blanket: blanketReadAllows(template) }).toEqual({ id, blanket: [] })
     }
   })
 

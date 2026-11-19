@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { figma } from "./figma.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -47,5 +48,23 @@ describe("figma", () => {
       ["PUT", `${API}/v2/webhooks/w1`, "deny"],
       ["POST", `${API}/v2/%77ebhooks`, "deny"],
     ])
+  })
+})
+
+describe("figma review fixes", () => {
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${API}/v1/files/abc/nodes?ids=1:2`, "allow"],
+      ["GET", `${API}/v1/teams/t1/projects`, "allow"],
+      ["GET", `${API}/v1/activity_logs`, "approve"],
+    ])
+  })
+
+  it("holds webhooks and their request history (which may carry the passcode) whatever the item's policy says", () => {
+    for (const path of [
+      "/v2/webhooks/w1",
+      "/v2/webhooks/w1/requests",
+      "/v2/teams/t1/webhooks",
+    ]) expect({ path, action: underBroadAllow(figma, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
   })
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { twilio } from "./twilio.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -32,7 +33,7 @@ describe("twilio", () => {
 
   it("lets reads through", () => {
     expectAll([
-      ["GET", `${API}/Accounts.json`, "allow"],
+      ["GET", `${API}/Accounts.json`, "approve"],
       ["GET", `${ACCOUNT}/Messages.json?PageSize=20`, "allow"],
       ["GET", `${ACCOUNT}/Calls/CA1.json`, "allow"],
     ])
@@ -60,5 +61,32 @@ describe("twilio", () => {
       ["POST", `${ACCOUNT}/SIP/CredentialLists.json`, "deny"],
       ["POST", `${ACCOUNT}/keys.json`, "deny"],
     ])
+  })
+})
+
+describe("twilio review fixes", () => {
+  it("has no check, since no fixed read works with both an auth token and a Standard API key", () => {
+    expect(twilio.check).toBeUndefined()
+  })
+
+  it("lets the named reads through and holds every other read", () => {
+    expectAll([
+      ["GET", `${ACCOUNT}/Messages/SM1.json`, "allow"],
+      ["GET", `${ACCOUNT}/Usage/Records.json`, "allow"],
+      ["GET", `${ACCOUNT}/Balance.json`, "allow"],
+      ["GET", `${ACCOUNT}/SIP/CredentialLists.json`, "approve"],
+    ])
+  })
+
+  it("holds the account resource, which returns the auth token, whatever the item's policy says", () => {
+    for (const path of [
+      "/Accounts.json",
+      "/Accounts/AC00000000000000000000000000000000.json",
+      "/Accounts/AC00000000000000000000000000000000",
+    ]) expect({ path, action: underBroadAllow(twilio, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
+  })
+
+  it("refuses minting network traversal tokens", () => {
+    expectAll([["POST", `${ACCOUNT}/Tokens.json`, "deny"]])
   })
 })

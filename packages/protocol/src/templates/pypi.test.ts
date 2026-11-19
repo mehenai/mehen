@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { checkBinding, evaluatePolicy, parseDestination } from "../binding.ts"
 import { pypi } from "./pypi.ts"
+import { underBroadAllow } from "../../test/template-policy.ts"
 
 function reaches(method: string, url: string): boolean {
   const parsed = parseDestination(method, url)
@@ -31,5 +32,12 @@ describe("pypi", () => {
 
   it("holds every upload for approval", () => {
     expect(decide("POST", "https://upload.pypi.org/legacy/")).toBe("approve")
+  })
+})
+
+describe("pypi review fixes", () => {
+  it("has no read to leak: a read is outside the binding even when the item's policy allows everything", () => {
+    expect(underBroadAllow(pypi, "GET", "https://upload.pypi.org/legacy/")).toBe("deny")
+    expect(underBroadAllow(pypi, "POST", "https://upload.pypi.org/legacy/")).toBe("approve")
   })
 })
