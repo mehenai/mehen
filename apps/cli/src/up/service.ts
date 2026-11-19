@@ -12,7 +12,26 @@ export const SYSTEMD_UNIT = "mehen-vault.service"
 export const PID_FILE = "serve.pid"
 
 export type ServiceKind = "launchd" | "systemd" | "process"
-export type ServicePlan = { kind: ServiceKind; command: string[]; dataDir: string; home: string; logFile: string }
+// `environment`: what the service runs with beyond its own defaults, so a
+// vault started at login uses the home and update choice `mehen up` ran with.
+export type ServicePlan = { kind: ServiceKind; command: string[]; dataDir: string; home: string; logFile: string; environment?: Readonly<Record<string, string>> }
+
+// The variables `mehen up` hands on to the service it installs, when set.
+export const SERVICE_ENVIRONMENT = ["MEHEN_HOME", "MEHEN_NO_AUTO_UPDATE"] as const
+
+export function serviceEnvironment(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const name of SERVICE_ENVIRONMENT) {
+    const value = env[name]
+    if (value === undefined || value === "") continue
+    // A line break or control character would end the unit's line or the
+    // plist's string somewhere else than it reads.
+    if (/[\u0000-\u001f\u007f]/.test(value)) throw new ServiceError(`${name} holds a control character, so it cannot be written into the service; set it without one and run \`mehen up\` again.`)
+    out[name] = value
+  }
+  return out
+}
+
 export type ServiceResult = { kind: ServiceKind; file: string | null; startsAtLogin: boolean }
 
 function xml(text: string): string {
@@ -21,6 +40,8 @@ function xml(text: string): string {
 
 export function launchdPlist(plan: ServicePlan): string {
   const args = plan.command.map((part) => `    <string>${xml(part)}</string>`).join("\n")
+  const pairs = Object.entries(plan.environment ?? {})
+  const environment = pairs.length === 0 ? "" : `\n  <key>EnvironmentVariables</key>\n  <dict>\n${pairs.map(([k, v]) => `    <key>${xml(k)}</key>\n    <string>${xml(v)}</string>`).join("\n")}\n  </dict>`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -30,7 +51,7 @@ export function launchdPlist(plan: ServicePlan): string {
   <key>ProgramArguments</key>
   <array>
 ${args}
-  </array>
+  </array>${environment}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -55,6 +76,12 @@ function systemdWord(word: string): string {
   return `"${word.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "$$$$").replaceAll("%", "%%")}"`
 }
 
+// One Environment= assignment, always quoted: systemd reads backslash and
+// double quote as escapes inside the quotes and % as a specifier.
+function systemdAssignment(name: string, value: string): string {
+  return `"${`${name}=${value}`.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`
+}
+
 export function systemdUnit(plan: ServicePlan): string {
   return `[Unit]
 Description=Mehen vault (local)
@@ -62,7 +89,7 @@ Description=Mehen vault (local)
 [Service]
 ExecStart=${plan.command.map(systemdWord).join(" ")}
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
-Restart=always
+${Object.entries(plan.environment ?? {}).map(([k, v]) => `Environment=${systemdAssignment(k, v)}\n`).join("")}Restart=always
 RestartSec=2
 UMask=0077
 NoNewPrivileges=yes
@@ -127,7 +154,7 @@ function writePrivateFile(path: string, text: string): void {
 function startProcess(plan: ServicePlan): void {
   mkdirSync(dirname(plan.logFile), { recursive: true, mode: 0o700 })
   const log = openSync(plan.logFile, "a", 0o600)
-  const child = spawn(plan.command[0] as string, plan.command.slice(1), { detached: true, stdio: ["ignore", log, log] })
+  const child = spawn(plan.command[0] as string, plan.command.slice(1), { detached: true, stdio: ["ignore", log, log], env: { ...process.env, ...plan.environment } })
   child.unref()
   writeFileSync(join(plan.dataDir, PID_FILE), String(child.pid), { mode: 0o600 })
 }

@@ -188,7 +188,7 @@ async function startLocked(config: LocalConfig, release: () => void, options: Lo
     accounts: accounts(),
     custody,
     bootstrap: typeof env.BOOTSTRAP_CODE === "string",
-    workspaces: db.db.query("SELECT slug, name FROM workspaces WHERE status = 'active' ORDER BY created_at").all() as { slug: string; name: string }[],
+    workspaces: db.db.query("SELECT id, slug, name FROM workspaces WHERE status = 'active' ORDER BY created_at").all() as { id: string; slug: string; name: string }[],
   })
 
   const closeStores = () => {

@@ -4,9 +4,9 @@ import { CliError } from "../errors.ts"
 import { errorJson, errorLines } from "../output.ts"
 import { tempDir } from "../testing/run-mehen.ts"
 import { plainText, segments, styler } from "../tty.ts"
-import { isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, installService, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
+import { isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, installService, serviceEnvironment, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
 import { openerFor } from "./browser.ts"
-import { custodyLine, enrolLines, textLines, timedOut } from "./index.ts"
+import { custodyLine, enrolContext, enrolLines, textLines, timedOut } from "./index.ts"
 import { keyringAdvice } from "../local-vault.ts"
 
 const plan = { kind: "launchd" as const, command: ["/Users/a/.local/bin/mehen", "serve", "--port", "7787", "--data", "/Users/a/Library/Application Support/Mehen/vault"], dataDir: "/Users/a/Library/Application Support/Mehen/vault", home: "/Users/a", logFile: "/Users/a/Library/Application Support/Mehen/vault/serve.log" }
@@ -54,6 +54,36 @@ describe("the systemd user unit", () => {
   })
 })
 
+describe("the environment the service runs with", () => {
+  const set = { MEHEN_HOME: "/Users/a/My Mehen", MEHEN_NO_AUTO_UPDATE: "1", PATH: "/usr/bin", MEHEN_VAULT_URL: "https://elsewhere.example" }
+
+  test("carries MEHEN_HOME and MEHEN_NO_AUTO_UPDATE when set, and nothing else", () => {
+    expect(serviceEnvironment(set)).toEqual({ MEHEN_HOME: "/Users/a/My Mehen", MEHEN_NO_AUTO_UPDATE: "1" })
+    expect(serviceEnvironment({ MEHEN_HOME: "/h" })).toEqual({ MEHEN_HOME: "/h" })
+    expect(serviceEnvironment({ MEHEN_HOME: "", PATH: "/usr/bin" })).toEqual({})
+  })
+
+  test("refuses a value with a line break rather than write a broken unit or plist", () => {
+    expect(() => serviceEnvironment({ MEHEN_HOME: "/h\nExecStart=/bin/evil" })).toThrow(ServiceError)
+  })
+
+  test("launchd: EnvironmentVariables when set, escaped; no dict when unset", () => {
+    const plist = launchdPlist({ ...plan, environment: serviceEnvironment({ ...set, MEHEN_HOME: "/Users/a/<home>&co" }) })
+    expect(plist).toContain("<key>EnvironmentVariables</key>\n  <dict>\n    <key>MEHEN_HOME</key>\n    <string>/Users/a/&lt;home&gt;&amp;co</string>\n    <key>MEHEN_NO_AUTO_UPDATE</key>\n    <string>1</string>\n  </dict>")
+    expect(launchdPlist(plan)).not.toContain("EnvironmentVariables")
+    expect(launchdPlist({ ...plan, environment: serviceEnvironment({}) })).not.toContain("EnvironmentVariables")
+  })
+
+  test("systemd: one quoted Environment= per variable when set, with what systemd expands escaped; none when unset", () => {
+    const unit = systemdUnit({ ...plan, kind: "systemd", environment: serviceEnvironment({ MEHEN_HOME: '/home/a/100% "mehen"\\x', MEHEN_NO_AUTO_UPDATE: "1" }) })
+    expect(unit).toContain('Environment="MEHEN_HOME=/home/a/100%% \\"mehen\\"\\\\x"\n')
+    expect(unit).toContain('Environment="MEHEN_NO_AUTO_UPDATE=1"\n')
+    const bare = systemdUnit({ ...plan, kind: "systemd" })
+    expect(bare).not.toContain("MEHEN_HOME")
+    expect(bare.match(/^Environment=/gm)).toHaveLength(1)
+  })
+})
+
 describe("which service", () => {
   test("MEHEN_SERVICE wins; a run from source gets a process; a Mac gets launchd", () => {
     expect(serviceKind({ MEHEN_SERVICE: "process" }, "darwin", true)).toBe("process")
@@ -85,6 +115,13 @@ describe("the enrolment lines", () => {
     const lines = enrolLines("http://localhost:7787/w/home/e/ABCD", true, "5NZV DP67 PXT0 DB6E", words)
     expect(lines.map(plainText)).toEqual(["Opened http://localhost:7787/w/home/e/ABCD", "This machine's fingerprint is 5NZV DP67 PXT0 DB6E. The page shows all but one of its groups: type the one it hides, then accept with your passkey.", "  words:   puppy (violet)", "  hidden:  the page hides the third group, PXT0: type it on the page", "This carries on by itself."])
     expect(enrolLines("http://localhost:7787/w/home/e/ABCD", true, null, words)).toHaveLength(3)
+  })
+})
+
+describe("the enrolment's context", () => {
+  test("names the workspace from the local vault's own state, and null for a vault that does not give its id", () => {
+    expect(enrolContext("http://localhost:7787", { id: "tn_home0000001", slug: "home", name: "Home" })).toEqual({ origin: "http://localhost:7787", workspace: { id: "tn_home0000001", slug: "home", name: "Home" }, device: null })
+    expect(enrolContext("http://localhost:7787", { slug: "home", name: "Home" })).toEqual({ origin: "http://localhost:7787", workspace: null, device: null })
   })
 })
 
@@ -175,11 +212,23 @@ describe("removing and reinstalling the service waits for the job to stop", () =
     expect(existsSync(launchdPath(home.path))).toBe(true)
   })
 
-  test("launchd: install waits between bootout and bootstrap", async () => {
+  test("launchd: install waits between bootout and bootstrap, and writes the environment into the plist", async () => {
     home = await tempDir()
     const { runner, ran } = fake(2, "print")
-    installService({ ...plan, home: home.path }, {}, { runner, sleep })
+    installService({ ...plan, home: home.path, environment: { MEHEN_HOME: "/Users/a/mh", MEHEN_NO_AUTO_UPDATE: "1" } }, {}, { runner, sleep })
+    expect(await Bun.file(launchdPath(home.path)).text()).toContain("<key>MEHEN_HOME</key>\n    <string>/Users/a/mh</string>")
     expect(ran.map((c) => c.split(" ").slice(0, 2).join(" "))).toEqual(["launchctl bootout", "launchctl print", "launchctl print", "launchctl print", "launchctl bootstrap"])
+  })
+
+  test("systemd: install writes the environment into the unit it enables", async () => {
+    home = await tempDir()
+    const { runner, ran } = fake(0, "is-active")
+    const env = { XDG_CONFIG_HOME: home.path }
+    installService({ ...plan, kind: "systemd", home: home.path, environment: { MEHEN_NO_AUTO_UPDATE: "1" } }, env, { runner, sleep })
+    const unit = await Bun.file(systemdPath(home.path, env)).text()
+    expect(unit).toContain('Environment="MEHEN_NO_AUTO_UPDATE=1"')
+    expect(unit).not.toContain("MEHEN_HOME")
+    expect(ran).toEqual(["systemctl --user daemon-reload", "systemctl --user enable", "systemctl --user restart"])
   })
 
   test("systemd: a unit still active for a moment after disable --now is removed once it stops", async () => {

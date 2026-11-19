@@ -23,7 +23,7 @@ import { LOCAL_VAULT_RECORD, keyringAdvice, keyringHost } from "../local-vault.t
 import { printJson, printLine } from "../output.ts"
 import { type Segment, type Text, colourEnabled, styler } from "../tty.ts"
 import { openUrl } from "./browser.ts"
-import { type ServiceKind, ServiceError, installService, removeService, serviceKind } from "./service.ts"
+import { type ServiceKind, ServiceError, installService, removeService, serviceEnvironment, serviceKind } from "./service.ts"
 
 const USAGE = "mehen up [--port <port>] [--data <dir>] [--no-agents] [--timeout <seconds>] | mehen up --remove"
 const RECORD_FILE = LOCAL_VAULT_RECORD
@@ -32,7 +32,8 @@ const DEFAULT_TIMEOUT_SECONDS = 900
 
 type Record_ = { origin: string; data: string; port: number; service: ServiceKind }
 type Custody = "secure-enclave" | "keyring" | "file"
-type State = { origin: string; instance: string; accounts: boolean; bootstrap: boolean; custody?: Custody; workspaces: { slug: string; name: string }[] }
+// A vault from before 0.4.1 lists its workspaces without their ids.
+type State = { origin: string; instance: string; accounts: boolean; bootstrap: boolean; custody?: Custody; workspaces: { id?: string; slug: string; name: string }[] }
 type Env = Record<string, string | undefined>
 
 const CUSTODY_WORDS: Record<Custody, string> = {
@@ -162,6 +163,14 @@ async function fingerprintWordLines(slot: unknown, enrolment: string, code: unkn
   }
 }
 
+// The enrolment's context names the workspace it joins. `mehen enrol` alone
+// leaves it null until the slot is verified, since it knows only the slug it
+// asked for; here the workspace comes from the vault up checked by its
+// instance token, read from that vault's own database.
+export function enrolContext(origin: string, workspace: State["workspaces"][number]): { origin: string; workspace: { id: string; slug: string; name: string } | null; device: null } {
+  return { origin, workspace: typeof workspace.id === "string" ? { id: workspace.id, slug: workspace.slug, name: workspace.name } : null, device: null }
+}
+
 // The link stays in the message: it is the local vault's own page, which a
 // next.url would have checked against the vault this machine is enrolled
 // with, and refused before enrolment ends.
@@ -198,7 +207,7 @@ export const upCommand: Command = {
     "--remove stops the vault and removes its service; the data stays.",
   ],
   async run({ args, json, env }) {
-    const { root } = resolveHome(env)
+    const { root, source } = resolveHome(env)
     ensureSafeRoot(root)
     if (args.bool("remove")) return remove(env, json, root)
 
@@ -246,7 +255,7 @@ export const upCommand: Command = {
       writeFileSync(join(root, RECORD_FILE), JSON.stringify({ origin, data: config.dataDir, port: config.port, service: kind } satisfies Record_), { mode: 0o600 })
       let service
       try {
-        service = installService({ kind, command: [...command, "serve", "--port", String(config.port), "--data", config.dataDir], dataDir: config.dataDir, home: homeDir(env), logFile: join(config.dataDir, "serve.log") }, env)
+        service = installService({ kind, command: [...command, "serve", "--port", String(config.port), "--data", config.dataDir], dataDir: config.dataDir, home: homeDir(env), logFile: join(config.dataDir, "serve.log"), environment: serviceEnvironment({ ...env, MEHEN_HOME: source === "default" ? undefined : root }) }, env)
       } catch (error) {
         if (error instanceof ServiceError) throw new CliError("failed", error.message, { say: `Start the vault yourself with \`mehen serve --port ${config.port}\`, then run \`mehen up\` again.` })
         throw error
@@ -291,7 +300,7 @@ export const upCommand: Command = {
       const opened = ask ? openUrl(ask.url, env) : false
       const fingerprint = ask?.check?.value ?? null
       const words = json ? [] : await fingerprintWordLines(machine.slot, id, machine.code, fingerprint, colourEnabled(process.stdout, env))
-      out.event("ask", { ask: { ...(ask ?? {}), opened } }, enrolLines(ask?.url ?? "", opened, fingerprint, words))
+      out.event("ask", { ask: { ...(ask ?? {}), opened, context: enrolContext(origin, workspace) } }, enrolLines(ask?.url ?? "", opened, fingerprint, words))
       const remaining = Math.max(1, Math.ceil((deadline - Date.now()) / 1000))
       const waited = await self(command, ["wait", id, "--timeout", String(remaining), "--json"], childEnv)
       if (waited.code !== 0) {

@@ -77,6 +77,10 @@ test("from nothing to an enrolled machine, with two touches in the browser", asy
       expect(ask.opened).toBe(true)
       const code = new URL(ask.url!).pathname.split("/").at(-1)!
       const record = await Bun.file(join(home, "pending", `http_localhost_${port}`, "home", "enrolment.json")).json()
+      // The ask names the workspace it joins, as the vault's own database has it.
+      expect((line.ask as { context?: unknown }).context).toEqual({ origin, workspace: { id: workspace!.id, slug: "home", name: "Home" }, device: null })
+      const inbox = await person.call<{ items: { kind: string; workspace: { slug: string; name: string } }[] }>("/api/needs-you")
+      expect(inbox.items.find((i) => i.kind === "enrol")?.workspace).toMatchObject({ slug: "home", name: "Home" })
       // Asked from this machine, on a vault on this machine.
       const enrolPage = await person.page(new URL(ask.url!).pathname)
       expect(enrolPage).toContain('data-region="enrol-acceptor">on this machine<')
