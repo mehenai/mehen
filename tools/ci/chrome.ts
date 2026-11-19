@@ -1,6 +1,6 @@
 // Headless Chrome started for a script or a test, the one way every caller
 // starts it: the UI gallery and interaction gate (apps/vault/scripts) and
-// the CLI's real-Chrome tests (apps/cli/src/testing/chrome.ts).
+// the CLI's real-Chrome tests (apps/cli/src/browser/page-check.chrome.test.ts).
 //
 // Why the wait is long: on a fresh GitHub-hosted runner the first read of
 // each block of the disk is slow (7 to 23 s to read Chrome's 452 MB, at 20
