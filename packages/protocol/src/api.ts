@@ -161,6 +161,9 @@ export type ApiError = {
   // Only on a forbidden request that the approval dial's Let it work
   // refused rather than asking a person: why trust would not let it through.
   dialRefused?: import("./workspace.ts").ApprovalDialRefusal
+  // Only on a forbidden mandate proposal from a machine: it named every
+  // credential, or a credential or class it did not ask for lately.
+  mandateRefused?: import("./mandate-terms.ts").MandateProposalRefusal
   // Only on not_found from a Google step whose invitation is no longer
   // active, so a page can drop the code it saved without reading the message.
   reason?: "invite_inactive"
@@ -178,7 +181,7 @@ export type ApiError = {
 }
 
 export function apiErrorExtrasValid(error: ApiError): boolean {
-  return (error.deciders === undefined || error.error === "approval_required") && (error.group === undefined || error.error === "approval_required") && (error.mandate === undefined || error.error === "approval_required") && (error.mandateCover === undefined || error.error === "approval_required") && (error.transition === undefined || error.error === "account_pending") && (error.refused === undefined || error.error === "conflict") && (error.ruleRefused === undefined || error.error === "forbidden") && (error.areaRefused === undefined || error.error === "forbidden") && (error.dialRefused === undefined || error.error === "forbidden") && (error.providerStatus === undefined || error.error === "provider_refused")
+  return (error.deciders === undefined || error.error === "approval_required") && (error.group === undefined || error.error === "approval_required") && (error.mandate === undefined || error.error === "approval_required") && (error.mandateCover === undefined || error.error === "approval_required") && (error.transition === undefined || error.error === "account_pending") && (error.refused === undefined || error.error === "conflict") && (error.ruleRefused === undefined || error.error === "forbidden") && (error.areaRefused === undefined || error.error === "forbidden") && (error.dialRefused === undefined || error.error === "forbidden") && (error.mandateRefused === undefined || error.error === "forbidden") && (error.providerStatus === undefined || error.error === "provider_refused")
 }
 
 export const ERROR_HEADER = "Mehen-Error"
