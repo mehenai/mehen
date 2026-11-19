@@ -360,7 +360,7 @@ export function initWorkspaceCredential(raw: Boot, maybe: ShellState | null): vo
   const shell = needShell(maybe)
   const slug = String(raw.slug ?? "")
   const home = raw.home as CredentialHome
-  const shown: ShownItem = { id: String(raw.id ?? ""), version: Number(raw.version), configRevision: Number(raw.configRevision), dependencyRevision: Number(raw.dependencyRevision) }
+  const shown: ShownItem = { id: String(raw.id ?? ""), kind: String(raw.kind ?? ""), version: Number(raw.version), configRevision: Number(raw.configRevision), dependencyRevision: Number(raw.dependencyRevision) }
   const path = `/items/${encodeURIComponent(slug)}`
   const member = home.kind === "member" ? home.member : ""
   // Read again just before signing: the page signs only for the credential

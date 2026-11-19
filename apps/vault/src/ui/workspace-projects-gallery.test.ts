@@ -160,6 +160,16 @@ describe("renewing a credential", () => {
     expect(manage).not.toContain("<span>Replace</span>")
   })
 
+  it("an OAuth client its provider rejected says its connections are paused, and Replace starts an intake", () => {
+    const page = body("ws-credential-client-rejected")
+    expect(page).toContain('data-region="item-replace-secret"')
+    expect(page).toContain("Needs a new secret.")
+    expect(page).toContain("Gmail rejected this OAuth client")
+    expect(page).toContain("Replacing the secret under Manage clears it.")
+    expect(page).not.toContain('data-region="item-reconnect"')
+    expect(between(page, 'data-region="manage"', "</section>")).toContain('data-starts="intake"')
+  })
+
   it("a credential flagged for review says why, and Replace starts an intake", () => {
     const page = body("ws-credential-review")
     expect(page).toContain('data-region="item-review"')

@@ -7,6 +7,7 @@ import { credentialAccessState, checkedCredential } from "./items-workspace.ts"
 import { requestHome, type CredentialRequest } from "./intake-workspace.ts"
 import { devicePolicyState } from "./devices.ts"
 import { askingWorkload } from "./workloads.ts"
+import { connectionsPausedByClient } from "./oauth-workspace.ts"
 
 export function credentialPending(ctx: VaultContext, principal: AccessPrincipal, invocation: WorkspaceInvocationContext): WorkspacePendingAsk[] {
   const state = credentialAccessState(ctx, invocation), now = ctx.now(), result: WorkspacePendingAsk[] = []
@@ -40,14 +41,43 @@ export function credentialPending(ctx: VaultContext, principal: AccessPrincipal,
   }
   if (principal.kind === "device" || guest)
     return result
+  // A connection that needs reconnecting is listed, with why, to whoever may
+  // rotate it (who its connection_lost notice goes to). One waiting for a
+  // client the provider rejected is not: its client is listed instead, to
+  // whoever may replace the client's secret, until it is replaced.
+  const owner = { kind: "member" as const, member: principal.memberId, name: state.members.find(m => m.id === principal.memberId)?.name ?? "" }
+  const paused = connectionsPausedByClient(ctx)
+  for (const client of new Set(paused.values())) {
+    const item = rows(ctx.sql.exec<{ slug: string }>("SELECT slug FROM items WHERE id=?", client))[0]
+    const stored = item ? checkedCredential(ctx, item.slug) : null
+    if (!stored || !can(state, principal, { type: "credential.rotate" }, { credential: stored.id }, now).allowed)
+      continue
+    result.push({ workspace: invocation.workspace, owner, view: "detail", detail: { kind: "review", id: stored.slug, title: `Replace the client secret of ${stored.slug}`, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/items/${stored.slug}`, expiresAt: null, requestedBy: null, item: stored.slug, reason: "the provider rejected this OAuth client, so the connections that use it are paused; reconnect them once its secret is replaced" } })
+  }
   for (const { slug } of rows(ctx.sql.exec<{
     slug: string
   }>("SELECT slug FROM items WHERE status='needs_reauth' OR review_reason IS NOT NULL"))) {
     const item = checkedCredential(ctx, slug)
-    if (!item || !can(state, principal, { type: "credential.update" }, { credential: item.id }, now).allowed)
+    if (!item || paused.has(item.id) || result.some(r => r.view === "detail" && r.detail.id === item.slug))
       continue
-    const owner = { kind: "member" as const, member: principal.memberId, name: state.members.find(m => m.id === principal.memberId)?.name ?? "" }
-    result.push({ workspace: invocation.workspace, owner, view: "detail", detail: { kind: item.status === "needs_reauth" ? "reconnect" : "review", id: item.slug, title: `${item.status === "needs_reauth" ? "Reconnect" : "Review"} ${item.slug}`, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/items/${item.slug}`, expiresAt: null, requestedBy: null, item: item.slug } })
+    const reconnect = item.status === "needs_reauth"
+    // A dead connection is one Reconnect row: an open connect to it (an
+    // agent's reconnect link) is not listed apart, and the row opens it, so
+    // the person's sign-in also ends the agent's wait.
+    const opened = reconnect && item.kind === "oauth-connection" ? result.filter(r => r.view === "detail" && r.detail.kind === "connect" && r.detail.item === item.slug) : []
+    for (const r of opened)
+      result.splice(result.indexOf(r), 1)
+    // A connection's Review row (its renewals keep failing) goes to whoever
+    // may reconnect it, as its notice does.
+    if (!can(state, principal, { type: reconnect || item.kind === "oauth-connection" ? "credential.rotate" : "credential.update" }, { credential: item.id }, now).allowed)
+      continue
+    // A client the provider rejected needs a new secret, not a sign-in.
+    if (reconnect && item.kind === "oauth-client") {
+      result.push({ workspace: invocation.workspace, owner, view: "detail", detail: { kind: "review", id: item.slug, title: `Replace the client secret of ${item.slug}`, url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/items/${item.slug}`, expiresAt: null, requestedBy: null, item: item.slug, ...(item.review ? { reason: item.review.reason } : {}) } })
+      continue
+    }
+    const link = opened[0]?.view === "detail" ? opened[0].detail.url : `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/items/${item.slug}`
+    result.push({ workspace: invocation.workspace, owner, view: "detail", detail: { kind: reconnect ? "reconnect" : "review", id: item.slug, title: `${reconnect ? "Reconnect" : "Review"} ${item.slug}`, url: link, expiresAt: null, requestedBy: null, item: item.slug, ...(item.review ? { reason: item.review.reason } : {}) } })
   }
   return result
 }

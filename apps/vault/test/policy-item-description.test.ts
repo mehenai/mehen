@@ -19,4 +19,16 @@ describe("item policyFloor projection", () => {
       expect(known.policyFloor!.every((floor) => floor.rule.action !== "allow" && floor.ruleDigest.length === 43)).toBe(true)
     })
   })
+
+  it("lists a Drive-bound item's Drive floors, not Calendar's on the same host; a host-wide binding still lists both", async () => {
+    await runInDurableObject(env.TENANT_VAULT.getByName(freshTenant()), async (instance) => {
+      const ctx = instance.context
+      await policyFixture(ctx, { slug: "drive-key", binding: { hosts: ["www.googleapis.com"], paths: ["/drive/v3/**", "/upload/drive/v3/**"] }, policy: { default: "allow", rules: [] }, provider: null })
+      const drive = describeItem(ctx, items.getItem(ctx, "drive-key")!).policyFloor!.map((floor) => floor.id)
+      expect(drive).toEqual(["google-drive.floor-1", "google-drive.floor-2", "google-drive.floor-3", "google-drive.floor-4"])
+      await policyFixture(ctx, { slug: "google-key", binding: { hosts: ["www.googleapis.com"] }, policy: { default: "allow", rules: [] }, provider: null })
+      const wide = describeItem(ctx, items.getItem(ctx, "google-key")!).policyFloor!.map((floor) => floor.id)
+      expect(wide).toEqual(expect.arrayContaining(["google-calendar.floor-1", "google-drive.floor-1"]))
+    })
+  })
 })

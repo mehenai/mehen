@@ -266,7 +266,7 @@
               "note",
               "generic"
             ],
-            "description": "what sort of credential"
+            "description": "what sort of credential; not yet google-service-account or github-app"
           },
           "name": {
             "type": "string",
@@ -425,7 +425,7 @@
     {
       "name": "vault_connect",
       "title": "Ask to connect an OAuth account",
-      "description": "Ask a human to connect an OAuth account (for example Gmail). Returns `ask`: a link the human opens to sign in at the provider; the tokens go into the vault, never to you. Hand the link over, then call vault_wait with the connection id. Needs an oauth-client item for the provider: name it with `client`, or leave `client` out to use the one that exists. With none, the result is the `client_missing` error whose `request` is exactly the vault_request arguments for the client; or set `requestClient` to have the vault ask for the client first: the result is then that intake's `ask` with `step: \"client\"`; vault_wait for it, then call vault_connect again with the same arguments for the connection link.",
+      "description": "Ask a human to connect an OAuth account (for example Gmail). Returns `ask`: a link the human opens to sign in at the provider; the tokens go into the vault, never to you. Hand the link over, then call vault_wait with the connection id. Needs the provider's oauth-client item (`client`, or the one that exists). With none it fails `client_missing`, whose `request` holds the vault_request arguments for the client; or set `requestClient` to ask for the client first (an `ask` with `step: \"client\"`): vault_wait for it, then call vault_connect again with the same arguments. Naming an existing connection reconnects it: same account, scopes kept.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -446,6 +446,7 @@
             "description": "why you need it; the human sees this"
           },
           "scopes": {
+            "description": "the provider's scopes (default: its defaults); a reconnect adds them to those held",
             "type": "array",
             "items": {
               "type": "string"
@@ -504,7 +505,7 @@
     {
       "name": "vault_fetch",
       "title": "Send a request with a credential",
-      "description": "Make one HTTP request with an item's credential: the vault adds it on the way to the upstream, which must be in the item's binding. Returns the upstream status, headers and body as the vault returns them (text, at most 256 KiB; the vault may have decompressed or scrubbed the body and removed headers). Use select for a JSON field from the full response, subject to the vault's 32 MiB response limit. Any upstream status is a success here; read `status`. A vault refusal is an error with `next`; when a human must approve or reconnect, it also carries `ask` and a link: hand them over and call vault_wait with the id, do not retry.",
+      "description": "Make one HTTP request with an item's credential: the vault adds it on the way to the upstream, which must be in the item's binding. Returns the upstream status, headers and body as the vault returns them (text, at most 256 KiB, possibly decompressed, scrubbed or with headers removed). select takes a JSON field from the full response, up to 32 MiB. Any upstream status is a success here; read `status`, and `hint` if the credential was rejected. A vault refusal is an error with `next`; when a human must approve or reconnect, it also carries `ask` and a link: hand them over and call vault_wait with the id, do not retry.",
       "inputSchema": {
         "type": "object",
         "properties": {

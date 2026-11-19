@@ -399,6 +399,23 @@ export const WorkspaceNoticePayloadSchema = z.discriminatedUnion("kind", [
  z.strictObject({ kind: z.literal("mandate_tripped"), workspace: WorkspaceRefSchema, mandate: MandateIdSchema, device: Id, machine: z.string(), signer: z.strictObject({ member: Id, name: z.string() }), classes: z.array(MandateClassSchema), expiresAt: Iso, at: Iso }),
  z.strictObject({ kind: z.literal("mandate_ending"), workspace: WorkspaceRefSchema, mandate: MandateIdSchema, device: Id, machine: z.string(), signer: z.strictObject({ member: Id, name: z.string() }), classes: z.array(MandateClassSchema), expiresAt: Iso, at: Iso }),
  z.strictObject({ kind: z.literal("mandate_lapsed"), workspace: WorkspaceRefSchema, mandate: MandateIdSchema, device: Id, machine: z.string(), signer: z.strictObject({ member: Id, name: z.string() }), classes: z.array(MandateClassSchema), expiresAt: Iso, at: Iso }),
+ // A connection stopped working and must be reconnected, and why (to whoever
+ // may reconnect it), once per break. Kept for delivery: Needs you lists the
+ // connection's own Reconnect row instead. Its provider's id is null for a
+ // custom provider.
+ z.strictObject({ kind: z.literal("connection_lost"), workspace: WorkspaceRefSchema, item: z.strictObject({ id: Id, slug: z.string() }), provider: z.strictObject({ id: z.string().nullable(), name: z.string() }), account: z.string().nullable(), reason: z.string(), at: Iso }),
+ // The provider rejected an OAuth client, so every connection that uses it
+ // is paused until its secret is replaced (to whoever may replace it), once
+ // per rejected revision. Kept for delivery: Needs you lists the client's
+ // own row instead.
+ z.strictObject({ kind: z.literal("oauth_client_rejected"), workspace: WorkspaceRefSchema, item: z.strictObject({ id: Id, slug: z.string() }), clientRevision: z.number().int().nonnegative(), provider: z.string(), at: Iso }),
+ // A connection's token renewals have kept failing (a network error, a
+ // timeout, throttling or the provider's own failure) since `since`, on
+ // enough days that a person should know; the vault keeps retrying and it
+ // does not need a reconnect (to whoever may reconnect it), once per run
+ // of failures. Kept for delivery: Needs you lists the connection's own
+ // Review row instead.
+ z.strictObject({ kind: z.literal("connection_failing"), workspace: WorkspaceRefSchema, item: z.strictObject({ id: Id, slug: z.string() }), provider: z.strictObject({ id: z.string().nullable(), name: z.string() }), account: z.string().nullable(), since: Iso, reason: z.string(), at: Iso }),
 ])
 export type WorkspaceNoticePayload = z.infer<typeof WorkspaceNoticePayloadSchema>
 // The one notice envelope every pending and inbox route returns.

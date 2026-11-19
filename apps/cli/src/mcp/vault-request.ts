@@ -13,7 +13,7 @@ export const vaultRequest = tool({
     "Ask a human to add a credential, or to rotate an existing credential this machine may reach (name it; home and provider must match it). Returns `ask`: a checked link the human opens to type the value into the vault page (never into the chat, never to you). Hand the human the link, what it is for and what to check, then call vault_wait with the intake id. " +
     "Without a provider template, propose where it may be sent with hosts (and optionally paths), and how with injection when the kind's usual way (Bearer in Authorization) is wrong; the human sees both marked unverified. Never returns the value.",
   input: z.object({
-    kind: KindSchema.describe("what sort of credential"),
+    kind: KindSchema.describe("what sort of credential; not yet google-service-account or github-app"),
     name: z.string().describe("slug for the new item, e.g. openai-personal"),
     reason: z.string().describe("why you need it; the human sees this"),
     provider: z.string().optional().describe("provider template, e.g. openai, anthropic, github-pat (vault_templates lists them)"),

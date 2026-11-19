@@ -358,7 +358,7 @@ async function readBodyLoose(response: Response): Promise<unknown> {
 
 // A public client (clientAuth "none", custom providers only) sends its
 // client id and no secret; PKCE stands in for the secret.
-export async function tokenRequest(provider: Pick<OAuthExchange, "auth">, client: ItemRecord, clientSecret: string, params: Record<string, string>): Promise<TokenResult> {
+export async function tokenRequest(provider: Pick<OAuthExchange, "auth">, client: ItemRecord, clientSecret: string, params: Record<string, string>, now = Date.now()): Promise<TokenResult> {
   const auth = provider.auth
   clientSecretBinding(client, auth.tokenUrl)
   const clientId = client.publicFields.client_id ?? ""
@@ -387,6 +387,12 @@ export async function tokenRequest(provider: Pick<OAuthExchange, "auth">, client
     return { kind: "transient", status: 0, retryAfter: null, mayHaveIssued: true }
   }
   const parsed = await readBodyLoose(response).catch(() => ({}))
+  const retryAfterSeconds = retryAfterOf(response.headers.get("retry-after"), now)
+  // Throttling and a provider's own failure are retried, whatever error
+  // code the body carries: neither says the grant or the client is wrong.
+  if (response.status === 429 || response.status >= 500 && response.status <= 599) {
+    return { kind: "transient", status: response.status, retryAfter: retryAfterSeconds, mayHaveIssued: textAt(parsed, auth.tokenResponse.accessToken) !== null || textAt(parsed, auth.tokenResponse.refreshToken) !== null }
+  }
   const code = textAt(parsed, "error")
   if (code !== null) return { kind: "oauth_error", code, status: response.status }
   const okFlag = auth.tokenResponse.okFlag
@@ -404,8 +410,20 @@ export async function tokenRequest(provider: Pick<OAuthExchange, "auth">, client
       body: parsed,
     }
   }
-  const retryAfter = Number(response.headers.get("retry-after") ?? "")
-  return { kind: "transient", status: response.status, retryAfter: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null, mayHaveIssued: response.ok || accessToken !== null || textAt(parsed, auth.tokenResponse.refreshToken) !== null }
+  return { kind: "transient", status: response.status, retryAfter: retryAfterSeconds, mayHaveIssued: response.ok || accessToken !== null || textAt(parsed, auth.tokenResponse.refreshToken) !== null }
+}
+
+// Retry-After in seconds from now, given as seconds or as an HTTP date, at
+// most a day: a longer one waits a day and tries again, so its failures
+// still count towards FAILING_DAYS_LIMIT. Null when absent, unreadable or
+// already past.
+const RETRY_AFTER_MAX_SECONDS = 86_400
+function retryAfterOf(header: string | null, now: number): number | null {
+  if (header === null || header.trim() === "") return null
+  const seconds = Number(header)
+  if (Number.isFinite(seconds)) return seconds > 0 ? Math.min(seconds, RETRY_AFTER_MAX_SECONDS) : null
+  const until = Date.parse(header)
+  return Number.isFinite(until) && until > now ? Math.min(Math.ceil((until - now) / 1000), RETRY_AFTER_MAX_SECONDS) : null
 }
 
 type Identity = { subject: string; tenant: string | null; label: string }
@@ -686,19 +704,27 @@ function reschedule(ctx: VaultContext, itemId: string): void {
 }
 
 function reauthReason(ctx: VaultContext, conn: ConnectionRow, provider: OAuthProviderTemplate, wasUncertain: boolean): string {
-  const now = ctx.now()
-  if (wasUncertain && provider.refresh.rotation === "strict") return "a refresh was interrupted after the provider had already replaced the token, so the sign-in was lost"
-  const testing = provider.lifetimes.testingModeRefreshSeconds
-  if (testing !== undefined && now - conn.connected_at >= testing * 1000 - 86_400_000) {
-    const days = Math.round((now - conn.connected_at) / 86_400_000)
-    return `${provider.displayName} stopped accepting the sign-in about ${days} days after it was made, which is what happens when the OAuth app is in Testing. Set the app to "In production" on its consent screen, then reconnect`
+  return reauthReasonAt(provider, provider.displayName, { connectedAt: conn.connected_at, refreshedAt: conn.last_refresh_at }, ctx.now(), wasUncertain && provider.refresh.rotation === "strict")
+}
+
+// Why a provider stopped accepting a sign-in, from when it was made and
+// last renewed (null where unknown); provider is null for a custom one.
+// lostRotation: a refresh of a strictly rotating token was interrupted. The
+// refusal cannot say whether that refresh replaced the token or the grant
+// was revoked or expired, so a time limit that was met still wins.
+export function reauthReasonAt(provider: OAuthProviderTemplate | null, displayName: string, times: { connectedAt: number | null; refreshedAt: number | null }, now: number, lostRotation: boolean): string {
+  const testing = provider?.lifetimes.testingModeRefreshSeconds
+  if (testing !== undefined && times.connectedAt !== null && now - times.connectedAt >= testing * 1000 - 86_400_000) {
+    const days = Math.round((now - times.connectedAt) / 86_400_000)
+    return `${displayName} stopped accepting the sign-in about ${days} days after it was made, which is what happens when the OAuth app is in Testing. Set the app to "In production" on its consent screen, then reconnect`
   }
-  const idle = provider.lifetimes.refreshTokenIdleSeconds
-  if (idle !== undefined && now - conn.last_refresh_at >= idle * 900) return `the sign-in was unused for too long and ${provider.displayName} expired it`
-  if (provider.family === "google") {
+  const idle = provider?.lifetimes.refreshTokenIdleSeconds
+  if (idle !== undefined && times.refreshedAt !== null && now - times.refreshedAt >= idle * 900) return `the sign-in was unused for too long and ${displayName} expired it`
+  if (lostRotation) return `${displayName} no longer accepts the sign-in, most likely because an interrupted refresh had already replaced the token`
+  if (provider?.family === "google") {
     return "Google revoked the sign-in: the password was changed, access was removed in the Google account's security settings, or the account signed in to this app too many times (Google keeps 100)"
   }
-  return `${provider.displayName} no longer accepts the sign-in (it was revoked, the password changed, or it expired)`
+  return `${displayName} no longer accepts the sign-in (it was revoked, the password changed, or it expired)`
 }
 
 function markNeedsReauth(ctx: VaultContext, item: ItemRecord, reason: string, state: ConnectionState = "needs_reauth"): VaultError {
@@ -740,7 +766,7 @@ async function refreshConnection(ctx: VaultContext, item: ItemRecord): Promise<s
       await fingerprintOf(rt),
       item.id,
     )
-    const result = await tokenRequest(provider, client, clientSecret, { grant_type: "refresh_token", refresh_token: rt })
+    const result = await tokenRequest(provider, client, clientSecret, { grant_type: "refresh_token", refresh_token: rt }, ctx.now())
     if (result.kind === "ok") {
       const rotated: Record<string, string> = { access_token: result.accessToken }
       // Google sends a refresh token only on first consent: keep the old one.
@@ -787,8 +813,7 @@ function transientFailure(ctx: VaultContext, item: ItemRecord, provider: OAuthPr
   const failureDays = conn.failure_day === day ? conn.failure_days : conn.failure_days + 1
   const failures = conn.failures + 1
   if (failureDays >= FAILING_DAYS_LIMIT) throw markNeedsReauth(ctx, item, `refreshing with ${provider.displayName} has failed on ${failureDays} different days`)
-  const backoff = Math.min(BACKOFF_MIN_MS * 2 ** (failures - 1), BACKOFF_MAX_MS) * (0.8 + Math.random() * 0.4)
-  const wait = Math.max(backoff, (retryAfter ?? 0) * 1000)
+  const wait = refreshRetryWaitMs(failures, retryAfter)
   const valid = oldToken !== null && (conn.access_expires_at === null || now < conn.access_expires_at)
   ctx.sql.exec(
     "UPDATE oauth_connections SET state = ?, failures = ?, failure_days = ?, failure_day = ?, retry_at = ?, attempt_id = NULL, attempt_started_at = NULL, attempt_rt = NULL WHERE item = ?",
@@ -803,6 +828,14 @@ function transientFailure(ctx: VaultContext, item: ItemRecord, provider: OAuthPr
   reschedule(ctx, item.id)
   if (valid) return oldToken
   throw retryingError(item, provider, Math.ceil(wait / 1000))
+}
+
+// How long to wait after the nth refresh failure in a row: doubling from
+// 30 s to an hour, with 20% jitter either way, or longer if the provider
+// asked (Retry-After, in seconds or as a date, up to a day).
+export function refreshRetryWaitMs(failures: number, retryAfter: number | null): number {
+  const backoff = Math.min(BACKOFF_MIN_MS * 2 ** (failures - 1), BACKOFF_MAX_MS) * (0.8 + Math.random() * 0.4)
+  return Math.max(backoff, (retryAfter ?? 0) * 1000)
 }
 
 function retryingError(item: ItemRecord, provider: OAuthProviderTemplate, seconds: number): VaultError {
@@ -1485,7 +1518,16 @@ export const oauthArea: Area = {
       const id=key.slice("workspace-refresh:".length)
       const slug=one(ctx.sql.exec<{slug:string}>("SELECT slug FROM items WHERE id=?",id))?.slug
       const item=slug?checkedCredential(ctx,slug):null
-      if(item&&item.status!=="disabled"&&item.status!=="needs_reauth")await workspaceAccessToken(ctx,item)
+      // A connection that needs a person, or waits to retry (it has
+      // rescheduled itself), is done here; any other refusal (an edit racing
+      // the refresh) is retried by the scheduler's back-off. A wait for an
+      // attempt still in flight (one an edit raced) schedules nothing
+      // itself, so it is scheduled here for when that attempt has ended.
+      if(item&&item.status!=="disabled"&&item.status!=="needs_reauth")await workspaceAccessToken(ctx,item).catch((error:unknown)=>{
+        if(!(error instanceof VaultError)||(error.code!=="needs_reauth"&&error.code!=="refresh_retrying"))throw error
+        const retryAfter=error.extra.retryAfter
+        if(error.code==="refresh_retrying"&&retryAfter!==undefined&&!one(ctx.sql.exec("SELECT 1 FROM schedule WHERE area='oauth' AND key=?",key)))ctx.schedule("oauth",key,ctx.now()+retryAfter*1000)
+      })
       return
     }
     // `connect:<id>`: resolves a claim its finish never settled.

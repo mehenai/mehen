@@ -16,6 +16,7 @@ import {
   parseDestination,
   pathMatches,
   pathMatchWork,
+  pathPatternsOverlap,
   validHostPattern,
 } from "./binding.ts"
 import { BindingSchema, PolicySchema } from "./api.ts"
@@ -231,6 +232,21 @@ describe("hostMatches", () => {
     expect(hostMatches("*.stripe.com", ".stripe.com")).toBe(false)
     expect(hostMatches("*.stripe.com", "evilstripe.com")).toBe(false)
     expect(hostMatches("*.stripe.com", "stripe.com.evil.example")).toBe(false)
+  })
+})
+
+describe("pathPatternsOverlap", () => {
+  test("two globs overlap when some path matches both, with * and ** on either side", () => {
+    expect(pathPatternsOverlap("/drive/v3/files/*/permissions", "/drive/v3/**")).toBe(true)
+    expect(pathPatternsOverlap("/drive/v3/**/watch", "/drive/v3/**")).toBe(true)
+    expect(pathPatternsOverlap("/calendar/v3/**/watch", "/drive/v3/**")).toBe(false)
+    expect(pathPatternsOverlap("/calendar/v3/calendars/*", "/upload/drive/v3/**")).toBe(false)
+    expect(pathPatternsOverlap("/v1/*/x", "/v1/a/*")).toBe(true)
+    expect(pathPatternsOverlap("/v1/*", "/v1/a/b")).toBe(false)
+    expect(pathPatternsOverlap("/v1/**", "/v1")).toBe(true)
+    expect(pathPatternsOverlap("/**/a", "/b/**")).toBe(true)
+    // Without case, as a floor matches: it may show one it need not, never hide one.
+    expect(pathPatternsOverlap("/Drive/v3/files", "/drive/**")).toBe(true)
   })
 })
 

@@ -577,7 +577,7 @@ describe("allow this from now on", () => {
     const ttls = panel.match(/data-input="rule-ttl" value="\d+"( checked)?><span>[^<]+/g) ?? []
     expect(ttls).toEqual(['data-input="rule-ttl" value="86400"><span>1 day', 'data-input="rule-ttl" value="604800" checked><span>7 days', 'data-input="rule-ttl" value="2592000"><span>30 days'])
     expect(panel).toContain("<dt>Still asks</dt><dd>Anything else on this credential, and any request that sends, pays, shares or deletes</dd>")
-    expect(panel).toContain("<dt>Ends sooner</dt><dd>if access changes or this credential is edited</dd>")
+    expect(panel).toContain("<dt>Ends sooner</dt><dd>if access changes or this credential is replaced, reconnected or edited</dd>")
     expect(panel).toContain('<p class="small refused" id="rule-mismatch" aria-live="polite" data-region="rule-mismatch" hidden>')
     expect(panel).not.toContain('data-region="rule-cosign"')
     expect(panel).not.toContain('data-region="rule-context"')

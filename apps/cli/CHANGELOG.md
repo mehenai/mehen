@@ -2,6 +2,16 @@
 
 The version is printed by `mehen version --json`, with the commit it was built from. Releases are served from `https://mehen.dev/dl/`; `mehen update` installs the latest one.
 
+## Unreleased
+
+### Changed
+
+- **`mehen fetch` says what to ask for when a service rejects the credential.** On a 401, or a 403 whose `WWW-Authenticate` says the scope is too narrow, it prints a `mehen:` hint on stderr, and `--json` (and MCP `vault_fetch`) carry it as `hint`: for a key, the `mehen request` that replaces it; for a connection, the `mehen connect` that reconnects it, with `--scopes` when the service named the scope it wanted. Each hint names the credential's home (`--home private`, `workspace` or `project --project <id>`) and, for a connection whose OAuth client you may see, `--client`. Any other status carries none.
+- **`mehen show` says what an OAuth connection may do:** a `scopes:` line and a `token:` line (when it expires, and whether a renewal is failing and being retried). `--json` and MCP `vault_show` carry it as `connection: { scopes, expiresAt, refreshing, client? }`, never a token.
+- **A reconnect keeps every scope.** `mehen connect --name <existing connection>` reconnects it pinned to the same account and keeps the scopes it holds, adding any `--scopes` asked for; `mehen connect --help`, MCP `vault_connect` and its `scopes` description say so.
+- **A dead connection hands over a reconnect link.** When the vault finds a workspace connection needs a person, the refusal's `next` is a reconnect link pinned to its account with `mehen wait <con_id> --timeout 60 --json`, on the failure that kills it and every call after, where the machine may start one; otherwise the connection's page.
+- **`mehen request google-service-account` and `github-app` are refused** (`bad_request`, exit 2): minting tokens from either is not built, so nothing could use the key. `mehen request --help` and MCP `vault_request` say so.
+
 ## 0.4.0
 
 Mehen runs on your own machine. `mehen up` sets it up in one go: it starts a vault on this machine at `http://localhost:7787` as a service, opens the page where you make your passkey and your workspace, enrols this machine and wires your agents, and run again it picks up where it stopped. `mehen serve` runs the same vault in the foreground, on this machine or, with `--origin`, for other machines to reach over https. `mehen guard` installs guard hooks in Claude Code and pi that stop an agent reading `.env` and other key files or pasting a key into a command or a file, and `mehen hook` is the check they run. The vault engine is the hosted one, unchanged, and a machine can be enrolled in a local vault and Cloud workspaces at once. `mehen mcp` also answers in less: `vault_list` a short row per item a page at a time, `vault_templates` a short entry per template, and a tool list under 34,100 bytes; several result shapes change for MCP clients. Installed machines update themselves on their next call to the vault once this release is published, or at their next hourly check.

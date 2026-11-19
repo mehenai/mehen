@@ -81,6 +81,11 @@ function noticeWords(n: WorkspaceNotice): Html {
       return html`${cardText(mandateEndingWords(p.machine))} ${timeTag(p.expiresAt)}`
     case "mandate_lapsed":
       return html`${cardText(mandateLapsedNoticeWords(p.machine))} ${timeTag(p.expiresAt)}`
+    case "connection_lost":
+    case "oauth_client_rejected":
+    case "connection_failing":
+      // Never listed (noticesFor): the credential's own row says it.
+      return html``
     case "backup_recipient":
       return html`${p.change === "added" ? "A backup key was added" : p.change === "active" ? "A backup key can now receive exports" : "A backup key was removed"}: ${cardText(p.recipient.label)} (<code>${p.recipient.fingerprint}</code>), registered by ${cardText(p.name)}`
   }

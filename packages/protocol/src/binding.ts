@@ -235,6 +235,28 @@ export function pathMatchWork(pattern: string, path: string): { matched: boolean
   return { matched: after[0] === true, steps }
 }
 
+// Whether some path matches both globs (pathMatches' grammar). Literals are
+// compared without case, as a floor matches, so a view that filters on this
+// may show a floor it need not, never hide one that applies.
+export function pathPatternsOverlap(a: string, b: string): boolean {
+  const segs = (p: string) => p.toLowerCase().split("/").filter((s, i) => i === 0 || s !== "")
+  const x = segs(a), y = segs(b)
+  const memo = new Map<number, boolean>()
+  const meet = (i: number, j: number): boolean => {
+    const key = i * (y.length + 1) + j
+    const known = memo.get(key)
+    if (known !== undefined) return known
+    let result: boolean
+    if (i === x.length && j === y.length) result = true
+    else if (x[i] === "**") result = meet(i + 1, j) || (j < y.length && meet(i, j + 1))
+    else if (y[j] === "**") result = meet(i, j + 1) || (i < x.length && meet(i + 1, j))
+    else result = i < x.length && j < y.length && (x[i] === "*" || y[j] === "*" || x[i] === y[j]) && meet(i + 1, j + 1)
+    memo.set(key, result)
+    return result
+  }
+  return meet(0, 0)
+}
+
 function methodListed(methods: string[] | undefined, method: string): boolean {
   return methods === undefined || methods.length === 0 || methods.some((m) => m.toUpperCase() === method || m === "*")
 }

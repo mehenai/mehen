@@ -13,6 +13,7 @@ import {
   type IntakeCreated,
   type IntakeStatus,
   type ItemDescription,
+  type ItemConnection,
   type ItemDescriptionPosture,
   type ItemList,
   type ItemSummary,
@@ -25,6 +26,7 @@ import {
 import type { PolicyProposalStatus, PolicyRuleProposalStatus } from "@mehen/protocol/policy-mode"
 import { type PushDestination, type PushProvider, type PushRecordView, type PushResult, parsePushDestination, pushDestinationWords } from "@mehen/protocol/push"
 import { type AdoptionStatus, AdoptionStatusSchema } from "@mehen/protocol/adopt"
+import type { CredentialHome } from "@mehen/protocol/workspace"
 import { type Bytes, base64UrlEncode } from "@mehen/protocol/bytes"
 import { KINDS, isItemKind, isSlug } from "@mehen/protocol/kinds"
 import { OAUTH_PROVIDERS, type OAuthProviderTemplate, getOAuthProvider, getTemplate } from "@mehen/protocol/templates"
@@ -99,7 +101,17 @@ function pickDescription(item: ItemDescription): ItemDescription {
     ...(item.policyFloor !== undefined ? { policyFloor: item.policyFloor } : {}),
     ...(item.posture !== undefined ? { posture: pickPosture(item.posture) } : {}),
     ...(item.pushes !== undefined ? { pushes: item.pushes.map(pickPushRecord) } : {}),
+    ...(item.connection !== undefined ? { connection: pickConnection(item.connection) } : {}),
+    ...(item.home !== undefined ? { home: pickHome(item.home) } : {}),
   }
+}
+
+function pickConnection(connection: ItemConnection): ItemConnection {
+  return { scopes: [...connection.scopes], expiresAt: connection.expiresAt, refreshing: connection.refreshing, ...(connection.client !== undefined ? { client: connection.client } : {}) }
+}
+
+function pickHome(home: CredentialHome): CredentialHome {
+  return home.kind === "member" ? { kind: "member", member: home.member } : home.kind === "project" ? { kind: "project", project: home.project } : { kind: "workspace" }
 }
 
 // How careful the credential is, as the vault tells this machine: the level,
@@ -835,6 +847,52 @@ export type UpstreamHead = {
   statusText: string
   item: string | null // Mehen-Item: which item, and which account, acted
   headers: Record<string, string>
+}
+
+// The scopes an upstream's 403 says it needs (RFC 6750 insufficient_scope),
+// or null when it does not say the token's scope was too narrow.
+export function insufficientScope(head: Pick<UpstreamHead, "status" | "headers">): string[] | null {
+  if (head.status !== 403) return null
+  const challenge = head.headers["www-authenticate"] ?? ""
+  if (!/error="?insufficient_scope/i.test(challenge)) return null
+  const named = /scope="([^"]*)"/i.exec(challenge)?.[1] ?? ""
+  return named.split(/\s+/).filter(Boolean)
+}
+
+// The route an agent takes when the upstream refused the credential itself:
+// a 401 (revoked or expired), or a 403 saying the scope is too narrow. A key
+// is replaced by a rotation; a connection is reconnected, with the scopes
+// the upstream named (a reconnect keeps the ones it holds).
+// Each names the credential's home (and a connection its OAuth client), as
+// a rotation or reconnect must ask for the one it has. A custom provider's
+// reconnect must name its client, so a reader who may not see it gets a
+// placeholder.
+export function credentialRejectedHint(head: Pick<UpstreamHead, "status" | "headers">, item: Pick<ItemDescription, "slug" | "kind" | "provider" | "home" | "connection"> | null): string | null {
+  if (item === null) return null
+  const scopes = insufficientScope(head)
+  if (head.status !== 401 && scopes === null) return null
+  const slug = shellWord(item.slug), why = "'<why>'"
+  const home = item.home === undefined ? "" : ` ${homeWords(item.home.kind === "member" ? { home: "private" } : item.home.kind === "project" ? { home: "project", project: item.home.project } : { home: "workspace" }).map(shellWord).join(" ")}`
+  if (item.kind === "oauth-connection") {
+    const client = item.connection?.client !== undefined ? ` --client ${shellWord(item.connection.client)}` : item.provider === null ? " --client <client>" : ""
+    const connect = `mehen connect ${item.provider === null ? "<provider>" : shellWord(item.provider)}${client} --name ${slug}`
+    if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. Ask a human to reconnect it with more: ${connect}${scopes.length ? ` --scopes ${shellWord(scopes.join(","))}` : " --scopes <scope>"} --reason ${why}${home}; mehen show ${slug} lists the scopes it holds.`
+    return `The service rejected ${item.slug}'s sign-in. If it was revoked, ask a human to reconnect it: ${connect} --reason ${why}${home}.`
+  }
+  if (scopes !== null) return `The service said ${item.slug} lacks a permission it needs. Ask a human for a credential that has it; replacing ${item.slug}'s value keeps its name: mehen request ${shellWord(item.kind)} --name ${slug} --reason ${why}${home}.`
+  return `The service rejected ${item.slug}. If its value was revoked or expired, ask a human to replace it: mehen request ${shellWord(item.kind)} --name ${slug}${item.provider ? ` --provider ${shellWord(item.provider)}` : ""} --reason ${why}${home}.`
+}
+
+// credentialRejectedHint for a relayed response, reading the item only when
+// the upstream refused it; never for a run, which names no one item.
+export async function rejectedHint(api: VaultApi, head: UpstreamHead, item: string | null, signal?: AbortSignal): Promise<string | null> {
+  if (item === null || (head.status !== 401 && insufficientScope(head) === null)) return null
+  try {
+    const described = pickDescription(await api.request<ItemDescription>("GET", `/v1/items/${encodeURIComponent(item)}`, undefined, signal ? { signal } : {}))
+    return credentialRejectedHint(head, described)
+  } catch {
+    return null
+  }
 }
 
 export function upstreamHead(response: Response): UpstreamHead {

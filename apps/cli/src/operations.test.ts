@@ -223,6 +223,37 @@ test("showItem (pickDescription) copies pushes field by field only when the vaul
   expect(await showItem(api, "openai-prod")).toHaveProperty("pushes", [])
 })
 
+test("showItem (pickDescription) copies a connection's scopes, expiry and renewal field by field, never a token", async () => {
+  const { item } = await import("./testing/mock-vault.ts")
+  const base = item("gmail-alex")
+  const connection = { scopes: ["https://www.googleapis.com/auth/gmail.modify"], expiresAt: "2026-11-09T10:00:00.000Z", refreshing: false }
+  let description: unknown = base
+  const api = { async relay(): Promise<Response> { throw new Error("unexpected relay") }, async request<T>(): Promise<T> { return description as T } }
+  expect(await showItem(api, "gmail-alex")).not.toHaveProperty("connection")
+  description = { ...base, connection: { ...connection, accessToken: "ya29.never" } }
+  expect((await showItem(api, "gmail-alex")).connection).toEqual(connection)
+  description = { ...base, home: { kind: "project", project: "prj_1", extra: true }, connection: { ...connection, client: "google-client" } }
+  expect(await showItem(api, "gmail-alex")).toMatchObject({ home: { kind: "project", project: "prj_1" }, connection: { ...connection, client: "google-client" } })
+  expect((await showItem(api, "gmail-alex")).home).not.toHaveProperty("extra")
+})
+
+// A rotation or reconnect must ask for the home the credential has (the
+// default is private), and a reconnect for its OAuth client.
+test("credentialRejectedHint names a workspace or project credential's home, and a connection's client", async () => {
+  const { credentialRejectedHint } = await import("./operations.ts")
+  const revoked = { status: 401, headers: {} }
+  const workspaceConnection = { slug: "gmail-team", kind: "oauth-connection" as const, provider: "google-gmail", home: { kind: "workspace" as const }, connection: { scopes: [], expiresAt: null, refreshing: false, client: "google-client" } }
+  expect(credentialRejectedHint(revoked, workspaceConnection)).toBe("The service rejected gmail-team's sign-in. If it was revoked, ask a human to reconnect it: mehen connect google-gmail --client google-client --name gmail-team --reason '<why>' --home workspace.")
+  // A reader who may not see the client: a catalogue reconnect needs none,
+  // a custom provider's must name its own, so it is left to fill in.
+  const unnamed = { ...workspaceConnection, connection: { scopes: [], expiresAt: null, refreshing: false } }
+  expect(credentialRejectedHint(revoked, unnamed)).toContain("mehen connect google-gmail --name gmail-team ")
+  expect(credentialRejectedHint(revoked, { ...unnamed, provider: null })).toContain("mehen connect <provider> --client <client> --name gmail-team ")
+  const projectKey = { slug: "openai-evals", kind: "api-key" as const, provider: "openai", home: { kind: "project" as const, project: "prj_3kQ9vXyZ7" } }
+  expect(credentialRejectedHint(revoked, projectKey)).toBe("The service rejected openai-evals. If its value was revoked or expired, ask a human to replace it: mehen request api-key --name openai-evals --provider openai --reason '<why>' --home project --project prj_3kQ9vXyZ7.")
+  expect(credentialRejectedHint(revoked, { ...projectKey, home: { kind: "member", member: "mem_1" } })).toMatch(/--reason '<why>' --home private\.$/)
+})
+
 test("policy operations export the real producer implementations", async () => {
   const operations = await import("./operations.ts")
   const policy = await import("./policy-operations.ts")
