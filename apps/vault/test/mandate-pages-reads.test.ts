@@ -262,8 +262,15 @@ describe("the mandate pages", () => {
     // a credential here now.
     vault.answers.set(`/mandate-proposals/${base.id}`, legacy)
     const legacyCard = parts(await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })).live
-    expect(legacyCard).toContain("no credential it can use now")
+    expect(legacyCard).toContain("no credential that can be included now")
     expect(legacyCard).toContain("It named github-tom before Mehen kept which credential each name meant")
+    // A legacy one for every credential says so on its card and in its
+    // source, while the live form stays narrow.
+    vault.answers.set(`/mandate-proposals/${base.id}`, { ...base, state: "expired", items: "all", closedReason: "unbound" })
+    const all = parts(await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` }))
+    expect([checkedItems(all.live), checkedClasses(all.live)]).toEqual([[], ["read"]])
+    expect(all.live).toContain("every credential it can use whose home you manage")
+    expect(all.source).toContain('data-input="mandate-items" value="all" checked')
     // The open, bound one still opens on its terms, signed against it.
     vault.answers.set(`/mandate-proposals/${base.id}`, { ...base, state: "open" })
     const open_ = await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })
@@ -288,9 +295,20 @@ describe("the mandate pages", () => {
     vault.answers.set(`/mandates/${MANDATE().id}`, { ...broad(), items: ["gone-one", "gone-two"] })
     const { live } = parts(await open(pages.sign, {}, { viewer: TOM, query: `?renew=${MANDATE().id}` }))
     const card = live.slice(live.indexOf('data-region="mandate-source"'))
-    expect(card).toContain("no credential it can use now")
-    expect(card).toContain("2 credentials it named are not ones this machine can use now.")
+    expect(card).toContain("no credential that can be included now")
+    expect(card).toContain("2 credentials it named cannot be included in this mandate now.")
     expect(card).toContain("at most 50,000 reads")
+  })
+
+  it("says a copied mandate's credential the reader cannot include cannot be included, not that the machine cannot use it", async () => {
+    // The machine reaches slack-platform, but its home is not the reader's
+    // to manage, so the candidates leave it out.
+    vault.answers.set(`/mandates/${MANDATE().id}`, { ...broad(), items: ["github-tom", "slack-platform"] })
+    vault.answers.set(`/mandate-candidates?device=${fx.PEOPLE_DEVICE.device}`, { items: [CANDIDATES.items[0]!] })
+    const { live } = parts(await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}&from=${MANDATE().id}` }))
+    const card = live.slice(live.indexOf('data-region="mandate-source"'))
+    expect(card).toContain("One credential it named cannot be included in this mandate now.")
+    expect(card).not.toContain("can use now")
   })
 
   it("starts a fresh form, and a class not yet ticked, at the caps a machine may propose", async () => {

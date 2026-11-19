@@ -1629,11 +1629,12 @@ export function mandateSourceFromWords(machine: string): string {
 }
 export const MANDATE_SOURCE_PROPOSAL_WORDS = "This proposal can no longer be signed as it stands. The form starts on the narrowest terms; it proposed:"
 // The credentials a renewed, copied or closed source named that the form
-// cannot offer now. formerNames: a proposal's names from before Mehen kept
+// cannot offer now: the machine cannot reach them, or the reader does not
+// manage where they live. formerNames: a proposal's names from before Mehen kept
 // which credential each meant, never matched to today's credentials.
 export function mandateSourceUnavailableWords(unavailable: number, formerNames: readonly string[]): string {
   if (formerNames.length > 0) return `It named ${joinWords(formerNames)} before Mehen kept which credential each name meant, so those are not matched to the credentials here now.`
-  return unavailable === 1 ? "One credential it named is not one this machine can use now." : `${unavailable} credentials it named are not ones this machine can use now.`
+  return unavailable === 1 ? "One credential it named cannot be included in this mandate now." : `${unavailable} credentials it named cannot be included in this mandate now.`
 }
 export const MANDATE_USE_SOURCE_BUTTON = "Use these terms"
 export const MANDATE_PROPOSAL_SUPERSEDED_WORDS = "This proposal closed because a mandate was signed for this machine since. You may still sign these terms to replace it."
@@ -1656,7 +1657,7 @@ export type MandateSummaryInput = { machine: string; classes: readonly MandateCl
 const NAMED_ITEMS_MAX = 5
 function summaryItemWords(items: "all" | readonly string[]): string {
   return items === "all" ? "every credential it can use whose home you manage, now and later"
-    : items.length === 0 ? "no credential it can use now"
+    : items.length === 0 ? "no credential that can be included now"
     : items.length === 1 ? (items[0] ?? "")
     : items.length <= NAMED_ITEMS_MAX ? `${items.length} credentials, ${joinWords(items)}`
     : `${items.length} credentials`

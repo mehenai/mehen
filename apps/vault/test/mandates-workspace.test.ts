@@ -584,6 +584,10 @@ describe("a machine proposes only what it asked for", () => {
       // A closed legacy proposal shows what it named as text, offers none of it, and says the machine can propose again.
       const view = await mandateOp(ctx, "mandates.proposal", "owner", { id: "mdp_kept000000000001" }) as MandateProposalView
       expect(view).toMatchObject({ state: "expired", items: [], unbound: ["kept-key"], closedReason: "unbound" })
+      // One that asked for every credential still says so: "all" names no slug to resolve.
+      const everything = await mandateOp(ctx, "mandates.proposal", "owner", { id: "mdp_everything000001" }) as MandateProposalView
+      expect(everything).toMatchObject({ state: "expired", items: "all", hiddenItems: 0, closedReason: "unbound" })
+      expect(everything.unbound).toBeUndefined()
       expect((await refusal(() => signMandate(ctx, "owner", terms({ items: [itemId(ctx, "kept-key")] }), "mdp_kept000000000001"))).code).toBe("bad_request")
       // Deleting its credential and making it again changes nothing: it stays closed and cannot be signed.
       await workspaceItemOps["items.delete"]!.handler(ctx, memberPrincipal(ctx), { slug: "kept-key" }, memberInvocation(ctx, "owner", { type: "item.delete", item: itemId(ctx, "kept-key") }))

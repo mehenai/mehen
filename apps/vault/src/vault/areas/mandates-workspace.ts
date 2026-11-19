@@ -360,7 +360,8 @@ function proposalView(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invoc
   const terms = JSON.parse(row.terms) as MandateProposedTerms
   const ids = proposalItemIds(row)
   // Without ids its slugs are text: never resolved against today's credentials.
-  const refs = ids === null ? [] : terms.items === "all" ? null : terms.items.flatMap((slug) => {
+  // "all" names no slug, so it stays "all" with or without ids.
+  const refs = terms.items === "all" ? null : ids === null ? [] : terms.items.flatMap((slug) => {
     const credential = state.credentials.find((c) => c.slug === slug)
     // A slug now on another credential than the one proposed names nothing.
     if (!credential || ids[slug] !== credential.id) return []
