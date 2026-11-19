@@ -183,6 +183,26 @@ describe("Let it work in the relay", () => {
     })
   })
 
+  // In a bundle, a request the dial lets through is never one of the
+  // mandate's: only the requests the mandate covers count towards its caps.
+  it("counts only the mandate's own requests in a bundle towards its caps, never one the dial covered", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await seedGithub(ctx)
+      await seedGithub(ctx, "example-api")
+      ctx.sql.exec("UPDATE items SET binding=? WHERE slug='example-api'", JSON.stringify({ hosts: ["api.example.com"] }))
+      const { mandate } = await signMandate(ctx, "owner", terms({ caps: { ...terms().caps, change: 1 } }))
+      setSetting(ctx, "approval_dial", "work")
+      const thing = { item: "example-api", ...OPEN_ISSUE, url: "https://api.example.com/v1/things" }
+      const answer = await workspaceRelayOps["approvals.bundle"]!.handler(ctx, devicePrincipal("dev_owner"), { requests: [{ item: "github-work", ...OPEN_ISSUE }, thing, thing] }, await deviceInvocation(ctx, "dev_owner")) as ApprovalBundleCreated
+      expect(answer.results.map((r) => r.outcome)).toEqual(["allowed", "allowed", "refused"])
+      expect(answer.results[2]).toMatchObject({ error: { error: "forbidden", dialRefused: "unreviewed" } })
+      // Planning debits nothing, and the first request was the dial's.
+      expect(ctx.sql.exec("SELECT COUNT(*) AS n FROM mandate_counts WHERE mandate_id=?", mandate.id).one().n).toBe(0)
+      expect(asks(ctx)).toBe(0)
+    })
+  })
+
   it("refuses with conflict when the dial moved between the hook and the last check", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
