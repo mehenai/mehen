@@ -1,12 +1,16 @@
 import type { Template } from "../templates.ts"
-import { ALLOW_READS, BEARER, READS, WRITES } from "./shared.ts"
+import { BEARER, NAMED_READS, READS, WRITES } from "./shared.ts"
 
 // A personal access token for Supabase's Management API. A project's own
 // APIs live at <ref>.supabase.co, a host that depends on the project, so
 // they are not bound: the vault has no validated per-item host yet.
-// Without a human: reads, except project API keys, edge function secrets,
-// the auth configuration, the pgsodium root key and the claim token, which
-// hand back a secret and need an approval. SQL, migrations, functions,
+// Without a human: the named reads (organisations, projects, functions and
+// their source, migrations, backups, branch lists, advisors, logs, types,
+// buckets, action runs and snippets). Every other read asks, and those that
+// hand back a secret are pinned to an approval: project API keys, edge
+// function secrets, the auth configuration, the pgsodium root key, the
+// claim token, a branch's details (its database password and JWT secret),
+// pooler connection strings and the PostgREST JWT secret. SQL, migrations, functions,
 // branches and everything else need an approval; new projects, add-ons and
 // disk changes are pinned to one because they are billed, and so are
 // database passwords and CLI login roles. Minting or changing API keys and
@@ -25,12 +29,52 @@ export const supabase: Template = {
   policy: {
     default: "approve",
     rules: [
-      ALLOW_READS,
+      NAMED_READS(
+        [
+          "/v1/profile",
+          "/v1/organizations",
+          "/v1/organizations/*",
+          "/v1/organizations/*/members",
+          "/v1/organizations/*/projects",
+          "/v1/projects",
+          "/v1/projects/available-regions",
+          "/v1/projects/*",
+          "/v1/projects/*/health",
+          "/v1/projects/*/functions",
+          "/v1/projects/*/functions/*",
+          "/v1/projects/*/functions/*/body",
+          "/v1/projects/*/database/migrations",
+          "/v1/projects/*/database/migrations/*",
+          "/v1/projects/*/database/backups",
+          "/v1/projects/*/branches",
+          "/v1/projects/*/advisors/*",
+          "/v1/projects/*/analytics/endpoints/*",
+          "/v1/projects/*/types/typescript",
+          "/v1/projects/*/storage/buckets",
+          "/v1/projects/*/actions",
+          "/v1/projects/*/actions/*",
+          "/v1/projects/*/actions/*/logs",
+          "/v1/branches/*/diff",
+          "/v1/snippets",
+          "/v1/snippets/*",
+        ],
+        "reads of organisations, projects, functions, migrations, branch lists, logs and snippets",
+      ),
       {
         action: "approve",
         methods: READS,
-        paths: ["/v1/projects/*/api-keys/**", "/v1/projects/*/secrets", "/v1/projects/*/config/auth", "/v1/projects/*/pgsodium", "/v1/projects/*/claim-token"],
-        note: "API keys, secrets, the auth configuration and other values that hand back a secret",
+        paths: [
+          "/v1/projects/*/api-keys/**",
+          "/v1/projects/*/secrets",
+          "/v1/projects/*/config/auth",
+          "/v1/projects/*/pgsodium",
+          "/v1/projects/*/claim-token",
+          "/v1/branches/*",
+          "/v1/projects/*/config/database/pooler",
+          "/v1/projects/*/config/database/pgbouncer",
+          "/v1/projects/*/postgrest",
+        ],
+        note: "API keys, secrets, connection strings, JWT secrets and other values that hand back a secret",
       },
       {
         action: "approve",

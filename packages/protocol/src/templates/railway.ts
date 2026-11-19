@@ -5,7 +5,8 @@ import { BEARER } from "./shared.ts"
 // token goes in another header and is not this template. Every request
 // needs an approval, queries included: a query can read every service's
 // variables, database passwords among them, and no body matcher can yet
-// tell such a query from a harmless one.
+// tell such a query from a harmless one. The rule is explicit, so a broad
+// allow rule on an item cannot open queries.
 // https://docs.railway.com/integrations/api
 export const railway: Template = {
   id: "railway",
@@ -15,7 +16,10 @@ export const railway: Template = {
   docsUrl: "https://railway.com/account/tokens",
   binding: { hosts: ["backboard.railway.com"], paths: ["/graphql/v2"], methods: ["POST"] },
   injection: BEARER(),
-  policy: { default: "approve", rules: [] },
+  policy: {
+    default: "approve",
+    rules: [{ action: "approve", paths: ["/graphql/v2"], note: "every request, since a query can read service variables and their secrets" }],
+  },
   ceiling: "placeholder",
   defaultEnvVar: "RAILWAY_API_TOKEN",
   fields: { key: { label: "API token" } },

@@ -18,6 +18,10 @@ export type PolicyRuleInput = z.infer<typeof PolicySchema>["rules"][number]
 export const WRITES = ["POST", "PUT", "PATCH", "DELETE"]
 export const READS = ["GET", "HEAD"]
 export const ALLOW_READS: PolicyRuleInput = { action: "allow", methods: READS, note: "reads" }
+// Reads of the named routes only. A template whose API has reads that hand
+// back secrets allows these, each checked against the provider's response
+// schema, and every other read asks.
+export const NAMED_READS = (paths: string[], note: string): PolicyRuleInput => ({ action: "allow", methods: READS, paths, note })
 export const MODEL_CALLS = "model calls and the data they use"
 
 // GitHub also serves a repository at /repositories/{id} and an organisation

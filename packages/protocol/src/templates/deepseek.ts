@@ -1,9 +1,9 @@
 import type { Template } from "../templates.ts"
-import { ALLOW_READS, BEARER, MODEL_CALLS } from "./shared.ts"
+import { BEARER, MODEL_CALLS, NAMED_READS } from "./shared.ts"
 
 // DeepSeek serves an OpenAI-style API at the root and an Anthropic-style
 // one under /anthropic, both with the same key as a bearer token. Without
-// a human: reads and model calls (chat, the beta completions, and
+// a human: the model list, the balance, and model calls (chat, the beta completions, and
 // Anthropic-style messages). Anything else needs an approval.
 // https://api-docs.deepseek.com/
 export const deepseek: Template = {
@@ -17,7 +17,7 @@ export const deepseek: Template = {
   policy: {
     default: "approve",
     rules: [
-      ALLOW_READS,
+      NAMED_READS(["/models", "/user/balance"], "reads of the model list and the balance"),
       {
         action: "allow",
         methods: ["POST"],

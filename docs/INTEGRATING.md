@@ -11,7 +11,7 @@ There are two shapes: `TEMPLATES` for credentials a human pastes in (API keys an
 ### Where they live
 
 - `packages/protocol/src/templates/<id>.ts`: one file per template or OAuth provider, named by its id, exporting exactly one `Template` or `OAuthProviderTemplate` (as `export const <camelCaseId>`, with a `Template` suffix where that is a reserved word: `class` exports `classTemplate`). A helper only that template uses (Gmail's path prefix, Graph's action spellings) stays in its file.
-- `packages/protocol/src/templates/shared.ts`: what more than one file uses: `BEARER()`, `READS`, `WRITES`, `ALLOW_READS`, `MODEL_CALLS`, GitHub's `githubPaths`, `GITHUB_ALLOWED` and `GITHUB_SENSITIVE`, Google's `GOOGLE_AUTH`, `GOOGLE_IDENTITY`, `GOOGLE_REFRESH` and `GOOGLE_LIFETIMES`, `ACCESS_TOKEN_BEARER` and `CLIENT_SETUP_CALLBACK`.
+- `packages/protocol/src/templates/shared.ts`: what more than one file uses: `BEARER()`, `READS`, `WRITES`, `ALLOW_READS`, `NAMED_READS`, `MODEL_CALLS`, GitHub's `githubPaths`, `GITHUB_ALLOWED` and `GITHUB_SENSITIVE`, Google's `GOOGLE_AUTH`, `GOOGLE_IDENTITY`, `GOOGLE_REFRESH` and `GOOGLE_LIFETIMES`, `ACCESS_TOKEN_BEARER` and `CLIENT_SETUP_CALLBACK`.
 - `packages/protocol/src/templates.ts`: the index. It holds the types, `TEMPLATE_CATEGORIES`, `getTemplate`, `getOAuthProvider`, `connectionPolicy` and `normaliseScope`, imports each file and registers it in `TEMPLATES` or `OAUTH_PROVIDERS`. Everything outside the protocol imports `@mehen/protocol/templates` and nothing else. The order of the two records is the order `mehen templates`, Connect a service and the providers reference list them in, within each category.
 - `packages/protocol/src/templates/<id>.test.ts`: a template's own cases, beside it.
 
@@ -90,6 +90,7 @@ The providers today are `google-gmail`, `google-calendar`, `google-drive`, `gith
 Templates fail closed:
 
 - reads (`GET`, `HEAD`) are allowed, except a read that hands back another secret (a database password, a decrypted variable, a stored secret), which is `approve`;
+- where an API has reads that hand back secrets (tokens, passwords, webhook signing secrets, routing keys), the template allows reads by name instead, with `NAMED_READS` in `shared.ts`: only the routes it lists, each checked against the provider's response schema, and every other read asks. The known secret-bearing reads are still pinned with `approve` rules, because a template's approve and deny rules hold even when a person widens an item's own policy, and an allow never does;
 - every other method needs a human's approval by default;
 - a few narrow everyday writes are allowed explicitly, each with a `note` saying why it is safe enough;
 - the worst routes are denied outright: anything that sends mail or data elsewhere for good, gives someone else access, mints tokens, or cannot be shown honestly on an approval card (a batch, or a send of something stored by id that could change after approval).

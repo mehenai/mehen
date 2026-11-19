@@ -1,9 +1,13 @@
 import type { Template } from "../templates.ts"
-import { ALLOW_READS, BEARER, READS, WRITES } from "./shared.ts"
+import { BEARER, NAMED_READS, READS, WRITES } from "./shared.ts"
 
-// Without a human: reads, except environment variables, secret files,
-// environment groups and database connection details, which hand back
-// secrets and need an approval. Deploys, scaling, services and everything
+// Without a human: the named reads (services, deploys, events, jobs,
+// instances, domains, routes and headers, owners and members, projects,
+// environments, databases and key-value stores, disks, blueprints, logs
+// and metrics). Every other read asks, and those that hand back a secret
+// are pinned to an approval: environment variables, secret files,
+// environment groups, connection details, webhooks (each carries its
+// signing secret) and log and metrics streams. Deploys, scaling, services and everything
 // else need an approval, and so does minting database credentials.
 // Changing workspace members, webhooks, log and metrics streams (they send
 // data elsewhere) and minting sandbox tokens are refused.
@@ -19,7 +23,40 @@ export const render: Template = {
   policy: {
     default: "approve",
     rules: [
-      ALLOW_READS,
+      NAMED_READS(
+        [
+          "/v1/services",
+          "/v1/services/*",
+          "/v1/services/*/deploys/**",
+          "/v1/services/*/events",
+          "/v1/services/*/jobs/**",
+          "/v1/services/*/instances",
+          "/v1/services/*/custom-domains/**",
+          "/v1/services/*/routes",
+          "/v1/services/*/headers",
+          "/v1/owners",
+          "/v1/owners/*",
+          "/v1/owners/*/members",
+          "/v1/projects/**",
+          "/v1/environments/**",
+          "/v1/env-groups",
+          "/v1/postgres",
+          "/v1/postgres/*",
+          "/v1/postgres/*/query/**",
+          "/v1/redis",
+          "/v1/redis/*",
+          "/v1/key-value",
+          "/v1/key-value/*",
+          "/v1/disks/**",
+          "/v1/blueprints/**",
+          "/v1/events/*",
+          "/v1/logs",
+          "/v1/logs/values",
+          "/v1/metrics/**",
+          "/v1/users",
+        ],
+        "reads of services, deploys, projects, databases, logs and metrics",
+      ),
       {
         action: "approve",
         methods: READS,
@@ -35,8 +72,11 @@ export const render: Template = {
           "/v1/redis/*/connection-info",
           "/v1/key-value/*/connection-info",
           "/v1/sandbox-groups/*/credentials/**",
+          "/v1/webhooks/**",
+          "/v1/logs/streams/**",
+          "/v1/metrics-stream/**",
         ],
-        note: "environment variables, secret files and connection details hand back secrets",
+        note: "environment variables, secret files, connection details, webhooks and streams hand back secrets",
       },
       { action: "approve", methods: WRITES, paths: ["/v1/postgres/*/credentials/**"], note: "mints or removes database credentials" },
       { action: "deny", methods: WRITES, paths: ["/v1/owners/*/members/**"], note: "changing members gives someone else access" },
