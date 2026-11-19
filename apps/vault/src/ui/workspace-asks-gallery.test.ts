@@ -288,10 +288,24 @@ describe("enrolment", () => {
   })
 
   it("an enrolled machine's link says it is enrolled and what the agent does next", () => {
-    const body = renderDocument(enrolmentPage(peopleShell("member", { member: "mem_tom01" }), { ...PEOPLE_ENROL, state: "active", lease: "terminal", owner: { kind: "member", member: "mem_tom01", name: "Tom" }, actions: [] }, { viewer: { member: "mem_tom01", role: "member", blocked: false }, projects: null, now: 0 })).value
+    const enrolled = (view: Partial<typeof PEOPLE_ENROL>) => renderDocument(enrolmentPage(peopleShell("member", { member: "mem_tom01" }), { ...PEOPLE_ENROL, state: "active", lease: "terminal", owner: { kind: "member", member: "mem_tom01", name: "Tom" }, actions: [], ...view }, { viewer: { member: "mem_tom01", role: "member", blocked: false }, projects: null, now: 0 })).value
+    const body = enrolled({ startedByAgent: true })
     expect(body).toContain("<h1>Enrolled</h1>")
     expect(body).not.toContain("Already enrolled")
     expect(body).toContain("restart the agent once so its Mehen tools load")
+    expect(body).not.toContain("The terminal that asked carries on by itself.")
+    // No agent is known to have asked (mehen up in a terminal): no agent to restart.
+    const terminal = enrolled({})
+    expect(terminal).toContain("The terminal that asked carries on by itself.")
+    expect(terminal).not.toContain("restart the agent")
+  })
+
+  it("names where the acceptor is: a place, this machine on a local vault, or nowhere it can place", () => {
+    const acceptor = (body: string) => /data-region="enrol-acceptor">([^<]*)</.exec(body)?.[1]
+    expect(acceptor(rendered("enrol-accept"))).toBe("in Amsterdam, NL")
+    expect(acceptor(rendered("enrol-accept-local"))).toBe("on this machine")
+    const nowhere = renderDocument(enrolmentPage(peopleShell("member", { member: "mem_tom01" }), { ...PEOPLE_ENROL, acceptorPlace: null }, { viewer: { member: "mem_tom01", role: "member", blocked: false }, projects: null, now: 0 })).value
+    expect(acceptor(nowhere)).toBe("somewhere the vault cannot place")
   })
 
   it("carries three groups and the hidden one's check, never the hidden group, the thumbprint or the key", () => {

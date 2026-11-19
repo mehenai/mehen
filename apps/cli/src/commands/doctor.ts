@@ -27,6 +27,7 @@ import { PENDING_DIR, WORKSPACES_DIR, managedHost, resolveHome } from "../home.t
 import { HttpVaultApi } from "../http-client.ts"
 import { type CliState, type LockHolder, cliState, installation, lockGuardPresent, lockHolder, onPathCheck, readInstallState, selfExecutable, updateDoctorCheck } from "../install-state.ts"
 import { readLedger } from "../ledger.ts"
+import { type KeyringHost, LOCAL_VAULT_RECORD, defaultVault, keyringAdvice, keyringHost } from "../local-vault.ts"
 import { type MigrationJournal, type MigrationStep, ROOT_OWN, assertSafeRoot, legacyLayout, migrationState, readMigrationJournal } from "../migration.ts"
 import { printJson, printLine } from "../output.ts"
 import { assertKeyScopeAgrees, notEnrolled, sessionLabel } from "../session.ts"
@@ -105,7 +106,6 @@ function skipped(check: DoctorCheckName, why: string): DoctorCheck {
 // root key, as the vault itself reports it at /local/v1/state, believed only
 // when it answers with the instance token in its own data directory. Read
 // only, and only on loopback; null when this machine runs no such vault.
-const LOCAL_RECORD = "local-vault.json"
 const LOOPBACK_ORIGIN = /^http:\/\/localhost:\d{1,5}$/
 
 const CUSTODY_MEANS: Record<string, { status: DoctorStatus; detail: (origin: string) => string }> = {
@@ -124,14 +124,14 @@ const CUSTODY_MEANS: Record<string, { status: DoctorStatus; detail: (origin: str
   },
 }
 
-export async function localVaultCheck(root: string, fetcher: (request: Request) => Promise<Response>): Promise<DoctorCheck | null> {
-  const path = join(root, LOCAL_RECORD)
+export async function localVaultCheck(root: string, fetcher: (request: Request) => Promise<Response>, host: KeyringHost | null = null): Promise<DoctorCheck | null> {
+  const path = join(root, LOCAL_VAULT_RECORD)
   if (!existsSync(path)) return null
-  let record: { origin: string; data: string }
+  let record: { origin: string; data: string; service: string | null }
   try {
     const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>
     if (typeof value.origin !== "string" || typeof value.data !== "string") throw new Error("missing origin or data")
-    record = { origin: value.origin, data: value.data }
+    record = { origin: value.origin, data: value.data, service: typeof value.service === "string" ? value.service : null }
   } catch (error) {
     return { check: "local_vault", status: "warn", detail: `${path} cannot be read (${error instanceof Error ? error.message : String(error)}).`, next: { command: "mehen up", say: "Run `mehen up` to set the local vault up again; its data stays." } }
   }
@@ -148,7 +148,8 @@ export async function localVaultCheck(root: string, fetcher: (request: Request) 
   if (token === null || state.instance !== token) return { check: "local_vault", status: "warn", detail: `What answers at ${record.origin} is not the vault in ${record.data}, so what it says about its key is not believed.` }
   const means = typeof state.custody === "string" && Object.hasOwn(CUSTODY_MEANS, state.custody) ? CUSTODY_MEANS[state.custody] : undefined
   if (!means) return skipped("local_vault", `The local vault at ${record.origin} does not say what keeps its key; it is older than this mehen.`)
-  return { check: "local_vault", status: means.status, detail: means.detail(record.origin) }
+  const advice = state.custody === "file" && host !== null ? keyringAdvice(host, record.service) : null
+  return { check: "local_vault", status: means.status, detail: advice === null ? means.detail(record.origin) : `${means.detail(record.origin)} ${advice}` }
 }
 
 // The vault's clock from its Date header, against this machine's at the
@@ -303,7 +304,7 @@ export type DoctorReport = {
 // read. A refusal is the slot's `enrolled` check and nothing is signed for
 // it; the server, not the environment, has already chosen what it spans.
 export type DoctorSpan = { slots: FoundSlot[]; refusal: CliError | null; guard(slot: FoundActive): Promise<CliError | null> }
-export type DoctorAllOptions = { fetch?: (request: Request) => Promise<Response>; now?: () => number; cwd?: string; span?: DoctorSpan }
+export type DoctorAllOptions = { fetch?: (request: Request) => Promise<Response>; now?: () => number; cwd?: string; span?: DoctorSpan; keyring?: KeyringHost }
 
 const STRAY_DETAIL = "not a slot; mehen does not read or delete it; remove it yourself if you know what it is"
 const UNREAD_DETAIL = "not a directory private to this user, so mehen does not read it as a slot and does not delete it; fix its owner and mode (chmod 700) or remove it yourself if you know what it is"
@@ -486,7 +487,8 @@ export async function doctorAll(env: Env, options: DoctorAllOptions = {}): Promi
   let vaultUrl: string | null = null
   try {
     vaultUrl = resolveVaultUrl(env, null)
-    machine.push({ check: "vault_url", status: "ok", detail: `${vaultUrl} for a new enrolment${env.MEHEN_VAULT_URL ? " (MEHEN_VAULT_URL)" : " (the default)"}` })
+    const source = env.MEHEN_VAULT_URL ? "MEHEN_VAULT_URL" : defaultVault(env).source === "local" ? "the local vault `mehen up` set up" : "the default"
+    machine.push({ check: "vault_url", status: "ok", detail: `${vaultUrl} for a new enrolment (${source})` })
   } catch (error) {
     machine.push(fromError("vault_url", toCliError(error)))
   }
@@ -513,7 +515,7 @@ export async function doctorAll(env: Env, options: DoctorAllOptions = {}): Promi
   }
   machine.push(...(await skillCopies(resolve(env.HOME || homedir()), env.PATH ?? "")).map(skillCheck))
   machine.push(...(await guardChecks(env, root, self)))
-  const local = root !== null && ready ? await localVaultCheck(root, fetcher) : null
+  const local = root !== null && ready ? await localVaultCheck(root, fetcher, options.keyring ?? keyringHost(env)) : null
   if (local) machine.push(local)
 
   let session: DoctorCheck

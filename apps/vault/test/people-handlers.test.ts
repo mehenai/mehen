@@ -13,11 +13,11 @@ import { peoplePage } from "../src/ui/pages/people.ts"
 import { PEOPLE_DEVICE, PEOPLE_INVITES, PEOPLE_PROJECTS, peopleData, peopleShell } from "../src/ui/people-gallery.ts"
 import { ACCOUNT_PASSKEYS, accountGallery } from "../src/ui/account-gallery.ts"
 import { ShellState } from "../src/ui/client/shell-logic.ts"
-import { BOOTSTRAP_KEY, INVITE_KEY, RESULT_KEY, initAccountRecovery, initRecoverPending, initWorkspaceSignup } from "../src/ui/client/pages/account-setup.ts"
+import { BOOTSTRAP_KEY, INVITE_KEY, RESULT_KEY, initAccountRecovery, initRecoverPending, initWorkspaceCreate, initWorkspaceSignup, suggestWorkspaceSlug } from "../src/ui/client/pages/account-setup.ts"
 import { CONFIRMATION_POLL_MS, RECOVERY_POLL_MS, nextRecoveryPoll } from "../src/ui/client/confirmation-poll.ts"
 import { initAccount, initRecover, initSignin } from "../src/ui/client/pages/account.ts"
 import { NARROW_ONLY_WORDS, initMachine, initPeople } from "../src/ui/client/pages/people.ts"
-import { type MiniBrowser, type MiniElement, installPage, settle, submit } from "./mini-dom.ts"
+import { type MiniBrowser, type MiniElement, MiniEvent, installPage, settle, submit } from "./mini-dom.ts"
 
 vi.mock("@simplewebauthn/browser", () => ({
   startAuthentication: async () => ({ id: "test-assertion" }),
@@ -449,8 +449,12 @@ describe("joining from an invitation at /signup", () => {
 
   it("a new vault's owner is welcomed, never told an invitation may have expired, and the welcome goes once the account exists", async () => {
     const storage = tab()
-    await load(storage, "https://vault.test/signup#the-bootstrap-code", { ...signedOut, firstAccount: true }, { peek: { status: 404, body: { error: "not_found", message: "No such invite." } }, onboarding: "bootstrap" })
+    await load(storage, "https://vault.test/signup#the-bootstrap-code", { ...signedOut, firstAccount: true }, { onboarding: "bootstrap" })
     expect(shown()).toEqual(["signup-passkey"])
+    // No invitation to peek at on a vault with no account, and no account to sign in with.
+    expect(paths()).not.toContain("/api/auth/invite/peek")
+    expect(browser!.document.querySelector("title")?.textContent).toBe("Welcome to your vault · Mehen")
+    expect($('[data-region="signup-passkey"]').textContent).not.toContain("Already have an account here?")
     expect($('[data-region="signup-plain"] h1').textContent).toBe("Welcome to your vault")
     expect($('[data-region="signup-first-lead"]').hidden).toBe(false)
     expect($('[data-region="signup-plain-lead"]').hidden).toBe(true)
@@ -529,6 +533,40 @@ describe("joining from an invitation at /signup", () => {
     expect(browser!.calls.find((c) => c.path === "/api/account/passkeys/verify")?.body).toEqual({ response: { id: "test-registration" }, name: "Second passkey" })
     expect(bodyOf("/api/account/invites/join")).toEqual([{ code: "the-code", oidcResult: "oidr_1" }])
     expect(paths()).not.toContain("/api/stepup")
+  })
+})
+
+describe("a new workspace", () => {
+  it("suggests the short name from the name: lower case, dashes for spaces, letters, digits and single dashes, 3 to 40", () => {
+    expect(suggestWorkspaceSlug("Acme Corp")).toBe("acme-corp")
+    expect(suggestWorkspaceSlug("  Alex's  Home  Lab ")).toBe("alexs-home-lab")
+    expect(suggestWorkspaceSlug("Zürich Café")).toBe("zurich-cafe")
+    expect(suggestWorkspaceSlug("2026 Plans")).toBe("plans")
+    expect(suggestWorkspaceSlug("a -- b -- c")).toBe("a-b-c")
+    expect(suggestWorkspaceSlug("x".repeat(39) + " y")).toBe("x".repeat(39))
+    for (const short of ["", "Me", "!!", "12", "日本"]) expect(suggestWorkspaceSlug(short), short).toBeNull()
+  })
+
+  it("fills the short name as the name is typed, until the person edits the short name", () => {
+    const entry = accountGallery().find((e) => e.id === "workspaces-new")!
+    open(renderDocument(entry.page).value, () => never())
+    initWorkspaceCreate()
+    const name = $('[data-input="workspace-name"]')
+    const slug = $('[data-input="workspace-slug"]')
+    const type = (input: MiniElement, value: string) => {
+      input.value = value
+      input.dispatchEvent(new MiniEvent("input", { bubbles: true }))
+    }
+    type(name, "Home")
+    expect(slug.value).toBe("home")
+    type(name, "Home Lab")
+    expect(slug.value).toBe("home-lab")
+    type(name, "Me")
+    expect(slug.value).toBe("")
+    type(name, "Home Lab")
+    type(slug, "lab")
+    type(name, "Home Lab Two")
+    expect(slug.value).toBe("lab")
   })
 })
 
@@ -941,6 +979,101 @@ describe("recovery", () => {
     await vi.advanceTimersByTimeAsync(1_000)
     expect(browser!.reloaded).toBe(2)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("Copy and Download hand over the ten codes one a line, and typing one back is still asked for", async () => {
+    const codes = Array.from({ length: 10 }, generateRecoveryCode)
+    const entry = accountGallery().find((e) => e.id === "account-recovery")!
+    open(renderDocument(entry.page).value, (path) => (path === "/api/account/stepup/start" ? ok({ nonce: "n", options: {} }) : path === "/api/account/recovery/generate" ? ok({ batch: "b", codes, confirmPosition: 3, expiresAt: "x" }) : never()))
+    const copied: string[] = []
+    vi.stubGlobal("navigator", { clipboard: { writeText: async (text: string) => void copied.push(text) } })
+    const saved: { name: unknown; href: string; blob: Blob }[] = []
+    const blobs = new Map<string, Blob>()
+    const urls = URL as unknown as Record<string, unknown>
+    const before = { create: urls.createObjectURL, revoke: urls.revokeObjectURL }
+    urls.createObjectURL = (blob: Blob) => {
+      const href = `blob:https://vault.test/${blobs.size}`
+      blobs.set(href, blob)
+      return href
+    }
+    urls.revokeObjectURL = () => undefined
+    const document = browser!.document as unknown as { createElement: (tag: string) => MiniElement }
+    const create = document.createElement
+    document.createElement = (tag: string) => {
+      const made = create(tag)
+      if (tag === "a") made.addEventListener("click", () => saved.push({ name: (made as unknown as { download?: unknown }).download, href: made.href, blob: blobs.get(made.href)! }))
+      return made
+    }
+    try {
+      initAccountRecovery()
+      // The second passkey comes after the codes, never above them.
+      const order = browser!.document.querySelectorAll('[data-action="make-codes"], [data-region="codes-issued"], [data-action="add-second-passkey"]').map((e) => e.getAttribute("data-action") ?? e.getAttribute("data-region"))
+      expect(order).toEqual(["make-codes", "codes-issued", "add-second-passkey"])
+      $('[data-action="make-codes"]').click()
+      await settle()
+      $('[data-action="copy-codes"]').click()
+      await settle()
+      expect(copied).toEqual([`${codes.join("\n")}\n`])
+      $('[data-action="download-codes"]').click()
+      expect(saved.map((d) => d.name)).toEqual(["mehen-recovery-codes.txt"])
+      expect(await saved[0]!.blob.text()).toBe(`${codes.join("\n")}\n`)
+      expect($('[data-region="codes-issued"]').hidden).toBe(false)
+      expect($('[data-region="codes-position"]').textContent).toBe("3")
+      expect($('[data-region="recovery-done"]').hidden).toBe(true)
+    } finally {
+      document.createElement = create
+      urls.createObjectURL = before.create
+      urls.revokeObjectURL = before.revoke
+      vi.unstubAllGlobals()
+    }
+  })
+
+  async function codesShown() {
+    const codes = Array.from({ length: 10 }, generateRecoveryCode)
+    const entry = accountGallery().find((e) => e.id === "account-recovery")!
+    open(renderDocument(entry.page).value, (path) => (path === "/api/account/stepup/start" ? ok({ nonce: "n", options: {} }) : path === "/api/account/recovery/generate" ? ok({ batch: "b", codes, confirmPosition: 3, expiresAt: "x" }) : never()))
+    initAccountRecovery()
+    $('[data-action="make-codes"]').click()
+    await settle()
+    return codes
+  }
+  const copyLabel = () => $('[data-action="copy-codes"] span').textContent
+
+  it("a clipboard that refuses says to use Download, shows no code, and leaves Copy as it was", async () => {
+    vi.stubGlobal("navigator", { clipboard: { writeText: async () => { throw new Error("NotAllowedError: Document is not focused.") } } })
+    try {
+      const codes = await codesShown()
+      $('[data-action="copy-codes"]').click()
+      await settle()
+      const note = $('[data-region="codes-copy-error"]')
+      expect(note.hidden).toBe(false)
+      expect(note.textContent).toBe("This browser would not copy them. Use Download to save them to a file instead.")
+      for (const code of codes) expect(note.textContent).not.toContain(code)
+      expect(copyLabel()).toBe("Copy")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("two quick clicks on Copy end with Copy again, after one reset", async () => {
+    vi.stubGlobal("navigator", { clipboard: { writeText: async () => undefined } })
+    try {
+      await codesShown()
+      vi.useFakeTimers()
+      $('[data-action="copy-codes"]').click()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(copyLabel()).toBe("Copied")
+      $('[data-action="copy-codes"]').click()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(copyLabel()).toBe("Copied")
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(copyLabel()).toBe("Copy")
+      expect(vi.getTimerCount()).toBe(0)
+      expect($('[data-region="codes-copy-error"]').hidden).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it("the account recovery page wires the same recovery step", async () => {

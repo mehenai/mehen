@@ -27,6 +27,17 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      # A fresh runner reads each block of its disk slowly the first time
+      # (20 to 60 MB/s), so a first Chrome start, which reads about 450 MB,
+      # took 0.6 to 25 s; once Chrome's files have been read it takes 0.3 s.
+      # Read the browser's own installation directory (never a wrapper's,
+      # such as /usr/bin) in the background while the job sets up
+      # (tools/ci/chrome.ts, tools/ci/warm-chrome.ts).
+      - name: Read Chrome from disk in the background
+        run: |
+          for c in google-chrome chromium; do
+            if p=$(command -v "$c"); then nohup bun tools/ci/warm-chrome.ts "$p" > /dev/null 2>&1 & fi
+          done
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       # Many CLI tests start the real mehen several times over; on a two-core
@@ -68,6 +79,9 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      # Read Chrome's files once now, while the UI builds, so its first start
+      # does not wait on the runner's slow first read of the disk
+      # (tools/ci/chrome.ts says why; the check job does the same).
       - name: Find Chrome
         id: chrome
         run: |
@@ -75,6 +89,7 @@ jobs:
             if p="$(command -v "$c")"; then
               echo "Using $p"
               echo "path=$p" >> "$GITHUB_OUTPUT"
+              nohup bun tools/ci/warm-chrome.ts "$p" > /dev/null 2>&1 &
               exit 0
             fi
           done

@@ -8,6 +8,7 @@ import { join } from "node:path"
 import { randomId } from "@mehen/protocol/bytes"
 import { type OwnerRef, OwnerRefSchema, type WorkspaceRef, WorkspaceSlugSchema } from "@mehen/protocol/workspace"
 import { CliError, usageError } from "./errors.ts"
+import { defaultVault } from "./local-vault.ts"
 
 export const DEFAULT_VAULT_URL = "https://app.mehen.dev"
 
@@ -81,11 +82,12 @@ export function canonicalOrigin(raw: string): string {
   return url.origin
 }
 
-// MEHEN_VAULT_URL wins, then the enrolled vault, then the default. Once a
-// context is selected, a MEHEN_VAULT_URL naming another origin is refused
-// instead (session.ts); here it only picks the vault to enrol with.
+// MEHEN_VAULT_URL wins, then the enrolled vault, then the local vault
+// `mehen up` set up, then Mehen Cloud. Once a context is selected, a
+// MEHEN_VAULT_URL naming another origin is refused instead (session.ts);
+// here it only picks the vault to enrol with.
 export function resolveVaultUrl(env: Env, config: Config | null): string {
-  return canonicalOrigin(env.MEHEN_VAULT_URL || config?.vault || DEFAULT_VAULT_URL)
+  return canonicalOrigin(env.MEHEN_VAULT_URL || config?.vault || defaultVault(env).url)
 }
 
 export function isMachineName(value: unknown): value is string {

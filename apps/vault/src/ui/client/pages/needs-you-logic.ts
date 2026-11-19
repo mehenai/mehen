@@ -17,6 +17,13 @@ export const NEEDS_YOU_API = "/api/needs-you"
 // page every 60 s. Neither polls while the tab is hidden.
 export const NEEDS_YOU_POLL_MS = 20_000
 export const BADGE_POLL_MS = 60_000
+
+// A workspace's home asks as often as /needs-you does while it is visible,
+// so a machine that starts waiting just after the workspace is made shows
+// on its Needs you card without a reload; every other page keeps the badge's.
+export function badgePollMs(home: boolean): number {
+  return home ? NEEDS_YOU_POLL_MS : BADGE_POLL_MS
+}
 // A refresh still in flight after this long says "Checking...".
 export const CHECKING_AFTER_MS = 2_000
 
@@ -151,7 +158,8 @@ function homeNeedsBehind(inbox: Pick<InboxResponse, "workspaces" | "items">, wor
 // of the last re-read, null before the first; and whether the one re-read
 // this page view allows for an answer that can never speak for the
 // workspace was spent.
-export type HomeNeedsTurn = { visible: boolean; now: number; rereadAt: number | null; spent: boolean }
+// `gapMs`: the poll's own interval, the badge's when absent.
+export type HomeNeedsTurn = { visible: boolean; now: number; rereadAt: number | null; spent: boolean; gapMs?: number }
 
 export type HomeNeedsStep = { prune: boolean; reread: boolean; once: boolean; commit: boolean }
 
@@ -159,7 +167,7 @@ export type HomeNeedsStep = { prune: boolean; reread: boolean; once: boolean; co
 // at once (rowFate), unless the answer could not read the workspace, as
 // the home's own read may have, or no longer lists it. `reread`: the page
 // is read again only when the card is behind the answer, never while the
-// tab is hidden, and at most once per BADGE_POLL_MS whatever asked (focus,
+// tab is hidden, and at most once per poll interval whatever asked (focus,
 // a return to the tab); a skipped re-read commits nothing, so a later poll
 // asks again. An answer that can never speak for the workspace leaves the
 // card as it is: one that no longer lists it, or that says "limit" for a
@@ -175,7 +183,7 @@ export function homeNeedsStep(inbox: Pick<InboxResponse, "workspaces" | "items">
   const silent = w === undefined || (w.state === "unavailable" && w.reason === "limit" && shown.state === "unavailable")
   const wanted = silent ? !turn.spent : homeNeedsBehind(inbox, workspaceId, shown)
   if (!wanted) return { prune, reread: false, once: false, commit: true }
-  const reread = turn.visible && (turn.rereadAt === null || turn.now - turn.rereadAt >= BADGE_POLL_MS)
+  const reread = turn.visible && (turn.rereadAt === null || turn.now - turn.rereadAt >= (turn.gapMs ?? BADGE_POLL_MS))
   return { prune, reread, once: reread && silent, commit: false }
 }
 

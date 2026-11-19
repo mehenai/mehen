@@ -40,9 +40,9 @@ On a machine with no `mehen`:
 curl -fsSL https://mehen.dev/install | sh
 ```
 
-Mehen is not on npm or Homebrew; the npm package called `mehen` is an unrelated tool. The installer supports macOS and glibc-based Linux, including suitable WSL distributions, on arm64 and x64. Native Windows and musl-based Linux are not supported; `curl` and `shasum` or `sha256sum` are required. Its last line is a receipt, `mehen-install: {"v":1,"result":"installed","path":"/abs/path/mehen",...}`: use that `path` until a new shell has `mehen` on `PATH`. It writes one guarded `PATH` line for zsh and bash and gives advice for other shells, and never overwrites a file it does not own.
+Mehen is not on npm or Homebrew; the npm package called `mehen` is an unrelated tool. The installer supports macOS and glibc-based Linux, including suitable WSL distributions, on arm64 and x64. Native Windows and musl-based Linux are not supported; `curl`, `openssl`, and `shasum` or `sha256sum` are required. Before it trusts anything in the release manifest, it checks the manifest's signature against Mehen's release keys, then the binary's size and SHA-256 against that manifest. Its last line is a receipt, `mehen-install: {"v":1,"result":"installed","path":"/abs/path/mehen",...}`: use that `path` until a new shell has `mehen` on `PATH`. It writes one guarded `PATH` line for zsh and bash and gives advice for other shells, and never overwrites a file it does not own.
 
-The installer is for a machine with no `mehen` only. On a machine that has one, it says so and changes nothing unless a human forces it; an installed `mehen` verifies its own updates, and the installer cannot. Bring an installed one up to date with:
+The installer is for a machine with no `mehen` only. On a machine that has one, it says so and changes nothing unless a human forces it; an installed `mehen` verifies its own updates and refuses an older release, which the installer, with no record of earlier installs, cannot. Bring an installed one up to date with:
 
 ```sh
 mehen update --json
