@@ -46,7 +46,7 @@ Whatever is ticked, these ask every time:
 - anything in a managed or frozen workspace;
 - reveal, lease, fill, push, connect and enrolment, which a mandate is never asked about.
 
-A mandate is also only one of four things that let a held request through, and the last asked. A standing rule, task grant or posture that covers a request comes first, and that request is not a mandate use. When a request uses several credentials and one of them is covered by nothing, the request asks and nothing is spent.
+A mandate is also only one of five things that let a held request through, and the last asked. A standing rule, task grant, posture or the workspace's **Let it work** setting that covers a request comes first, and that request is not a mandate use. When a request uses several credentials and one of them is covered by nothing, the request asks and nothing is spent.
 
 ### What "never" means on a service nobody has reviewed
 
