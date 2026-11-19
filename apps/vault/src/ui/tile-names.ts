@@ -11,7 +11,8 @@ import type { BrandSlug, IconName } from "./icons.ts"
 // them), and Fathom (the meeting recorder), HeyGen, Groq, Postmark,
 // Firecrawl, Browserbase, Together AI and SerpApi are not in Simple Icons
 // (its "Fathom" is the analytics company), so they fall back to a letter
-// tile. Fly.io has no mark here yet and falls back the same way.
+// tile, as do Twilio and SendGrid, whose marks Simple Icons withdrew.
+// Fly.io has no mark here yet and falls back the same way.
 const BRAND_FOR: Record<string, BrandSlug> = {
   openai: "openai",
   anthropic: "anthropic",
@@ -21,6 +22,12 @@ const BRAND_FOR: Record<string, BrandSlug> = {
   "github-pat": "github",
   "github-oauth": "github",
   "github-oauth-client": "github",
+  gitlab: "gitlab",
+  pagerduty: "pagerduty",
+  jira: "jira",
+  discord: "discord",
+  figma: "figma",
+  pypi: "pypi",
   "slack-bot": "slack",
   "google-oauth-client": "google",
   "google-gmail": "gmail",
@@ -62,6 +69,12 @@ const BRAND_TITLES: Record<BrandSlug, string> = {
   googlecalendar: "Google Calendar",
   googledrive: "Google Drive",
   github: "GitHub",
+  gitlab: "GitLab",
+  pagerduty: "PagerDuty",
+  jira: "Jira",
+  discord: "Discord",
+  figma: "Figma",
+  pypi: "PyPI",
   openai: "OpenAI",
   anthropic: "Anthropic",
   cloudflare: "Cloudflare",

@@ -3,6 +3,12 @@
    both schemes; a black mark turns light in the dark scheme, and a pale
    one darkens in the light scheme, as the first marks do in app.css. */
 
+.brand-gitlab { color: #fc6d26; }
+.brand-pagerduty { color: #06ac38; }
+.brand-jira { color: light-dark(#0052cc, #4c9aff); }
+.brand-discord { color: #5865f2; }
+.brand-figma { color: #f24e1e; }
+.brand-pypi { color: light-dark(#3775a9, #7fb2e0); }
 .brand-snyk { color: light-dark(#4c4a73, #a9a6d8); }
 .brand-posthog { color: light-dark(#000000, #f0f0f0); }
 .brand-sentry { color: light-dark(#362d59, #b4a8e0); }
