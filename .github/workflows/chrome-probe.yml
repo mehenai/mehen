@@ -1,0 +1,54 @@
+name: chrome-probe
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: |
+          set -u
+          C=/usr/bin/google-chrome
+          "$C" --version
+          readlink -f "$C"
+          echo "uid $(id -u); DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unset}; XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}; DISPLAY=${DISPLAY:-unset}"
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true
+          ls -la /opt/google/chrome/chrome-sandbox 2>/dev/null || true
+          ls ~/.cache/fontconfig 2>/dev/null | head -3; echo "fontconfig cache entries: $(ls ~/.cache/fontconfig 2>/dev/null | wc -l)"
+          probe() {
+            name=$1; shift
+            p=$(mktemp -d); start=$(date +%s.%N)
+            "$C" --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run --no-default-browser-check "$@" --enable-logging=stderr --v=0 about:blank 2> "$p.err" &
+            pid=$!
+            while :; do
+              if [ -s "$p/DevToolsActivePort" ] && [ "$(wc -l < "$p/DevToolsActivePort")" -ge 1 ]; then break; fi
+              now=$(date +%s.%N); if [ "$(echo "$now - $start > 60" | bc)" = 1 ]; then echo "TIMEOUT"; break; fi
+              sleep 0.05
+            done
+            echo "== $name: $(echo "$(date +%s.%N) - $start" | bc) s"
+            kill $pid; wait $pid 2>/dev/null
+            sed -e 's/^/   /' "$p.err" | head -25
+            rm -rf "$p" "$p.err"
+          }
+          probe cold-1
+          probe warm-2
+          probe warm-3
+          probe password-store-basic --password-store=basic --use-mock-keychain
+          probe no-dbus-session --disable-features=MediaRouter
+          probe background-off --disable-background-networking --disable-component-update --disable-sync
+          probe all-flags --password-store=basic --use-mock-keychain --disable-background-networking --disable-component-update --disable-sync --no-proxy-server
+          DBUS_SESSION_BUS_ADDRESS=disabled: probe dbus-env-disabled
+          probe no-sandbox --no-sandbox
+          probe disable-gpu --disable-gpu
+      - name: strace a cold-profile start
+        run: |
+          sudo apt-get install -y -q strace >/dev/null 2>&1 || true
+          p=$(mktemp -d)
+          timeout 40 strace -f -tt -e trace=connect,openat,execve,wait4,poll,ppoll,epoll_wait,futex -o /tmp/st.txt /usr/bin/google-chrome --headless=new --remote-debugging-port=0 --user-data-dir="$p" --no-first-run about:blank 2>/dev/null &
+          for i in $(seq 1 600); do [ -s "$p/DevToolsActivePort" ] && break; sleep 0.05; done
+          echo "port file after $i polls"
+          sleep 1; kill %1 2>/dev/null; sleep 1
+          echo "connects:"; grep -E "connect\(" /tmp/st.txt | grep -v "ENOENT" | cut -c1-200 | head -40
+          echo "gaps over 1 s between consecutive lines:"
+          awk '{split($2,t,":"); s=t[1]*3600+t[2]*60+t[3]; if (prev && s-prev>1) print "GAP " s-prev " before: " substr($0,1,200); prev=s}' /tmp/st.txt | head -20
