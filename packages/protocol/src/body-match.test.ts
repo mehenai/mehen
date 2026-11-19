@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { bodyMatches, graphqlDocumentIsQuery, graphqlDocumentMayMutate, graphqlIsQuery, graphqlMayMutate, graphqlMutationRootFields, parseFormDataStrictly, parseJsonStrictly, type GraphqlMutationRefusal } from "./body-match.ts"
+import { ALLOW_BODY_MATCHERS, bodyMatches, graphqlDocumentIsQuery, graphqlDocumentMayMutate, graphqlIsQuery, graphqlMayMutate, graphqlMutationRootFields, parseFormDataStrictly, parseJsonStrictly, type GraphqlMutationRefusal } from "./body-match.ts"
 
 const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value))
 const text = (value: string) => new TextEncoder().encode(value)
@@ -389,5 +389,62 @@ describe("parseFormDataStrictly", () => {
   it("refuses an empty body and a null type", () => {
     expect(parseFormDataStrictly(new Uint8Array(), TYPE).ok).toBe(false)
     expect(parseFormDataStrictly(form(metadata), null).ok).toBe(false)
+  })
+})
+
+describe("the JSON field matchers", () => {
+  const unreadable: [string, Uint8Array | null][] = [
+    ["no body", null],
+    ["empty body", new Uint8Array()],
+    ["not JSON", text("model=x&tools=mcp")],
+    ["not UTF-8", new Uint8Array([0x7b, 0xff, 0x7d])],
+    ["a byte order mark", text('\uFEFF{"model":"x"}')],
+    ["an array", json([{ model: "x" }])],
+    ["a string", json("x")],
+    ["a repeated key", text('{"webhook":null,"webhook":"https://evil.test/hook","tools":[],"tools":[{"type":"mcp"}]}')],
+  ]
+
+  it("json-remote-mcp matches a body it cannot read as one JSON object", () => {
+    for (const [what, body] of unreadable) expect(bodyMatches("json-remote-mcp", body, ""), what).toBe(true)
+  })
+
+  it("json-remote-mcp matches an MCP tool or a server_url anywhere in the body, in any case", () => {
+    const cases: [string, unknown][] = [
+      ["an MCP tool", { model: "grok", input: "hi", tools: [{ type: "mcp", server_url: "https://evil.test/mcp", server_label: "x" }] }],
+      ["an MCP tool by connector", { model: "grok", tools: [{ type: "mcp", connector_id: "c1" }] }],
+      ["a server_url without a type", { model: "grok", tools: [{ server_url: "https://evil.test/mcp" }] }],
+      ["an upper-case type", { tools: [{ type: "MCP" }] }],
+      ["a key spelt in another case", { tools: [{ Server_URL: "https://evil.test/mcp" }] }],
+      ["a key spelt with an escape", text('{"tools":[{"\\u0074ype":"mcp"}]}')],
+      ["an MCP tool inside a batch request", { batch_requests: [{ batch_request: { responses: { model: "grok", tools: [{ type: "mcp", server_url: "https://evil.test" }] } } }] }],
+    ]
+    for (const [what, body] of cases) expect(bodyMatches("json-remote-mcp", body instanceof Uint8Array ? body : json(body), ""), what).toBe(true)
+  })
+
+  it("json-remote-mcp lets a request that names no remote MCP server by", () => {
+    expect(bodyMatches("json-remote-mcp", json({ model: "grok", input: "use the mcp tool, server_url is a word", tools: [{ type: "function", name: "lookup" }, { type: "web_search" }] }), "")).toBe(false)
+  })
+
+  it("json-remote-mcp matches anything nested deeper than it reads", () => {
+    let deep: unknown = { model: "grok" }
+    for (let i = 0; i < 100; i++) deep = { inner: deep }
+    expect(bodyMatches("json-remote-mcp", json(deep), "")).toBe(true)
+  })
+
+  it("json-webhook matches a body it cannot read, and a top-level webhook in any case", () => {
+    for (const [what, body] of unreadable) expect(bodyMatches("json-webhook", body, ""), what).toBe(true)
+    expect(bodyMatches("json-webhook", json({ version: "v1", input: {}, webhook: "https://evil.test/hook" }), "")).toBe(true)
+    expect(bodyMatches("json-webhook", json({ input: {}, WebHook: "https://evil.test/hook" }), "")).toBe(true)
+    expect(bodyMatches("json-webhook", json({ input: {}, webhook: null }), "")).toBe(true)
+  })
+
+  it("json-webhook lets a prediction with no webhook by, even when its input mentions one", () => {
+    expect(bodyMatches("json-webhook", json({ version: "v1", input: { prompt: "a webhook", webhook: "model input, not a callback" } }), "")).toBe(false)
+    expect(bodyMatches("json-webhook", json({ input: { prompt: "x" }, webhook_events_filter: ["completed"] }), "")).toBe(false)
+  })
+
+  it("is only for deny and approve rules", () => {
+    expect(ALLOW_BODY_MATCHERS.includes("json-remote-mcp")).toBe(false)
+    expect(ALLOW_BODY_MATCHERS.includes("json-webhook")).toBe(false)
   })
 })

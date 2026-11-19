@@ -133,3 +133,17 @@ describe("huggingface reads and review fixes", () => {
     ]) expect({ path, action: underBroadAllow(huggingface, "POST", `${HUB}${path}`) }).toEqual({ path, action: "deny" })
   })
 })
+
+describe("huggingface downloads", () => {
+  it("allows resolve downloads, an exemption the template states, while Xet token routes stay held whatever the item's policy says", () => {
+    for (const path of ["/acme/model/resolve/main/model.safetensors", "/datasets/acme/data/resolve/main/train.parquet", "/spaces/acme/space/resolve/main/app.py"]) {
+      expect({ path, policy: decide("GET", `${HUB}${path}`) }).toEqual({ path, policy: "allow" })
+      expect({ path, relay: underBroadAllow(huggingface, "GET", `${HUB}${path}`) }).toEqual({ path, relay: "allow" })
+    }
+    const note = huggingface.policy.rules.find((r) => r.action === "allow" && r.paths?.includes("/*/*/resolve/**"))?.note ?? ""
+    expect(note).toContain("signed")
+    for (const path of ["/api/models/acme/model/xet-read-token/main", "/api/datasets/acme/data/xet-write-token/main", "/api/buckets/acme/bucket/xet-read-token"]) {
+      expect({ path, relay: underBroadAllow(huggingface, "GET", `${HUB}${path}`) }).toEqual({ path, relay: "approve" })
+    }
+  })
+})

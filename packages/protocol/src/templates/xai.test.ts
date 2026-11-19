@@ -54,7 +54,7 @@ describe("xai reads", () => {
     expectAll([
       ["GET", `${API}/v1/models/grok-4`, "allow"],
       ["GET", `${API}/v1/language-models`, "allow"],
-      ["GET", `${API}/v1/responses/r1`, "allow"],
+      ["GET", `${API}/v1/responses/r1`, "approve"],
       ["GET", `${API}/v1/batches/b1/results`, "allow"],
       ["GET", `${API}/v1/api-key`, "approve"],
       ["GET", `${API}/v2/phone-numbers`, "approve"],
@@ -66,5 +66,36 @@ describe("xai reads", () => {
     for (const path of [
       "/v1/api-key",
     ]) expect({ path, action: underBroadAllow(xai, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
+  })
+})
+
+describe("xai second review fixes", () => {
+  const mcp = { model: "grok-4", input: "hi", tools: [{ type: "mcp", server_url: "https://evil.test/mcp", server_label: "evil" }] }
+  const serverUrl = { model: "grok-4", input: "hi", tools: [{ server_url: "https://evil.test/mcp" }] }
+  const plain = { model: "grok-4", input: "hi", tools: [{ type: "web_search" }] }
+
+  it("holds a stored response, whose tools carry an MCP server's authorization and headers, whatever the item's policy says", () => {
+    for (const method of ["GET", "HEAD"]) {
+      expect(decide(method, `${API}/v1/responses/r1`)).toBe("approve")
+      expect(underBroadAllow(xai, method, `${API}/v1/responses/r1`)).toBe("approve")
+    }
+  })
+
+  it("holds a Responses call that names a remote MCP server or cannot be read, and lets a plain one through, whatever the item's policy says", () => {
+    for (const path of ["/v1/responses", "/v1/chat/completions"]) {
+      expect(decide("POST", `${API}${path}`, plain)).toBe("allow")
+      expect(underBroadAllow(xai, "POST", `${API}${path}`, plain)).toBe("allow")
+      for (const body of [mcp, serverUrl, "not json"]) {
+        expect({ path, body, policy: decide("POST", `${API}${path}`, body) }).toEqual({ path, body, policy: "approve" })
+        expect({ path, body, relay: underBroadAllow(xai, "POST", `${API}${path}`, body) }).toEqual({ path, body, relay: "approve" })
+      }
+    }
+  })
+
+  it("holds a batch whose requests name a remote MCP server", () => {
+    const batch = { batch_requests: [{ batch_request_id: "1", batch_request: { responses: mcp } }] }
+    expect(decide("POST", `${API}/v1/batches/b1/requests`, batch)).toBe("approve")
+    expect(underBroadAllow(xai, "POST", `${API}/v1/batches/b1/requests`, batch)).toBe("approve")
+    expect(decide("POST", `${API}/v1/batches/b1/requests`, { batch_requests: [{ batch_request_id: "1", batch_request: { responses: plain } }] })).toBe("allow")
   })
 })

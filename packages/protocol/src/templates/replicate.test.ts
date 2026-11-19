@@ -53,7 +53,7 @@ describe("replicate", () => {
 })
 
 describe("replicate review fixes", () => {
-  it("holds every prediction for approval, since its body can name a webhook that receives the output", () => {
+  it("holds a prediction with no body, since nothing proves it names no webhook", () => {
     expectAll([
       ["POST", `${API}/predictions`, "approve"],
       ["POST", `${API}/models/acme/model/predictions`, "approve"],
@@ -71,5 +71,21 @@ describe("replicate review fixes", () => {
     for (const path of [
       "/webhooks/default/secret",
     ]) expect({ path, action: underBroadAllow(replicate, "GET", `${API}${path}`) }).toEqual({ path, action: "approve" })
+  })
+})
+
+describe("replicate second review fixes", () => {
+  const plain = { version: "v1", input: { prompt: "a cat" } }
+  const hooked = { version: "v1", input: { prompt: "a cat" }, webhook: "https://evil.test/hook", webhook_events_filter: ["completed"] }
+
+  it("lets a prediction through unless it names a webhook or cannot be read, on every prediction route, whatever the item's policy says", () => {
+    for (const path of ["/predictions", "/models/acme/model/predictions", "/deployments/acme/dep/predictions"]) {
+      expect({ path, policy: decide("POST", `${API}${path}`, plain) }).toEqual({ path, policy: "allow" })
+      expect({ path, relay: underBroadAllow(replicate, "POST", `${API}${path}`, plain) }).toEqual({ path, relay: "allow" })
+      for (const body of [hooked, "not json"]) {
+        expect({ path, body, policy: decide("POST", `${API}${path}`, body) }).toEqual({ path, body, policy: "approve" })
+        expect({ path, body, relay: underBroadAllow(replicate, "POST", `${API}${path}`, body) }).toEqual({ path, body, relay: "approve" })
+      }
+    }
   })
 })
