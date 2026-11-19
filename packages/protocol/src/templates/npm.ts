@@ -33,6 +33,7 @@ export const npm: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "NPM_TOKEN",
   check: { method: "GET", path: "/-/whoami" },
   fields: { key: { label: "Access token", pattern: "^npm_" } },
   prefixes: ["npm_"],

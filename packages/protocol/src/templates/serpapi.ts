@@ -14,5 +14,6 @@ export const serpapi: Template = {
   injection: { in: "query", name: "api_key", field: "key" },
   policy: { default: "approve", rules: [{ ...ALLOW_READS, note: "searches" }] },
   ceiling: "placeholder",
+  defaultEnvVar: "SERPAPI_KEY",
   fields: { key: { label: "API key" } },
 }

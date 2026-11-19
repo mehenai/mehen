@@ -116,6 +116,7 @@ function templateDetail(template: Template, callback: string): string[] {
   if (template.kind === "oauth-client") lines.push(detail("redirect URI", `${callback}   (the OAuth client at the provider must list this)`))
   lines.push(detail("goes to", goesTo(template)))
   if (template.injection) lines.push(detail("injection", injectionText(template.injection)))
+  if (template.defaultEnvVar) lines.push(detail("env variable", template.defaultEnvVar))
   lines.push(detail("ceiling", template.ceiling))
   lines.push(...policyDetail(templateSummary(template.policy)))
   lines.push(detail("request", `mehen request ${template.kind} --name <slug> --provider ${template.id} --reason "<why>"`))
@@ -205,7 +206,7 @@ export function templatesJson(callback: string, id: string | undefined, surface:
   if (id === undefined) {
     return {
       categories: TEMPLATE_CATEGORIES,
-      templates: Object.values(TEMPLATES).map((t) => ({ ...t, policySummary: templateSummary(t.policy) })),
+      templates: Object.values(TEMPLATES).map((t) => ({ ...t, defaultEnvVar: t.defaultEnvVar ?? null, policySummary: templateSummary(t.policy) })),
       oauthProviders: Object.values(OAUTH_PROVIDERS).map((p) => ({ ...p, policy: connectionPolicy(p), policySummary: templateSummary(connectionPolicy(p)) })),
       redirectUri: callback,
     }
@@ -213,7 +214,7 @@ export function templatesJson(callback: string, id: string | undefined, surface:
   const found = templateOrProvider(id, surface)
   if ("template" in found) {
     const { template } = found
-    return { type: "template", ...template, ...(template.kind === "oauth-client" ? { redirectUri: callback } : {}), policySummary: templateSummary(template.policy) }
+    return { type: "template", ...template, defaultEnvVar: template.defaultEnvVar ?? null, ...(template.kind === "oauth-client" ? { redirectUri: callback } : {}), policySummary: templateSummary(template.policy) }
   }
   const policy = connectionPolicy(found.provider)
   return { type: "oauth-provider", ...found.provider, policy, redirectUri: callback, policySummary: templateSummary(policy) }

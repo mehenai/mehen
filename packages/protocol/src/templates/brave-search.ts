@@ -13,5 +13,6 @@ export const braveSearch: Template = {
   injection: { in: "header", name: "X-Subscription-Token", format: "{key}" },
   policy: { default: "approve", rules: [{ ...ALLOW_READS, note: "searches" }] },
   ceiling: "placeholder",
+  defaultEnvVar: "BRAVE_API_KEY",
   fields: { key: { label: "API key" } },
 }

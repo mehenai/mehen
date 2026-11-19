@@ -39,6 +39,7 @@ export const snyk: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "SNYK_TOKEN",
   fields: { key: { label: "API token" } },
   setup: {
     title: "In Snyk",

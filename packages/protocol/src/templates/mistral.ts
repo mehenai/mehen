@@ -47,6 +47,7 @@ export const mistral: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "MISTRAL_API_KEY",
   check: { method: "GET", path: "/v1/models" },
   fields: { key: { label: "API key" } },
 }

@@ -8,6 +8,7 @@ import type { ItemKind } from "./kinds.ts"
 export type EnvNameTemplate = { template: string; kind: ItemKind; field: string }
 
 const key = (template: string): EnvNameTemplate => ({ template, kind: "api-key", field: "key" })
+const basic = (template: string, field: "username" | "password"): EnvNameTemplate => ({ template, kind: "basic-auth", field })
 const oauthClient = (template: string, field: "client_id" | "client_secret"): EnvNameTemplate => ({ template, kind: "oauth-client", field })
 
 // Exact variable names, as the provider's own docs and SDKs spell them.
@@ -30,14 +31,22 @@ export const ENV_NAME_TEMPLATES: Readonly<Record<string, EnvNameTemplate>> = {
   GROQ_API_KEY: key("groq"),
   OPENROUTER_API_KEY: key("openrouter"),
   TOGETHER_API_KEY: key("together"),
+  DEEPSEEK_API_KEY: key("deepseek"),
+  XAI_API_KEY: key("xai"),
+  HF_TOKEN: key("huggingface"),
+  HUGGING_FACE_HUB_TOKEN: key("huggingface"),
+  REPLICATE_API_TOKEN: key("replicate"),
   OLLAMA_API_KEY: key("ollama-cloud"),
   SNYK_TOKEN: key("snyk"),
   VERCEL_TOKEN: key("vercel"),
   FLY_API_TOKEN: key("fly"),
+  RAILWAY_API_TOKEN: key("railway"),
+  RENDER_API_KEY: key("render"),
   NPM_TOKEN: key("npm"),
   NOTION_API_KEY: key("notion"),
   NOTION_TOKEN: key("notion"),
   GITBOOK_API_TOKEN: key("gitbook"),
+  GITBOOK_TOKEN: key("gitbook"),
   FATHOM_API_KEY: key("fathom"),
   SENTRY_AUTH_TOKEN: key("sentry"),
   POSTHOG_PERSONAL_API_KEY: key("posthog"),
@@ -46,6 +55,12 @@ export const ENV_NAME_TEMPLATES: Readonly<Record<string, EnvNameTemplate>> = {
   HCLOUD_TOKEN: key("hetzner-cloud"),
   SCW_SECRET_KEY: key("scaleway"),
   NEON_API_KEY: key("neon"),
+  SUPABASE_ACCESS_TOKEN: key("supabase"),
+  PLANETSCALE_SERVICE_TOKEN: basic("planetscale", "password"),
+  PLANETSCALE_SERVICE_TOKEN_ID: basic("planetscale", "username"),
+  UPSTASH_API_KEY: basic("upstash", "password"),
+  UPSTASH_EMAIL: basic("upstash", "username"),
+  DIGITALOCEAN_ACCESS_TOKEN: key("digitalocean"),
   HUBSPOT_ACCESS_TOKEN: key("hubspot-private-app"),
   INTERCOM_ACCESS_TOKEN: key("intercom"),
   RESEND_API_KEY: key("resend"),
@@ -54,6 +69,7 @@ export const ENV_NAME_TEMPLATES: Readonly<Record<string, EnvNameTemplate>> = {
   BRAVE_API_KEY: key("brave-search"),
   BRAVE_SEARCH_API_KEY: key("brave-search"),
   SERPAPI_API_KEY: key("serpapi"),
+  SERPAPI_KEY: key("serpapi"),
   SEMRUSH_API_KEY: key("semrush"),
   FIRECRAWL_API_KEY: key("firecrawl"),
   BROWSERBASE_API_KEY: key("browserbase"),

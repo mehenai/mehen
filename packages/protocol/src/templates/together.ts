@@ -35,6 +35,7 @@ export const together: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "TOGETHER_API_KEY",
   check: { method: "GET", path: "/v1/models" },
   fields: { key: { label: "API key" } },
 }

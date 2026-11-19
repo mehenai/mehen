@@ -26,6 +26,7 @@ export const anthropic: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "ANTHROPIC_API_KEY",
   check: { method: "GET", path: "/v1/models", headers: [["anthropic-version", "2023-06-01"]] },
   fields: { key: { label: "API key", pattern: "^sk-ant-" } },
   prefixes: ["sk-ant-api03-", "sk-ant-"],

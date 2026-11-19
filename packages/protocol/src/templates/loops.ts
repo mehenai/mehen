@@ -21,5 +21,6 @@ export const loops: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "LOOPS_API_KEY",
   fields: { key: { label: "API key" } },
 }

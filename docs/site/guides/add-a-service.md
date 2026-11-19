@@ -32,7 +32,7 @@ Every template is reviewed against the same rules before it is merged. Check you
 4. **The header the service documents.** A query parameter only when the service accepts nothing else.
 5. **Reads pass, everything else waits.** `GET` and `HEAD` go through, except a read that hands back another secret (a database password, a decrypted variable), which needs an approval. Every other method needs an approval by default. A few narrow everyday writes may be allowed, each with a note saying why that is safe enough.
 6. **The worst routes are refused or held.** Anything that sends mail or data elsewhere for good, gives someone else access, mints tokens, creates keys, webhooks or app registrations, or moves money needs an approval or is refused. A request an approval card could not show honestly (a batch, or sending something stored by id that could change after the approval) is refused, with a note naming the alternative.
-7. **The lowest ceiling that works.** `placeholder` for keys an SDK reads from the environment, `relay` for any other HTTP API. A template never lets a machine read the value by default.
+7. **The lowest ceiling that works.** `placeholder` for keys an SDK reads from the environment, `relay` for any other HTTP API. A template never lets a machine read the value by default. Where the service documents the environment variable its SDK or CLI reads the key from, the template names it as `defaultEnvVar`, so `mehen templates --json` shows it; never an invented one.
 8. **Public prefixes only.** A prefix is the documented start every key shares, such as `sk_live_`, never characters that would narrow a guess at the rest.
 9. **No new kinds.** A template uses one of the existing credential kinds. A new kind is a separate review.
 

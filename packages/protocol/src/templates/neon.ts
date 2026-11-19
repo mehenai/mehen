@@ -51,6 +51,7 @@ export const neon: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "NEON_API_KEY",
   check: { method: "GET", path: "/api/v2/users/me" },
   fields: { key: { label: "API key" } },
   setup: {

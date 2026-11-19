@@ -49,6 +49,7 @@ export const openai: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "OPENAI_API_KEY",
   check: { method: "GET", path: "/v1/models" },
   fields: { key: { label: "API key", pattern: "^sk-" } },
   prefixes: ["sk-proj-", "sk-"],

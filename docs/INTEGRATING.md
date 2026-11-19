@@ -46,6 +46,7 @@ type Template = {
   policy: PolicyInput                // allow, approve, deny; deny over approve over allow
   ceiling: Mode                      // the ceiling for items made from it
   fields: Record<string, FieldHint>  // label, hint, pattern, multiline per field
+  defaultEnvVar?: string             // the variable the provider's SDK or CLI reads it from, where the provider documents one
   prefixes?: string[]                // well-known value prefixes; the intake form warns when missing
   setup?: Setup                      // numbered steps the intake page shows, where making the key is not obvious
 }
@@ -104,7 +105,8 @@ Where a request's meaning is in its body (GraphQL), a rule names a body matcher 
 5. **The policy follows the model above.** Every explicitly allowed write is narrow and has a `note`. Anything that creates persistence or moves money, mail or credentials is `approve` or `deny`: SSH and deploy keys, webhooks, token minting, mail forwarding, filters and send-as, mailbox rules, app registrations, collaborators and invitations, Actions secrets, payouts, refunds, transfers, every token endpoint. Anything an approval card could not show honestly is `deny`, with a note naming the alternative.
 6. **The lowest ceiling that works.** `placeholder` for keys SDKs read from the environment, `relay` for anything else HTTP, never `lease` or `reveal` by default for an HTTP API.
 7. **Prefixes are public, well-known prefixes only** (`sk-proj-`, `ghp_`), never characters that would narrow a guess at the secret. If a prefix is new, also add it to `KNOWN_PREFIXES` in `placeholder.ts` so placeholders keep the shape SDKs check for. Template prefixes also feed the check that refuses secret-looking plain variables.
-8. **No new kinds by template.** If no kind fits, adding one is a separate code review of `kinds.ts`.
+8. **A default environment variable only where the provider documents one.** `defaultEnvVar` names the variable the provider's own SDK or CLI reads the credential from (`OPENAI_API_KEY`, `HF_TOKEN`), and is also listed in `ENV_NAME_TEMPLATES` (`adopt-names.ts`) for the field the relay sends. Leave it out rather than invent one.
+9. **No new kinds by template.** If no kind fits, adding one is a separate code review of `kinds.ts`.
 
 ### Tests
 

@@ -247,6 +247,15 @@ describe("every template and provider, checked the same way", () => {
     }
   })
 
+  it("names a default environment variable only for a credential the relay sends, as an upper-case shell name", () => {
+    for (const t of Object.values(TEMPLATES)) {
+      if (t.defaultEnvVar === undefined) continue
+      expect({ id: t.id, name: t.defaultEnvVar, valid: /^[A-Z][A-Z0-9_]{1,63}$/.test(t.defaultEnvVar) }).toEqual({ id: t.id, name: t.defaultEnvVar, valid: true })
+      expect({ id: t.id, client: t.kind === "oauth-client", injects: t.injection !== null }).toEqual({ id: t.id, client: false, injects: true })
+    }
+    expect([TEMPLATES.openai?.defaultEnvVar, TEMPLATES.anthropic?.defaultEnvVar, TEMPLATES["github-pat"]?.defaultEnvVar, TEMPLATES.stripe?.defaultEnvVar]).toEqual(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "STRIPE_API_KEY"])
+  })
+
   it("keeps every placeholder template's prefixes in the placeholder list, so a placeholder has the shape an SDK checks", () => {
     for (const t of Object.values(TEMPLATES).filter((x) => x.ceiling === "placeholder")) {
       for (const prefix of t.prefixes ?? []) expect({ id: t.id, prefix, kept: secretPrefix(`${prefix}0123456789abcdef`) }).toEqual({ id: t.id, prefix, kept: prefix })

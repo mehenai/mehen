@@ -28,6 +28,8 @@ import { betterstackUptime } from "./templates/betterstack-uptime.ts"
 import { braveSearch } from "./templates/brave-search.ts"
 import { browserbase } from "./templates/browserbase.ts"
 import { cloudflareApiToken } from "./templates/cloudflare-api-token.ts"
+import { deepseek } from "./templates/deepseek.ts"
+import { digitalocean } from "./templates/digitalocean.ts"
 import { elevenlabs } from "./templates/elevenlabs.ts"
 import { fathom } from "./templates/fathom.ts"
 import { firecrawl } from "./templates/firecrawl.ts"
@@ -45,6 +47,7 @@ import { groq } from "./templates/groq.ts"
 import { hetznerCloud } from "./templates/hetzner-cloud.ts"
 import { heygen } from "./templates/heygen.ts"
 import { hubspotPrivateApp } from "./templates/hubspot-private-app.ts"
+import { huggingface } from "./templates/huggingface.ts"
 import { intercom } from "./templates/intercom.ts"
 import { linear } from "./templates/linear.ts"
 import { loops } from "./templates/loops.ts"
@@ -57,8 +60,12 @@ import { npm } from "./templates/npm.ts"
 import { ollamaCloud } from "./templates/ollama-cloud.ts"
 import { openai } from "./templates/openai.ts"
 import { openrouter } from "./templates/openrouter.ts"
+import { planetscale } from "./templates/planetscale.ts"
 import { posthog } from "./templates/posthog.ts"
 import { postmarkServer } from "./templates/postmark-server.ts"
+import { railway } from "./templates/railway.ts"
+import { render } from "./templates/render.ts"
+import { replicate } from "./templates/replicate.ts"
 import { resend } from "./templates/resend.ts"
 import { scaleway } from "./templates/scaleway.ts"
 import { semrush } from "./templates/semrush.ts"
@@ -67,8 +74,11 @@ import { serpapi } from "./templates/serpapi.ts"
 import { slackBot } from "./templates/slack-bot.ts"
 import { snyk } from "./templates/snyk.ts"
 import { stripe } from "./templates/stripe.ts"
+import { supabase } from "./templates/supabase.ts"
 import { together } from "./templates/together.ts"
+import { upstash } from "./templates/upstash.ts"
 import { vercel } from "./templates/vercel.ts"
+import { xai } from "./templates/xai.ts"
 
 export { CLIENT_SETUP_CALLBACK } from "./templates/shared.ts"
 
@@ -127,6 +137,10 @@ export type Template = {
   policy: PolicyInput
   ceiling: Mode
   fields: Record<string, FieldHint>
+  // The environment variable the provider's own SDK or CLI reads this
+  // credential from, where the provider documents one, so `mehen run` can
+  // put the placeholder there without being told.
+  defaultEnvVar?: string
   // Well-known value prefixes; the intake form warns when a value lacks one.
   prefixes?: string[]
   // A cheap read-only call that proves an item works (`mehen adopt verify`),
@@ -153,10 +167,16 @@ export const TEMPLATES: Record<string, Template> = {
   groq,
   openrouter,
   together,
+  deepseek,
+  xai,
+  huggingface,
+  replicate,
   "ollama-cloud": ollamaCloud,
   snyk,
   vercel,
   fly,
+  railway,
+  render,
   npm,
   notion,
   gitbook,
@@ -167,6 +187,10 @@ export const TEMPLATES: Record<string, Template> = {
   "hetzner-cloud": hetznerCloud,
   scaleway,
   neon,
+  supabase,
+  planetscale,
+  upstash,
+  digitalocean,
   "hubspot-private-app": hubspotPrivateApp,
   intercom,
   resend,
