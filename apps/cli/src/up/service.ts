@@ -156,19 +156,22 @@ function launchdState(answer: { code: number | null; out: string }): JobState {
   return { state: "unknown", detail: answer.out || `exit ${answer.code ?? "after its time ran out"}` }
 }
 
-// systemctl show -p LoadState -p ActiveState: inactive or failed is
-// stopped, not-found is not there at all; active and every transition
-// (activating, deactivating, reloading, refreshing) is still there; a
-// failed query (the user bus unreachable) or an unknown word is no answer.
+// systemctl show -p LoadState -p ActiveState. ActiveState decides first:
+// active and every transition (activating, deactivating, reloading,
+// refreshing) is still there whatever LoadState says, since a unit whose
+// file was removed and reloaded can run on as not-found. Only inactive or
+// failed is gone, and `loaded` says whether systemd still knows the unit.
+// A failed query (the user bus unreachable) or an unknown word is no
+// answer.
+const SYSTEMD_RUNNING = ["active", "activating", "deactivating", "reloading", "refreshing"]
 export function systemdState(answer: { code: number | null; out: string }): JobState & { loaded: boolean } {
   const field = (name: string) => new RegExp(`^${name}=(.*)$`, "m").exec(answer.out)?.[1]?.trim()
   const load = field("LoadState")
   const active = field("ActiveState")
   if (answer.code !== 0 || load === undefined || active === undefined) return { state: "unknown", detail: answer.out || `exit ${answer.code ?? "after its time ran out"}`, loaded: true }
-  if (load === "not-found") return { state: "gone", detail: "not found", loaded: false }
-  if (active === "inactive" || active === "failed") return { state: "gone", detail: active, loaded: true }
-  if (["active", "activating", "deactivating", "reloading", "refreshing"].includes(active)) return { state: "there", detail: active, loaded: true }
-  return { state: "unknown", detail: `ActiveState=${active}`, loaded: true }
+  if (SYSTEMD_RUNNING.includes(active)) return { state: "there", detail: `${active}${load === "loaded" ? "" : `, ${load}`}`, loaded: true }
+  if (active === "inactive" || active === "failed") return { state: "gone", detail: load === "not-found" ? "not found" : active, loaded: load !== "not-found" }
+  return { state: "unknown", detail: `ActiveState=${active}, LoadState=${load}`, loaded: true }
 }
 
 // Asks until the job is gone or the budget is spent; the last answer wins.

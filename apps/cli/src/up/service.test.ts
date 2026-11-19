@@ -4,7 +4,7 @@ import { CliError } from "../errors.ts"
 import { errorJson, errorLines } from "../output.ts"
 import { tempDir } from "../testing/run-mehen.ts"
 import { plainText, segments, styler } from "../tty.ts"
-import { isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, defaultRunner, installService, serviceEnvironment, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
+import { isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, defaultRunner, installService, serviceEnvironment, systemdState, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
 import { openerFor } from "./browser.ts"
 import { custodyLine, enrolContext, enrolLines, textLines, timedOut } from "./index.ts"
 import { keyringAdvice } from "../local-vault.ts"
@@ -305,6 +305,31 @@ describe("removing and reinstalling the service waits for the job to stop, and n
     expect(existsSync(systemdPath(home.path, env))).toBe(true)
     const absent = machine({ "systemctl --user disable": () => ({ code: 1, out: "Unit file mehen-vault.service does not exist." }), "systemctl --user show": () => state("not-found", "inactive") })
     expect(removeService("systemd", "/data", home.path, env, absent)).toEqual([])
+  })
+
+  test("systemd: ActiveState decides before LoadState; a running unit whose file is gone is still there", () => {
+    const of = (load: string, active: string) => systemdState(state(load, active)).state
+    for (const active of ["active", "activating", "deactivating", "reloading", "refreshing"]) {
+      expect({ active, state: of("not-found", active) }).toEqual({ active, state: "there" })
+      expect({ active, state: of("loaded", active) }).toEqual({ active, state: "there" })
+    }
+    expect(of("not-found", "inactive")).toBe("gone")
+    expect(of("not-found", "failed")).toBe("gone")
+    expect(of("loaded", "inactive")).toBe("gone")
+    expect(of("not-found", "maintenance")).toBe("unknown")
+    expect(of("masked", "inactive")).toBe("gone")
+    expect(of("bad-setting", "something-new")).toBe("unknown")
+  })
+
+  test("systemd: a unit still running after its file was removed and reloaded is not removed, and its record stays", async () => {
+    home = await tempDir()
+    const env = { XDG_CONFIG_HOME: home.path }
+    await Bun.write(systemdPath(home.path, env), "unit")
+    const m = machine({ "systemctl --user disable": () => ({ code: 1, out: "Unit file mehen-vault.service does not exist." }), "systemctl --user show": () => state("not-found", "active") })
+    const problems = removeService("systemd", "/data", home.path, env, m)
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain("does not exist")
+    expect(existsSync(systemdPath(home.path, env))).toBe(true)
   })
 
   test("the wait is a wall-clock deadline: each command gets only what is left of it, the stop included", async () => {
