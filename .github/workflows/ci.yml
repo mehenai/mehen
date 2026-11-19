@@ -23,16 +23,21 @@ jobs:
       # Linux's /tmp is one; macOS gives each user a private TMPDIR. Tests make
       # their config directories with tmpdir(), so point it at the runner's own.
       - run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
-      # A fresh runner reads each block of its disk slowly the first time
-      # (20 to 60 MB/s), so a first Chrome start, which reads about 450 MB,
-      # took 0.6 to 25 s; once Chrome's files have been read it takes 0.3 s.
-      # Read them in the background while the job sets up (tools/ci/chrome.ts).
-      - name: Read Chrome from disk in the background
-        run: nohup sh -c 'for c in google-chrome chromium; do p=$(command -v "$c") && find -L "$(dirname "$(readlink -f "$p")")" -type f -exec cat {} +; done' > /dev/null 2>&1 &
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      # A fresh runner reads each block of its disk slowly the first time
+      # (20 to 60 MB/s), so a first Chrome start, which reads about 450 MB,
+      # took 0.6 to 25 s; once Chrome's files have been read it takes 0.3 s.
+      # Read the browser's own installation directory (never a wrapper's,
+      # such as /usr/bin) in the background while the job sets up
+      # (tools/ci/chrome.ts, tools/ci/warm-chrome.ts).
+      - name: Read Chrome from disk in the background
+        run: |
+          for c in google-chrome chromium; do
+            if p=$(command -v "$c"); then nohup bun tools/ci/warm-chrome.ts "$p" > /dev/null 2>&1 & fi
+          done
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       # Many CLI tests start the real mehen several times over; on a two-core
@@ -84,7 +89,7 @@ jobs:
             if p="$(command -v "$c")"; then
               echo "Using $p"
               echo "path=$p" >> "$GITHUB_OUTPUT"
-              nohup find -L "$(dirname "$(readlink -f "$p")")" -type f -exec cat {} + > /dev/null 2>&1 &
+              nohup bun tools/ci/warm-chrome.ts "$p" > /dev/null 2>&1 &
               exit 0
             fi
           done
