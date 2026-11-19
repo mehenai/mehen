@@ -1504,6 +1504,60 @@ it("a dead connection reaches the agent with a pinned reconnect link to wait on,
   })
 })
 
+// Needs you, as the inbox serves it: the dead connection's one Reconnect
+// row opens the agent's open reconnect link, and signing in there ends the
+// machine's wait. Without an agent's link, the row opens the item's page.
+it("Needs you's Reconnect row opens the agent's reconnect link, and signing in there completes the machine's wait", async () => {
+  const { authoriseWorkspaceRelay } = await import("../src/vault/areas/relay-workspace.ts")
+  const { workspacePendingOps } = await import("../src/vault/areas/pending-workspace.ts")
+  const { deviceInvocation, devicePrincipal } = await import("./credentials-test-support.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const item = await connected(ctx)
+    const reconnectRows = () => (workspacePendingOps["pending.inbox"]!.handler(ctx, memberPrincipal(ctx), { enrolments: [] }, memberInvocation(ctx)) as { items: { kind: string; href: string; action: string; ask?: { view: string; detail?: { kind: string } } }[] }).items.filter((r) => r.kind === "ask" && r.ask?.view === "detail" && r.ask.detail?.kind === "reconnect").map((r) => ({ href: r.href, action: r.action }))
+    ctx.sql.exec("UPDATE items SET status='needs_reauth' WHERE id=?", item.id)
+    expect(reconnectRows()).toEqual([{ href: "/w/work/items/gmail-test", action: "reconnect" }])
+    ctx.sql.exec("UPDATE items SET status='active' WHERE id=?", item.id)
+    ctx.sql.exec("UPDATE devices SET scope=json_set(scope,'$.modes',json('[\"relay\"]')) WHERE id='dev_admin'")
+    ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
+    setUpstreamFetch(async (req) => req.url.includes("oauth2") ? Response.json({ error: "invalid_grant" }, { status: 400 }) : new Response("unexpected", { status: 500 }))
+    await authoriseWorkspaceRelay(ctx, devicePrincipal("dev_admin"), { item: item.slug, method: "GET", url: "https://gmail.googleapis.com/gmail/v1/users/me/profile", headers: [] }, await deviceInvocation(ctx, "dev_admin")).catch((e: unknown) => { if (!(e instanceof VaultError)) throw e })
+    const con = ctx.sql.exec<{ id: string }>("SELECT id FROM workspace_credential_requests WHERE kind='connect' AND status='open' AND requester_device='dev_admin'").toArray()[0]!.id
+    expect(reconnectRows()).toEqual([{ href: `/w/work/c/${con}`, action: "reconnect" }])
+    // The person signs in from that page: the agent's own connect.
+    const p = memberPrincipal(ctx), i = memberInvocation(ctx)
+    const action = WorkspaceStepUpActionSchema.parse(workspaceOAuthOps["oauth.connect_action"].handler(ctx, p, { connect: con }, i))
+    await startWorkspaceConnect(ctx, p, { connect: con, state: "state-reconnect-123456" }, memberInvocation(ctx, "owner", action))
+    upstream()
+    await finishWorkspaceConnect(ctx, p, { connect: con, state: "state-reconnect-123456", code: "code-again", error: null }, i)
+    const status = await workspaceOAuthOps["oauth.connectStatus"].handler(ctx, devicePrincipal("dev_admin"), { connect: con }, await deviceInvocation(ctx, "dev_admin"))
+    expect(status).toMatchObject({ connect: con, status: "completed" })
+    expect(reconnectRows()).toEqual([])
+  })
+})
+
+it("a Reconnect row takes only this vault's own connect page in this workspace as the agent's link", async () => {
+  const { agentReconnectPath } = await import("../src/vault/areas/pending-workspace.ts")
+  const work = { id: "ten_x", slug: "work", name: "Work" }, origin = "https://vault.test"
+  expect(agentReconnectPath(origin, work, "https://vault.test/w/work/c/con_abc123")).toBe("/w/work/c/con_abc123")
+  for (const link of [
+    "https://evil.test/w/work/c/con_abc123",
+    "http://vault.test/w/work/c/con_abc123",
+    "https://vault.test:8443/w/work/c/con_abc123",
+    "https://user@vault.test/w/work/c/con_abc123",
+    "https://vault.test/w/other/c/con_abc123",
+    "https://vault.test/w/work/items/gmail-test",
+    "https://vault.test/w/work/c/con_abc123/next",
+    "https://vault.test/w/work/c/con_abc123?go=https://evil.test",
+    "https://vault.test/w/work/c/con_abc123#x",
+    "https://vault.test/w/work/c/con_a%2Fb",
+    "https://vault.test/w/work/c/../items/gmail-test",
+    "https://vault.test/w/work/c/int_abc123",
+    "/w/work/c/con_abc123",
+    "not a url",
+  ]) expect([link, agentReconnectPath(origin, work, link)]).toEqual([link, null])
+})
+
 // A person who opens a connection's page and saves its settings after the
 // vault renewed its token is not refused: a renewal moves its version, not
 // what the person saw. A reconnect still refuses.
