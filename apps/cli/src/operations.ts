@@ -920,7 +920,8 @@ export async function readLimited(response: Response, limit: number, method = "G
         chunks.push(chunk.subarray(0, limit - total))
         total = limit
         truncated = true
-        await reader.cancel()
+        // Best effort: the part kept and its warning stand either way.
+        await reader.cancel().catch(() => {})
         break
       }
       chunks.push(chunk)

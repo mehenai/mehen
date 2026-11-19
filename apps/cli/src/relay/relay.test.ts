@@ -254,6 +254,39 @@ describe("intercepted hosts", () => {
     }
   })
 
+  test("a write whose ordinary answer breaks while the relay reads it reaches the program as a complete 424 with both no-retry headers", async () => {
+    let calls = 0
+    api.relayHandler = () => {
+      calls++
+      let pulled = 0
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled++
+          if (pulled === 1) return controller.enqueue(new TextEncoder().encode('{"id":'))
+          controller.error(new Error("relay response too large"))
+        },
+      }), { headers: { "Mehen-Upstream": "1", "content-type": "application/json" } })
+    }
+    try {
+      // A client that resends on any answer it could not read, as Gaxios does.
+      let sent = 0, response: Response | null = null
+      for (let attempt = 0; attempt < 3 && response === null; attempt++) {
+        sent++
+        try {
+          const answered = await withTimeout(fetch(`https://${INTERCEPT}/upload`, { method: "PUT", body: "x", proxy: relay.proxyUrl, tls: { ca: ca.certPem } }), 5000, "put")
+          await answered.clone().arrayBuffer()
+          response = answered
+        } catch { /* a no-response error: retry */ }
+      }
+      expect([sent, calls]).toEqual([1, 1])
+      expect(response!.status).toBe(424)
+      expect([response!.headers.get("x-should-retry"), response!.headers.get("stripe-should-retry")]).toEqual(["false", "false"])
+      expect(((await response!.json()) as { error: string }).error).toBe("outcome_unknown")
+    } finally {
+      api.relayHandler = (request) => Response.json({ echoed: request }, { headers: { "Mehen-Upstream": "1" } })
+    }
+  })
+
   test("a streamed answer that breaks after its first chunk reaches the program as an incomplete body, never a clean end, and is not buffered", async () => {
     for (const method of ["POST", "GET"]) {
       let pulled = 0, release = () => {}

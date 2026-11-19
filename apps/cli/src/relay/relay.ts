@@ -172,6 +172,45 @@ function writeOutcomeUnknown(error: unknown): error is Error {
   return error instanceof VaultApiError && error.body.error === "upstream_failed"
 }
 
+// A write's 424: it may have taken effect, and SDKs leave a 424 alone.
+function outcomeUnknownAnswer(message: string): Response {
+  return new Response(JSON.stringify(errorBody(outcomeUnknown(message))), {
+    status: 424,
+    headers: { "content-type": "application/json", [ERROR_HEADER]: "1", "x-should-retry": "false", "stripe-should-retry": "false" },
+  })
+}
+
+// Answers that are streams by nature, passed on as they come: buffering an
+// LLM's server-sent events would hold them all until the end.
+const STREAMING_TYPES: ReadonlySet<string> = new Set(["text/event-stream", "application/x-ndjson", "application/jsonl"])
+const streamingAnswer = (response: Response): boolean => STREAMING_TYPES.has((response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase())
+// The vault's own response limit (relay/forward.ts MAX_RELAY_RESPONSE_BYTES).
+const MAX_WRITE_ANSWER_BYTES = 32 * 1024 * 1024
+
+// A write's answer, read in full before its head goes to the program, so a
+// body that breaks is still a complete 424 no client resends on its own,
+// where a reset mid-body is one some transports retry.
+async function completeWriteAnswer(response: Response): Promise<Response> {
+  if (response.body === null) return response
+  const chunks: Uint8Array[] = []
+  let total = 0
+  const reader = response.body.getReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.length
+      if (total > MAX_WRITE_ANSWER_BYTES) throw new Error(`the answer is larger than ${MAX_WRITE_ANSWER_BYTES} bytes`)
+      chunks.push(value)
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {})
+    return outcomeUnknownAnswer(`The answer to the request broke off while mehen read it (${error instanceof Error ? error.message : String(error)}). The request was sent and may have taken effect.`)
+  }
+  const bodiless = response.status < 200 || [204, 205, 304].includes(response.status)
+  return new Response(bodiless ? null : Buffer.concat(chunks), { status: response.status, statusText: response.statusText, headers: response.headers })
+}
+
 async function writeResponse(socket: Duplex, method: string, response: Response, close: boolean): Promise<void> {
   let head = `HTTP/1.1 ${response.status} ${response.statusText || "Status"}\r\n`
   response.headers.forEach((value, name) => {
@@ -307,23 +346,13 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
     } catch (error) {
       // 424, not a 5xx, and both should-retry headers: SDKs retry a 5xx on
       // their own, and repeating this write could do it twice.
-      if (!retrySafeMethod(relay.method) && writeOutcomeUnknown(error)) {
-        return new Response(JSON.stringify(errorBody(outcomeUnknown(error.message))), {
-          status: 424,
-          headers: { "content-type": "application/json", [ERROR_HEADER]: "1", "x-should-retry": "false", "stripe-should-retry": "false" },
-        })
-      }
+      if (!retrySafeMethod(relay.method) && writeOutcomeUnknown(error)) return outcomeUnknownAnswer(error.message)
       if (error instanceof VaultApiError) {
         return new Response(JSON.stringify(error.body), { status: error.status, headers: { "content-type": "application/json", [ERROR_HEADER]: "1" } })
       }
       const message = error instanceof Error ? error.message : String(error)
       // Anything else after a write was sent may have come after it took effect.
-      if (!retrySafeMethod(relay.method)) {
-        return new Response(JSON.stringify(errorBody(outcomeUnknown(`mehen could not finish relaying the request: ${message}.`))), {
-          status: 424,
-          headers: { "content-type": "application/json", [ERROR_HEADER]: "1", "x-should-retry": "false", "stripe-should-retry": "false" },
-        })
-      }
+      if (!retrySafeMethod(relay.method)) return outcomeUnknownAnswer(`mehen could not finish relaying the request: ${message}.`)
       return errorResponse({ status: 502, error: "upstream_failed", message: `mehen could not reach the vault: ${message}. Check the network and try again.` })
     }
   }
@@ -350,7 +379,8 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
         const framing = requestFraming(head)
         if (framing.kind !== "none" && hasToken(head, "expect", "100-continue")) await writeWithBackpressure(socket, "HTTP/1.1 100 Continue\r\n\r\n")
         const body = await readBody(reader, framing, MAX_RELAY_BODY)
-        const response = await callVault(routed.relay, body)
+        const called = await callVault(routed.relay, body)
+        const response = retrySafeMethod(head.method) || streamingAnswer(called) ? called : await completeWriteAnswer(called)
         const close = oneRequest || head.version === "HTTP/1.0" || hasToken(head, "connection", "close")
         await writeResponse(socket, head.method, response, close)
         if (close) break

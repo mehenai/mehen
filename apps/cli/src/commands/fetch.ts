@@ -20,7 +20,6 @@ import {
   relayReplaces,
   relayRequest,
   replacingRefused,
-  selectJson,
   upstreamHead,
 } from "../operations.ts"
 import { mandateAllowed, mandateAllowedText, mandateCapped } from "../mandate-operations.ts"
@@ -93,8 +92,26 @@ async function openOutput(output: string): Promise<FileHandle> {
   return handle
 }
 
-async function writeBody(response: Response, handle: FileHandle | null, method: string): Promise<number> {
-  await handle?.truncate(0)
+export type OutputFile = { handle: FileHandle; path: string }
+
+// The answer arrived but could not be written out: the request was sent,
+// so sending it again to get the output could do a write twice.
+function outputFailed(output: OutputFile, error: unknown, method: string, status: number): CliError {
+  const detail = error instanceof Error ? error.message : String(error)
+  return new CliError("failed", `The request was sent and the upstream answered ${status}, but mehen could not write its answer to ${output.path}: ${detail}.`, {
+    say: retrySafeMethod(method) ? `Fix ${output.path} (space, permissions), then run the request again.` : `Do not send the request again to get the output: it was sent and may have taken effect. Fix ${output.path} and read the result back with a separate read, or ask the human.`,
+  })
+}
+
+export async function writeBody(response: Response, output: OutputFile | null, method: string, status: number): Promise<number> {
+  const file = async (step: () => Promise<unknown>) => {
+    try {
+      await step()
+    } catch (error) {
+      throw outputFailed(output as OutputFile, error, method, status)
+    }
+  }
+  if (output) await file(() => output.handle.truncate(0))
   if (!response.body) return 0
   const reader = response.body.getReader()
   let total = 0
@@ -103,10 +120,20 @@ async function writeBody(response: Response, handle: FileHandle | null, method: 
     if (done) break
     const chunk = new Uint8Array(value)
     total += chunk.length
-    if (handle) await handle.write(chunk)
+    if (output) await file(() => output.handle.write(chunk))
     else await writeStdout(chunk)
   }
   return total
+}
+
+// Closing the output: a failure is the output's only when nothing else
+// failed and an answer arrived; it never replaces the error that did.
+export async function closeOutput(output: OutputFile, method: string, status: number | null, failedAlready: boolean): Promise<void> {
+  try {
+    await output.handle.close()
+  } catch (error) {
+    if (!failedAlready && status !== null) throw outputFailed(output, error, method, status)
+  }
 }
 
 function headerLines(head: UpstreamHead): string[] {
@@ -175,7 +202,9 @@ export const fetchCommand: Command = {
       session: sessionLabel(env),
       context: fetchContext(args.string("project"), args.string("env"), "mehen fetch --help"),
     })
-    const handle = output === null ? null : await openOutput(output)
+    const file = output === null ? null : { handle: await openOutput(output), path: output }
+    let answered: number | null = null
+    let failed = false
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | null = null
     let api: VaultApi | null = null
@@ -184,6 +213,7 @@ export const fetchCommand: Command = {
       timer = maxTime === null ? null : setTimeout(() => controller.abort(), maxTime * 1000)
       const response = await api.relay(request, { signal: controller.signal })
       const upstream = upstreamHead(response)
+      answered = upstream.status
       if (args.bool("include")) for (const line of headerLines(upstream)) note(line)
       else note(`mehen: ${upstream.status}${upstream.statusText ? ` ${upstream.statusText}` : ""}${upstream.item ? `  Mehen-Item: ${upstream.item}` : ""}`)
       const rules = await rulesAllowed(api, response, item, controller.signal)
@@ -207,14 +237,14 @@ export const fetchCommand: Command = {
           else await writeStdout(utf8(`${JSON.stringify(picked.value, null, 2)}\n`))
         }
       } else if (output !== null) {
-        const written = await writeBody(response, handle, request.method)
+        const written = await writeBody(response, file, request.method, upstream.status)
         note(`mehen: wrote ${written} bytes to ${output}`)
         if (json) printJson({ ...head, output, bytes: written })
       } else if (json) {
         const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
         printJson({ ...head, ...bodyForJson(bytes) })
       } else {
-        await writeBody(response, null, request.method)
+        await writeBody(response, null, request.method, upstream.status)
       }
       if (args.bool("fail") && head.status >= 400) {
         throw new CliError("upstream_status", `The upstream answered ${head.status}${head.statusText ? ` ${head.statusText}` : ""}.`, {
@@ -223,11 +253,12 @@ export const fetchCommand: Command = {
       }
       return EXIT.ok
     } catch (error) {
+      failed = true
       if (controller.signal.aborted && maxTime !== null) throw timedOut(maxTime, request.method)
       throw replacingRefused(ruleEnded(api ? await mandateCapped(api, error, controller.signal) : error), request, "cli")
     } finally {
       if (timer) clearTimeout(timer)
-      await handle?.close()
+      if (file) await closeOutput(file, request.method, answered, failed)
     }
   },
 }

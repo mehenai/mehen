@@ -228,3 +228,14 @@ test("policy operations export the real producer implementations", async () => {
   const policy = await import("./policy-operations.ts")
   for (const name of ["showPolicy", "previewPolicy", "proposePolicy", "cancelPolicy", "stopPolicy", "convenienceProposal"] as const) expect(operations[name]).toBe(policy[name])
 })
+
+test("a truncated answer keeps its bytes and its truncation when the source refuses to be cancelled", async () => {
+  const { readLimited } = await import("./operations.ts")
+  let pulls = 0
+  const source = new ReadableStream<Uint8Array>({
+    pull(c) { pulls++; c.enqueue(new Uint8Array(8).fill(pulls)) },
+    cancel() { throw new Error("cannot cancel") },
+  })
+  const read = await readLimited(new Response(source), 12, "POST")
+  expect([read.truncated, read.bytes.length]).toEqual([true, 12])
+})

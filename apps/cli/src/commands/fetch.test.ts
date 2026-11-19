@@ -771,3 +771,35 @@ describe("mehen fetch when this machine's mandate allowed the request, or a cap 
     }
   })
 })
+
+describe("-o after a write: an output that fails once the answer arrived", () => {
+  const failing = (fail: "truncate" | "write" | "close") => {
+    const error = Object.assign(new Error("no space left on device"), { code: "ENOSPC" })
+    return {
+      truncate: async () => { if (fail === "truncate") throw error },
+      write: async () => { if (fail === "write") throw error; return { bytesWritten: 0 } },
+      close: async () => { if (fail === "close") throw error },
+    } as unknown as import("node:fs/promises").FileHandle
+  }
+  const answer = () => new Response("created", { status: 201 })
+
+  test("says the request was sent, with its status, and not to send it again, for truncate and write", async () => {
+    const { writeBody } = await import("./fetch.ts")
+    for (const fail of ["truncate", "write"] as const) {
+      const error = await writeBody(answer(), { handle: failing(fail), path: "/tmp/out.json" }, "POST", 201).catch((e: unknown) => e) as { code: string; message: string; next: { say: string } }
+      expect(error.code, fail).toBe("failed")
+      expect(error.message, fail).toBe("The request was sent and the upstream answered 201, but mehen could not write its answer to /tmp/out.json: no space left on device.")
+      expect(error.next.say, fail).toContain("Do not send the request again to get the output")
+    }
+  })
+
+  test("a close that fails says the same when nothing else failed, and never replaces the error that did", async () => {
+    const { closeOutput } = await import("./fetch.ts")
+    const alone = await closeOutput({ handle: failing("close"), path: "/tmp/out.json" }, "POST", 201, false).catch((e: unknown) => e) as { code: string; message: string }
+    expect([alone.code, alone.message]).toEqual(["failed", "The request was sent and the upstream answered 201, but mehen could not write its answer to /tmp/out.json: no space left on device."])
+    // With a primary error, cleanup is best effort and stays quiet.
+    expect(await closeOutput({ handle: failing("close"), path: "/tmp/out.json" }, "POST", 201, true)).toBeUndefined()
+    // Before any answer arrived there is nothing to report about the output.
+    expect(await closeOutput({ handle: failing("close"), path: "/tmp/out.json" }, "POST", null, false)).toBeUndefined()
+  })
+})
