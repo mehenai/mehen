@@ -137,3 +137,16 @@ test("vault_wait on a push approval returns once the push is done, and a refused
   expect(refused.isError).toBe(true)
   expect(refused.structuredContent).toMatchObject({ error: "provider_refused", providerStatus: 404, push: { state: "failed" } })
 })
+
+test("vault_wait polls again with a fresh proof when a held poll's connection drops, and returns the answer", async () => {
+  const approved = { approval: "apr_drop", status: "approved", bindingCode: "K7Q2MX", summary: "Send an email", grant: { id: "gnt_1", uses: 1, expiresAt: expiresAt(), kind: "exact" as const, scope: { selector: { device: "dev_test", session: null }, route: null }, parent: null } }
+  vault.sequences.set("approval:apr_drop", [{ approval: "apr_drop", status: "pending", bindingCode: "K7Q2MX", summary: "Send an email", expiresAt: expiresAt() }, approved])
+  vault.drops.set("GET /v1/approvals/apr_drop?wait=1", 1)
+  const before = vault.seen.length
+  const result = await runJv(["mcp"], env, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "vault_wait", arguments: { id: "apr_drop", timeoutSeconds: 30 } } })}\n`)
+  expect(vault.replays).toEqual([])
+  const output = (JSON.parse(result.stdout) as { result: WaitOutput }).result
+  expect(output.isError).toBe(false)
+  expect(output.structuredContent).toMatchObject({ id: "apr_drop", kind: "approval", status: "approved" })
+  expect(vault.seen.slice(before).map((s) => `${s.path}${s.search}`)).toEqual(["/v1/approvals/apr_drop", "/v1/approvals/apr_drop?wait=1", "/v1/approvals/apr_drop?wait=1"])
+})

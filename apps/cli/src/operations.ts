@@ -33,7 +33,7 @@ import { OAUTH_PROVIDERS, type OAuthProviderTemplate, getOAuthProvider, getTempl
 import type { z } from "zod"
 import { relativeExpiry } from "./ask.ts"
 import { CliError, usageError } from "./errors.ts"
-import { type VaultApi, VaultApiError } from "./vault-api.ts"
+import { type VaultApi, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 
 export function zodMessage(error: z.ZodError): string {
   return error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message)).join("; ")
@@ -710,6 +710,10 @@ export type WaitOptions = {
   signal?: AbortSignal
 }
 
+// A long poll that fails after being held this long was dropped, not
+// refused: the vault answered the connection and then lost it.
+const DROPPED_POLL_MS = 1_000
+
 // The first poll answers at once (so the link's expiry and a settled state
 // show without delay); later ones long-poll. An enrolment status route does
 // not long-poll, so those are spaced by intervalMs.
@@ -733,6 +737,9 @@ export async function waitFor(api: VaultApi, id: string, options: WaitOptions): 
     } catch (error) {
       cancel?.throwIfAborted()
       if (pollTimeout?.aborted) break
+      // A held poll whose connection dropped (an idle timeout at a server or
+      // proxy): poll again, with a proof of its own, never the spent one.
+      if (longPoll && error instanceof VaultNetworkError && Date.now() - started >= DROPPED_POLL_MS && Date.now() < deadline) continue
       throw error
     }
     const result = settle(target.kind, id, value, options.ledger)
