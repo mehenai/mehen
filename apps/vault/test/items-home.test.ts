@@ -114,7 +114,7 @@ it("enforces one twenty-open-asks cap across credential request kinds and reuses
     catch (e) {
       failure = (e as VaultError).toJSON()
     }
-    expect(failure).toEqual({ error: "rate_limited", message: "This machine already has 20 open asks." })
+    expect(failure).toEqual({ error: "rate_limited", message: "This machine already has 20 open asks.", next: { url: "https://vault.test/w/work/", say: "Ask the person to decide this machine's open asks at the link, then ask for the rest." } })
     expect(openAskCount(ctx, "dev_member", ctx.now())).toBe(count)
     expect(ctx.sql.exec("SELECT * FROM workspace_credential_requests WHERE slug='overflow-key'").toArray()).toEqual([])
   })

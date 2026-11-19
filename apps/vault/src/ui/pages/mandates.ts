@@ -6,7 +6,7 @@
 // only for who may press them (5.2), the vault deciding every press; the
 // browser side is client/pages/mandates.ts and client/mandate-sign.ts.
 
-import { MANDATE_CAP_DEFAULTS, MANDATE_CAP_MAX, MANDATE_CLASSES, MANDATE_DEFAULT_TTL_DAYS, MANDATE_ENDING_NOTICE_MS, MANDATE_LIVE_STATES, MANDATE_NOTE_MAX, MANDATE_TTL_DAYS, type MandateCandidates, type MandateClass, type MandateList, type MandateOpenProposal, type MandateProposalView, type MandateReceiptView, type MandateReceiptsPage, type MandateSchedule, type MandateTtlDays, type MandateView } from "@mehen/protocol/mandate-terms"
+import { MANDATE_CAP_MAX, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_CLASSES, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MANDATE_ENDING_NOTICE_MS, MANDATE_LIVE_STATES, MANDATE_NOTE_MAX, MANDATE_TTL_DAYS, type MandateCandidates, type MandateClass, type MandateList, type MandateOpenProposal, type MandateProposalView, type MandateReceiptView, type MandateReceiptsPage, type MandateSchedule, type MandateTtlDays, type MandateView } from "@mehen/protocol/mandate-terms"
 import type { WorkspaceDeviceView } from "@mehen/protocol/workspace"
 import { spellCardText } from "../../relay/spelling.ts"
 import { cardText, emptyState, kv, notice, pageHead, pill, row, timeTag } from "../components.ts"
@@ -16,7 +16,7 @@ import type { PageInput } from "../layout.ts"
 import { type WorkspaceShell, workspaceHref } from "../shell.ts"
 import {
   MANDATE_ALL_CREDENTIALS, MANDATE_ALWAYS_WORDS, MANDATE_CANDIDATES_UNREAD_WORDS, MANDATE_CAPS_LABEL, MANDATE_CAPS_WORDS, MANDATE_CARD_LEAD, MANDATE_CARD_TITLE, MANDATE_CLASS_CHOICES, MANDATE_CLASSES_LABEL, MANDATE_HIDDEN_CREDENTIAL, MANDATE_ITEMS_LABEL,
-  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NEVER_CANDIDATE_WORDS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS,
+  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NEVER_CANDIDATE_WORDS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, mandateProposalUnboundWords, MANDATE_SOURCE_RENEW_WORDS, MANDATE_SOURCE_PROPOSAL_WORDS, MANDATE_USE_SOURCE_BUTTON, mandateSourceFromWords, mandateSourceUnavailableWords,
   MANDATE_RECEIPTS_EMPTY, MANDATE_RECEIPTS_LEAD, MANDATE_RECEIPTS_OLDER, MANDATE_RECEIPTS_TITLE, MANDATE_RENEW_LINK, MANDATE_SIGN_AGAIN_LINK, MANDATE_REPLACED_WORDS, MANDATE_REPLACES_WORDS, MANDATE_REVOKED_WORDS, MANDATE_RESUME_BUTTON, MANDATE_RESUME_HINT, MANDATE_SCHEDULE_HINT, MANDATE_SCHEDULE_LABELS,
   MANDATE_SCHEDULE_TICK, MANDATE_SIGN_BUTTON, MANDATE_SIGN_EYEBROW, MANDATE_SIGN_LEAD, MANDATE_STATE_PILLS, MANDATE_STATE_WORDS, MANDATE_STOP_BUTTON, MANDATE_STOP_TITLE, MANDATE_STOP_WORDS, MANDATE_SUMMARY_TITLE, MANDATE_TEAM_MACHINE_WORDS, MANDATE_TERM_LABELS,
   MANDATE_TRUST_BUTTON, MANDATE_TTL_LABEL, MANDATE_UNREVIEWED_ENTRY, MANDATE_WAITING_LEAD, MANDATE_WAITING_OPEN, MANDATE_WAITING_TITLE, type MandateSummaryInput, machinesCarryingOnWords, machinesNeedResumeWords, mandateAllItemsWords, mandateCapHint, mandateClassWords, mandateDayWords, mandateDefaultNote, mandateEndsInWords, mandateHiddenItemsWords, mandateLapsedWords, mandateNotOwnerWords, mandatePauseAllConfirmWords, mandateSignSameWords,
@@ -304,14 +304,16 @@ export function mandateStrip(shell: WorkspaceShell, machines: number | null, res
 
 // ---------------------------------------------------------------- the sign page
 
-// What the form opens on: a proposal's terms, a renewed mandate's, or the
-// defaults, every class ticked, every cap at its default, 90 days.
+// What the form opens on: an open, bound proposal's terms, or the
+// defaults: read alone ticked, every cap at a machine's proposal default,
+// 30 days. A renewed, copied or closed one's terms are a source instead.
 export type MandateSignStart = { classes: MandateClass[]; caps: Record<MandateClass, number>; items: "all" | string[]; ttlDays: MandateTtlDays; schedule: MandateSchedule | null; note: string }
 
-// Without a proposal: every class at its default cap, no credential
-// ticked, and a note naming the machine, which the signer may change.
+// Without a proposal: the narrowest terms, read alone ticked, no
+// credential, 30 days, and a note naming the machine. Every other kind,
+// every credential and a longer term are the signer's own choice.
 export function mandateSignDefaults(machine: string): MandateSignStart {
-  return { classes: ["change", "delete", "read", "send"], caps: { ...MANDATE_CAP_DEFAULTS }, items: [], ttlDays: MANDATE_DEFAULT_TTL_DAYS, schedule: null, note: mandateDefaultNote(machine).slice(0, MANDATE_NOTE_MAX) }
+  return { classes: ["read"], caps: { ...MANDATE_PROPOSAL_CAP_DEFAULTS }, items: [], ttlDays: MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, schedule: null, note: mandateDefaultNote(machine).slice(0, MANDATE_NOTE_MAX) }
 }
 
 // `from`: the proposal or the mandate renewed, if any; `candidates`: the
@@ -324,14 +326,17 @@ export type MandateSignData = {
   start: MandateSignStart
   proposal: MandateProposalView | null
   renews: MandateView | null
+  // A mandate renewed or copied from, whose terms the person may choose to
+  // use with one press; the form opens on start, never on these.
+  source?: { kind: "renew" | "from" | "proposal"; mandate?: MandateView; start: MandateSignStart } | null
   replaces: MandateView | null
   now: number
 }
 
 // The terms a start names, by id, for the summary the page opens with:
 // ticked credentials among the candidates.
-function startTicks(data: MandateSignData): Set<string> {
-  return new Set(data.start.items === "all" ? [] : data.start.items)
+function startTicks(start: MandateSignStart): Set<string> {
+  return new Set(start.items === "all" ? [] : start.items)
 }
 
 export function mandateSummaryOf(machine: string, start: MandateSignStart, candidates: MandateCandidates | null, now: number): string[] | null {
@@ -351,13 +356,13 @@ function classTick(c: MandateClass, start: MandateSignStart): Html {
 
 function capField(c: MandateClass, start: MandateSignStart): Html {
   const on = c === "read" || start.classes.includes(c)
-  return html`<label class="field" data-region="mandate-cap" data-class="${c}"${on ? "" : html` hidden`}><span class="label">${MANDATE_CLASS_CHOICES[c].name}</span><input type="text" inputmode="numeric" autocomplete="off" maxlength="6" data-input="mandate-cap" data-class="${c}" value="${String(start.caps[c] > 0 ? start.caps[c] : MANDATE_CAP_DEFAULTS[c])}"><span class="hint">${mandateCapHint(MANDATE_CAP_MAX[c])}</span></label>`
+  return html`<label class="field" data-region="mandate-cap" data-class="${c}"${on ? "" : html` hidden`}><span class="label">${MANDATE_CLASS_CHOICES[c].name}</span><input type="text" inputmode="numeric" autocomplete="off" maxlength="6" data-input="mandate-cap" data-class="${c}" value="${String(start.caps[c] > 0 ? start.caps[c] : MANDATE_PROPOSAL_CAP_DEFAULTS[c])}"><span class="hint">${mandateCapHint(MANDATE_CAP_MAX[c])}</span></label>`
 }
 
-function itemsField(data: MandateSignData): Html {
-  const all = data.start.items === "all"
+function itemsField(data: MandateSignData, start: MandateSignStart): Html {
+  const all = start.items === "all"
   const candidates = data.candidates?.items ?? []
-  const ticks = startTicks(data)
+  const ticks = startTicks(start)
   const none = candidates.length === 0
   return html`<fieldset class="field" data-region="mandate-items-field"><legend class="label">${MANDATE_ITEMS_LABEL}</legend>
     <label class="tick"><input type="radio" name="mandate-items" data-input="mandate-items" value="listed"${!all && !none ? html` checked` : ""}${none ? html` disabled` : ""}><span>${MANDATE_LISTED_ITEMS}</span></label>
@@ -401,7 +406,51 @@ function signRefusal(shell: WorkspaceShell, data: MandateSignData): Html | null 
   return null
 }
 
-export function mandateSignPage(shell: WorkspaceShell, data: MandateSignData): PageInput {
+function formBody(data: MandateSignData, start: MandateSignStart): Html {
+  return html`<fieldset class="field" data-region="mandate-classes"><legend class="label">${MANDATE_CLASSES_LABEL}</legend>${ticked([...MANDATE_CLASSES]).map((c) => classTick(c, start))}</fieldset>
+        ${itemsField(data, start)}
+        <fieldset class="field" data-region="mandate-caps"><legend class="label">${MANDATE_CAPS_LABEL}</legend><div class="mandate-times">${CLASS_ORDER.map((c) => capField(c, start))}</div><p class="hint">${MANDATE_CAPS_WORDS}</p></fieldset>
+        ${ttlField(start)}
+        ${scheduleField(start)}
+        <label class="field"><span class="label">${MANDATE_NOTE_LABEL}</span><input type="text" data-input="mandate-note" maxlength="${String(MANDATE_NOTE_MAX)}" autocomplete="off" value="${start.note}"><span class="hint">${MANDATE_NOTE_HINT}</span></label>`
+}
+
+// What a source named, whether or not the form can offer its credentials
+// now: its kinds, caps, length and hours always, its credentials as far as
+// they are still here, and what is not. A proposal's names from before
+// Mehen kept ids are shown as names, never matched to today's credentials.
+function sourceNamed(data: MandateSignData): number {
+  const named = data.source?.mandate ?? (data.source?.kind === "proposal" ? data.proposal : null)
+  return named === null || named === undefined || named.items === "all" ? 0 : named.items.length + named.hiddenItems
+}
+function sourceRecap(machine: string, data: MandateSignData, start: MandateSignStart): string[] {
+  const offered = start.items === "all" ? "all" as const : (data.candidates?.items ?? []).filter((c) => start.items.includes(c.id)).map((c) => c.slug)
+  const unavailable = offered === "all" ? 0 : Math.max(0, sourceNamed(data) - offered.length)
+  const formerNames = data.source?.kind === "proposal" ? data.proposal?.unbound ?? [] : []
+  const words = mandateSummaryWords({ machine, classes: start.classes, caps: start.caps, items: offered, endsAt: data.now + start.ttlDays * DAY_MS, schedule: start.schedule })
+  return unavailable > 0 || formerNames.length > 0 ? [words[0] ?? "", mandateSourceUnavailableWords(unavailable, formerNames), ...words.slice(1)] : words
+}
+
+// The terms of a mandate renewed or copied, in words, and the one action
+// that puts them in the form.
+function sourceCard(machine: string, data: MandateSignData): Html {
+  const source = data.source
+  if (!source) return html``
+  const words = source.kind === "renew" ? MANDATE_SOURCE_RENEW_WORDS : source.kind === "proposal" ? MANDATE_SOURCE_PROPOSAL_WORDS : mandateSourceFromWords(source.mandate?.device.name ?? machine)
+  const lines = sourceRecap(machine, data, source.start)
+  return html`<section class="card stack" data-region="mandate-source"><p>${cardText(words)}</p>${lines.map((line) => html`<p class="small">${cardText(line)}</p>`)}<div class="actions"><button type="button" class="btn secondary sm" data-action="mandate-use-source">${MANDATE_USE_SOURCE_BUTTON}</button></div></section>`
+}
+
+// Only an open proposal bound to the credentials it named fills the form;
+// any other's terms wait behind Use these terms, as a renewal's do.
+const boundOpen = (p: MandateProposalView): boolean => p.state === "open" && p.unbound === undefined && p.closedReason === undefined
+function settled(data: MandateSignData): MandateSignData {
+  if (data.proposal === null || boundOpen(data.proposal)) return data
+  return { ...data, start: mandateSignDefaults(data.device.name), source: { kind: "proposal", start: data.start } }
+}
+
+export function mandateSignPage(shell: WorkspaceShell, given: MandateSignData): PageInput {
+  const data = settled(given)
   const refusal = signRefusal(shell, data)
   const name = data.device.name
   const head = pageHead({ tile: kindTile("machine", undefined, "lg", name), eyebrow: MANDATE_SIGN_EYEBROW, title: cardText(mandateSignTitle(name)), lead: MANDATE_SIGN_LEAD })
@@ -410,7 +459,7 @@ export function mandateSignPage(shell: WorkspaceShell, data: MandateSignData): P
   }
   const summary = mandateSummaryOf(name, data.start, data.candidates, data.now)
   const proposal = data.proposal
-  const open = proposal !== null && proposal.state === "open"
+  const open = proposal !== null && boundOpen(proposal)
   return {
     title: spellCardText(mandateSignTitle(name)),
     viewer: null,
@@ -418,16 +467,11 @@ export function mandateSignPage(shell: WorkspaceShell, data: MandateSignData): P
     current: "machines",
     boot: { page: "mandate-sign", device: data.device.device, machine: name, signer: data.viewer.member, proposal: open ? proposal.id : null },
     body: html`${head}
-      ${proposal !== null ? html`<div data-region="mandate-proposed">${notice("info", cardText(mandateProposedWords(name)), open ? cardText(proposal.reason) : proposal.state === "expired" && proposal.mandate !== null ? html`${MANDATE_PROPOSAL_SUPERSEDED_WORDS} <a href="${mandateHref(shell, proposal.mandate)}">${MANDATE_OPEN_LINK}</a>` : MANDATE_PROPOSAL_CLOSED_WORDS)}</div>` : ""}
+      ${proposal !== null ? html`<div data-region="mandate-proposed">${notice("info", cardText(mandateProposedWords(name)), open ? cardText(proposal.reason) : proposal.closedReason === "unbound" ? mandateProposalUnboundWords(proposal.unbound ?? []) : proposal.state === "expired" && proposal.mandate !== null ? html`${MANDATE_PROPOSAL_SUPERSEDED_WORDS} <a href="${mandateHref(shell, proposal.mandate)}">${MANDATE_OPEN_LINK}</a>` : MANDATE_PROPOSAL_CLOSED_WORDS)}</div>` : ""}
       ${data.replaces !== null ? html`<div data-region="mandate-replaces">${notice("warn", MANDATE_REPLACES_WORDS, html`<a href="${mandateHref(shell, data.replaces.id)}">${MANDATE_OPEN_LINK}</a>`)}</div>` : ""}
-      <form class="card stack" data-form="mandate-sign" novalidate>
-        <fieldset class="field" data-region="mandate-classes"><legend class="label">${MANDATE_CLASSES_LABEL}</legend>${ticked([...MANDATE_CLASSES]).map((c) => classTick(c, data.start))}</fieldset>
-        ${itemsField(data)}
-        <fieldset class="field" data-region="mandate-caps"><legend class="label">${MANDATE_CAPS_LABEL}</legend><div class="mandate-times">${CLASS_ORDER.map((c) => capField(c, data.start))}</div><p class="hint">${MANDATE_CAPS_WORDS}</p></fieldset>
-        ${ttlField(data.start)}
-        ${scheduleField(data.start)}
-        <label class="field"><span class="label">${MANDATE_NOTE_LABEL}</span><input type="text" data-input="mandate-note" maxlength="${String(MANDATE_NOTE_MAX)}" autocomplete="off" value="${data.start.note}"><span class="hint">${MANDATE_NOTE_HINT}</span></label>
-      </form>
+      ${sourceCard(name, data)}
+      <form class="card stack" data-form="mandate-sign" novalidate>${formBody(data, data.start)}</form>
+      ${data.source ? html`<template data-region="mandate-source-form">${formBody(data, data.source.start)}</template>` : ""}
       <section class="card" data-region="mandate-summary-card"><h2>${MANDATE_SUMMARY_TITLE}</h2>
         <div class="stack" data-region="mandate-summary">${(summary ?? []).map((line) => html`<p>${cardText(line)}</p>`)}</div>
         <p class="small" data-region="mandate-refusal"${summary !== null ? html` hidden` : ""}></p>

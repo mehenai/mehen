@@ -7,7 +7,7 @@
 // the terms cover it. Behind MANDATES (mandatesOn); a managed workspace has
 // none.
 
-import { MANDATE_CLASSES, MANDATE_ENDING_NOTICE_MS, MANDATE_LIST_MAX, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_TTL_MS, MANDATE_PROPOSALS_DAY_MAX, MANDATE_PROPOSALS_OPEN_MAX, MANDATE_RATE_LIMIT, MANDATE_RATE_WINDOW_MS, MANDATE_RECEIPT_KEEP_MS, MANDATE_USES_PAGE, MandateActionRequestSchema, MandateIdSchema, MandateProposalIdSchema, MandateProposeSchema, MandateRevSchema, MandateSignSchema, mandateReceiptsCursor, parseMandateReceiptsCursor, type Binding, type CredentialHome, type MandateCandidateNever, type MandateChanged, type MandateClass, type MandateCounts, type MandateList, type MandateOpenProposal, type MandateProposalCreated, type MandateProposalView, type MandateProposedTerms, type MandateReceiptsPage, type MandateReceiptView, type MandateState, type MandateTerms, type MandateView, type MandateActionAnswer, type MandateCandidates, type MandateCappedAsk, type MandateCoverAsk, type MandateCoverHint, type MandateCoverState, type SessionIdentityCheck, type Share, type WorkspaceRole, type WorkspaceStepUpAction } from "@mehen/protocol"
+import { MANDATE_CLASSES, MANDATE_ENDING_NOTICE_MS, MANDATE_LIST_MAX, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_TTL_MS, MANDATE_PROPOSALS_DAY_MAX, MANDATE_PROPOSALS_OPEN_MAX, MANDATE_RATE_LIMIT, MANDATE_RATE_WINDOW_MS, MANDATE_RECEIPT_KEEP_MS, MANDATE_USES_PAGE, MANDATE_ASKED_WINDOW_MS, MANDATE_MAX_ITEMS, mandateScheduleText, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MandateActionRequestSchema, MandateIdSchema, MandateProposalIdSchema, MandateProposeSchema, MandateRevSchema, MandateSignSchema, mandateReceiptsCursor, parseMandateReceiptsCursor, type Binding, type CredentialHome, type MandateCandidateNever, type Share, type MandateChanged, type MandateClass, type MandateCounts, type MandateList, type MandateOpenProposal, type MandateProposalCreated, type MandateProposalView, type MandateProposedTerms, type MandateReceiptsPage, type MandateReceiptView, type MandateState, type MandateTerms, type MandateView, type MandateActionAnswer, type MandateAsked, type MandateProposalRefusal, type MandateCandidates, type MandateCappedAsk, type MandateCoverAsk, type MandateCoverHint, type MandateCoverState, type SessionIdentityCheck, type WorkspaceRole, type WorkspaceStepUpAction } from "@mehen/protocol"
 import { canonicalJson } from "@mehen/protocol/canonical-json"
 import { mandateClassesOf, mandateCovers, mandateCredentialNever, mandateDigest, mandateHeadersNameOperation, mandateHostNamed, mandateRequestFacts, mandateScheduleOpen } from "@mehen/protocol/mandates"
 import { policyCatalogueVerdict } from "@mehen/protocol/policy-safety"
@@ -59,6 +59,26 @@ export const MANDATE_COVER_ASKS_MIGRATION = "CREATE TABLE mandate_cover_asks (ap
 // The proposal each mandate in a list was signed from (mandateView), found
 // without reading every proposal, which the sweep closes but never deletes.
 export const MANDATE_PROPOSALS_MANDATE_MIGRATION = "CREATE INDEX mandate_proposals_mandate ON mandate_proposals(mandate_id);"
+// Each held request of a machine that a mandate could cover (it carried a
+// mandateCover hint), by its approval, credential and class, so a proposal
+// of its own names only what it asked for, and a person's rejection of that
+// approval takes exactly its part away. Pruned after MANDATE_ASKED_WINDOW_MS,
+// and of anything dated after now. It starts from the held asks with a hint
+// the vault still keeps (mandate_cover_asks, CAPPED_ASK_KEEP_MS); a machine's
+// own mandate uses are read from mandate_uses directly, so need no copy.
+export const MANDATE_ASKED_MIGRATION = `CREATE TABLE mandate_asked (approval TEXT NOT NULL, device TEXT NOT NULL, item_id TEXT NOT NULL, cls TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (approval, cls));
+CREATE INDEX mandate_asked_device ON mandate_asked(device, at);
+INSERT INTO mandate_asked(approval,device,item_id,cls,at) SELECT c.approval, c.device, COALESCE(json_extract(a.ask,'$.credential'), (SELECT i.id FROM items i WHERE i.slug=a.item)) AS item_id, j.value, c.at FROM mandate_cover_asks c JOIN approvals a ON a.id=c.approval, json_each(c.classes) j WHERE item_id IS NOT NULL;`
+// The credential id each slug a proposal named stood for when it was made:
+// signing refuses a slug that now names another credential.
+// An open proposal from before this cannot prove which credential each
+// slug meant (a clock set back or a credential made again would fool any
+// check), and was proposed before the vault held a machine to what it
+// asked for: every one closes as unbound, and its machine may propose
+// again. Signed mandates are untouched.
+export const MANDATE_PROPOSALS_ITEMS_MIGRATION = `ALTER TABLE mandate_proposals ADD COLUMN item_ids TEXT;
+ALTER TABLE mandate_proposals ADD COLUMN closed_reason TEXT;
+UPDATE mandate_proposals SET closed_at=CAST(strftime('%s','now') AS INTEGER)*1000, closed_reason='unbound' WHERE closed_at IS NULL;`
 
 // Whether mandates are on in this workspace (its tn_ id), read as
 // workspaceSwitchOn reads every switch.
@@ -101,7 +121,9 @@ type PausedBy = "signer" | "machine" | "admin"
 // cover, for good: undoing the change does not restore it, only the
 // signer's passkey resume does.
 type MandateRow = { id: string; device: string; signer_member: string; terms: string; digest: string; state: MandateState; rev: number; basis: string; created_at: number; expires_at: number; stopped_at: number | null; ended_reason: MandateView["endedReason"]; paused_by: PausedBy | null; ending_noticed_at: number | null; lapsed_at: number | null }
-type ProposalRow = { id: string; device: string; terms: string; reason: string; created_at: number; expires_at: number; closed_at: number | null; mandate_id: string | null; closed_by: string | null }
+type ProposalRow = { id: string; device: string; terms: string; reason: string; created_at: number; expires_at: number; closed_at: number | null; mandate_id: string | null; closed_by: string | null; item_ids: string | null; closed_reason?: string | null }
+// slug -> credential id when proposed; null on a row from before item_ids.
+const proposalItemIds = (row: ProposalRow): Record<string, string> | null => (row.item_ids === null ? null : (JSON.parse(row.item_ids) as Record<string, string>))
 type UseRow = { id: string; mandate_id: string; at: number; item_id: string; item_private: number; classes: string; method: string; host: string; entry: string; run: string | null }
 
 const mandateRow = (ctx: VaultContext, id: string) => one(ctx.sql.exec<MandateRow>("SELECT * FROM mandates WHERE id=?", id))
@@ -266,6 +288,62 @@ function openProposalView(ctx: VaultContext, state: AccessState, reader: AccessP
     classes: terms.classes, items: seen ?? "all", hiddenItems: terms.items === "all" || seen === null ? 0 : terms.items.length - seen.length, reason: row.reason,
   }
 }
+// What a machine asked for in the window (now - MANDATE_ASKED_WINDOW_MS,
+// now]: each held request of its own a mandate could cover that no person
+// rejected (mandate_asked), and each request its own mandates covered
+// (mandate_uses), by credential id and class, for credentials it may still
+// see. Another machine's never count; nothing dated after now does.
+function askedBy(ctx: VaultContext, state: AccessState, machine: AccessPrincipal, device: string, now: number): { items: Set<string>; classes: Set<MandateClass> } {
+  const since = now - MANDATE_ASKED_WINDOW_MS
+  const items = new Set<string>(), classes = new Set<MandateClass>()
+  const add = (item: string, cls: readonly MandateClass[]) => {
+    if (!seesCredential(state, machine, item, now)) return
+    items.add(item)
+    for (const c of cls) classes.add(c)
+  }
+  for (const row of rows(ctx.sql.exec<{ item_id: string; cls: string }>("SELECT m.item_id,m.cls FROM mandate_asked m WHERE m.device=? AND m.at>? AND m.at<=? AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.id=m.approval AND a.status='denied' AND a.decided_by IS NOT NULL)", device, since, now))) add(row.item_id, [row.cls as MandateClass])
+  for (const row of rows(ctx.sql.exec<{ item_id: string; classes: string }>("SELECT u.item_id,u.classes FROM mandate_uses u JOIN mandates m ON m.id=u.mandate_id WHERE m.device=? AND u.at>? AND u.at<=?", device, since, now))) add(row.item_id, JSON.parse(row.classes) as MandateClass[])
+  classes.delete("read")
+  return { items, classes }
+}
+const sortedSlugs = (state: AccessState, ids: Set<string>): string[] => state.credentials.flatMap((c) => (c.slug !== undefined && ids.has(c.id) ? [c.slug] : [])).sort()
+function askedView(ctx: VaultContext, p: AccessPrincipal): MandateAsked {
+  mandatesAvailable(ctx)
+  const principal = machineOnly(p), state = accessState(ctx), asked = askedBy(ctx, state, principal, principal.deviceId, ctx.now())
+  return { items: sortedSlugs(state, asked.items), classes: MANDATE_CLASSES.filter((c) => asked.classes.has(c)) }
+}
+// A word as a POSIX shell reads it back, in single quotes.
+const shellWord = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`
+// A machine proposes only what it asked for: never every credential, no
+// credential or class besides read it did not ask for or use lately, no
+// longer than 30 days and no cap above the proposal defaults. The person who
+// signs may still widen any of them on the sign page.
+function refuseBroad(ctx: VaultContext, state: AccessState, machine: AccessPrincipal, device: string, terms: MandateProposedTerms, now: number): void {
+  const asked = askedBy(ctx, state, machine, device, now)
+  const askedSlugs = sortedSlugs(state, asked.items)
+  // The same proposal cut to what a machine may propose, for next.command.
+  // Every asked-for credential stands in only for "all": an explicit list
+  // keeps what it shares with them, never others.
+  const items = terms.items === "all" ? askedSlugs : terms.items.filter((slug) => askedSlugs.includes(slug))
+  const classes = MANDATE_CLASSES.filter((c) => terms.classes.includes(c) && (c === "read" || asked.classes.has(c)))
+  const days = Math.min(terms.ttlDays, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS)
+  const caps = classes.map((c) => `${c}=${Math.min(terms.caps[c], MANDATE_PROPOSAL_CAP_DEFAULTS[c])}`).join(",")
+  // The same hours: following the step never widens a scheduled proposal.
+  const schedule = terms.schedule === null ? "" : ` --schedule ${shellWord(mandateScheduleText(terms.schedule))}`
+  const fits = items.length > 0 && items.length <= MANDATE_MAX_ITEMS
+  const retry = fits ? `mehen mandate propose --items ${items.join(",")} --classes ${classes.join(",")} --days ${days} --caps ${caps}${schedule} --note <why>` : null
+  const askedWords = askedSlugs.length > MANDATE_MAX_ITEMS ? `It asked for ${askedSlugs.length} credentials in the last 30 days` : askedSlugs.length ? `It asked for ${askedSlugs.join(", ")} in the last 30 days` : "It asked for nothing a mandate could cover in the last 30 days"
+  const otherwise = terms.items !== "all" && items.length === 0 ? "None of the credentials this proposal names were asked for: choose from those this machine asked for with --items and propose again." : items.length > MANDATE_MAX_ITEMS ? `A mandate names at most ${MANDATE_MAX_ITEMS} credentials: choose at most ${MANDATE_MAX_ITEMS} of those this machine asked for with --items and propose again.` : "Ask for each request as usual; propose a mandate once more asks like them will follow."
+  const refuse = (refusal: MandateProposalRefusal, message: string, say: string): never => { throw new VaultError("forbidden", `${message} ${askedWords}. A person can choose wider terms on the sign page.`, { next: { ...(retry ? { command: retry } : {}), say: retry ? say : otherwise }, mandateRefused: refusal }) }
+  if (terms.items === "all") refuse("items_all", "A machine cannot propose a mandate for every credential: drop items all and name the credentials it asked for.", "Propose again naming only the credentials this machine asked for; the person signing can add others.")
+  const unasked = (terms.items as string[]).filter((slug) => !askedSlugs.includes(slug))
+  if (unasked.length) refuse("item_unasked", `This machine has not asked for ${unasked.join(", ")}: drop ${unasked.length === 1 ? "it" : "them"} from the proposal.`, "Propose again without the credentials this machine did not ask for; the person signing can add them.")
+  const extra = terms.classes.filter((c) => c !== "read" && !asked.classes.has(c))
+  if (extra.length) refuse("class_unasked", `This machine has not asked to ${extra.join(" or ")}: drop ${extra.join(" and ")} from the proposal.`, "Propose again without the kinds this machine did not ask for; the person signing can add them.")
+  if (terms.ttlDays > MANDATE_PROPOSAL_DEFAULT_TTL_DAYS) refuse("term_too_long", `A machine can propose a mandate for at most ${MANDATE_PROPOSAL_DEFAULT_TTL_DAYS} days: lower ${terms.ttlDays} days to ${MANDATE_PROPOSAL_DEFAULT_TTL_DAYS}.`, `Propose again for ${MANDATE_PROPOSAL_DEFAULT_TTL_DAYS} days or fewer; the person signing can make it longer.`)
+  const high = terms.classes.filter((c) => terms.caps[c] > MANDATE_PROPOSAL_CAP_DEFAULTS[c])
+  if (high.length) refuse("caps_too_high", `A machine can propose at most ${MANDATE_PROPOSAL_CAP_DEFAULTS.read} reads, ${MANDATE_PROPOSAL_CAP_DEFAULTS.change} changes, ${MANDATE_PROPOSAL_CAP_DEFAULTS.send} sends and ${MANDATE_PROPOSAL_CAP_DEFAULTS.delete} deletes a day: lower ${high.map((c) => `${c} from ${terms.caps[c]} to ${MANDATE_PROPOSAL_CAP_DEFAULTS[c]}`).join(", ")}.`, "Propose again with caps at or under those; the person signing can raise them.")
+}
 function propose(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation: WorkspaceInvocationContext): MandateProposalCreated {
   mandatesAvailable(ctx)
   const principal = machineOnly(p)
@@ -282,6 +360,7 @@ function propose(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation
     const guest = state.members.find((m) => m.id === device.owner.id)?.standing.effectiveRole === "guest"
     throw new VaultError("forbidden", `${guest ? "A guest's machine cannot have a mandate." : "This machine's owner cannot sign a mandate for it."} For routine work, propose a task grant with \`mehen policy propose\`.`, { next: { command: "mehen policy propose --from <apr_id> --reason <why>", say: `${guest ? "A guest's machine" : "This machine"} cannot carry on without asking; ask for a task grant for routine work instead.` } })
   }
+  refuseBroad(ctx, state, principal, device.id, input.terms, now)
   return ctx.storage.transactionSync(() => {
     const open = openProposalRows(ctx, device.id, now)
     // The same terms and reason as one still open: that one, nothing new.
@@ -293,7 +372,9 @@ function propose(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation
     if (today >= MANDATE_PROPOSALS_DAY_MAX) throw new VaultError("rate_limited", `This machine has proposed ${MANDATE_PROPOSALS_DAY_MAX} mandates today; try again tomorrow.`)
     const id = randomId("mdp")
     const expiresAt = now + MANDATE_PROPOSAL_TTL_MS
-    ctx.sql.exec("INSERT INTO mandate_proposals(id,device,terms,reason,created_at,expires_at) VALUES (?,?,?,?,?,?)", id, device.id, JSON.stringify(input.terms), input.reason, now, expiresAt)
+    // refuseBroad let through only slugs of credentials the machine sees.
+    const itemIds = input.terms.items === "all" ? null : Object.fromEntries(input.terms.items.map((slug) => [slug, state.credentials.find((c) => c.slug === slug)?.id ?? ""]))
+    ctx.sql.exec("INSERT INTO mandate_proposals(id,device,terms,reason,created_at,expires_at,item_ids) VALUES (?,?,?,?,?,?,?)", id, device.id, JSON.stringify(input.terms), input.reason, now, expiresAt, itemIds === null ? null : JSON.stringify(itemIds))
     ctx.audit({ actor: `device:${device.id}`, action: "mandate.propose", target: id, detail: { device: device.id, classes: input.terms.classes, ttlDays: input.terms.ttlDays, items: input.terms.items === "all" ? "all" : input.terms.items.length } })
     scheduleMandateSweep(ctx)
     return { id, url: proposalUrl(ctx, invocation, id), expiresAt: iso(expiresAt) }
@@ -310,13 +391,20 @@ function proposalView(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invoc
   const device = row ? state.devices.find((d) => d.id === row.device) : undefined
   if (!row || p.kind !== "member" || device?.owner.kind !== "member" || device.owner.id !== p.memberId) throw new VaultError("not_found", "No such proposal.")
   const terms = JSON.parse(row.terms) as MandateProposedTerms
-  const refs = terms.items === "all" ? null : terms.items.flatMap((slug) => {
+  const ids = proposalItemIds(row)
+  // Without ids its slugs are text: never resolved against today's credentials.
+  // "all" names no slug, so it stays "all" with or without ids.
+  const refs = terms.items === "all" ? null : ids === null ? [] : terms.items.flatMap((slug) => {
     const credential = state.credentials.find((c) => c.slug === slug)
-    return credential && seesCredential(state, p, credential.id, now) ? [{ id: credential.id, slug }] : []
+    // A slug now on another credential than the one proposed names nothing.
+    if (!credential || ids[slug] !== credential.id) return []
+    return seesCredential(state, p, credential.id, now) ? [{ id: credential.id, slug }] : []
   })
+  const unbound = ids === null && terms.items !== "all" ? { unbound: terms.items } : {}
   return {
     id: row.id, device: { id: row.device, name: deviceName(ctx, row.device) },
-    items: refs ?? "all", hiddenItems: terms.items === "all" || refs === null ? 0 : terms.items.length - refs.length,
+    items: refs ?? "all", hiddenItems: terms.items === "all" || refs === null || ids === null ? 0 : terms.items.length - refs.length, ...unbound,
+    ...(row.closed_reason === "unbound" ? { closedReason: "unbound" as const } : {}),
     classes: terms.classes, caps: terms.caps, ttlDays: terms.ttlDays, schedule: terms.schedule, note: terms.note, reason: row.reason,
     state: row.mandate_id !== null ? "signed" : row.closed_at !== null || now >= row.expires_at ? "expired" : "open", mandate: row.mandate_id ?? row.closed_by,
     createdAt: iso(row.created_at), expiresAt: iso(row.expires_at),
@@ -362,6 +450,10 @@ function checkSignable(ctx: VaultContext, invocation: WorkspaceInvocationContext
     const row = one(ctx.sql.exec<ProposalRow>("SELECT * FROM mandate_proposals WHERE id=?", proposal))
     if (!row || row.device !== device.id) throw new VaultError("bad_request", "That proposal is not this machine's.")
     if (row.closed_at !== null || now >= row.expires_at) throw new VaultError("bad_request", "That proposal has expired or was already signed.")
+    const ids = proposalItemIds(row)
+    if (ids === null) throw new VaultError("bad_request", "That proposal has expired or was already signed.")
+    const moved = Object.entries(ids).filter(([slug, id]) => (state.credentials.find((c) => c.slug === slug)?.id ?? id) !== id).map(([slug]) => slug)
+    if (moved.length) throw new VaultError("conflict", `This proposal named ${moved.join(", ")}, which now ${moved.length === 1 ? "is" : "are"} another credential than the one proposed. Sign without the proposal, choosing the credentials yourself, or ask the machine to propose again.`)
   }
   return decision
 }
@@ -422,6 +514,14 @@ function candidates(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocat
   const reader = readerState(ctx, invocation)
   const items = state.credentials.flatMap((c) => c.slug !== undefined && credentialUnsignable(state, p.memberId, device, c, now) === null && seesCredential(reader, p, c.id, now) ? [{ id: c.id, slug: c.slug, never: candidateNever(ctx, c.id) }] : [])
   return { items: items.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0)) }
+}
+
+// A credential deleted: every open proposal that named it closes, so a
+// credential made later under its slug is never signed in its place.
+export function closeProposalsNaming(ctx: VaultContext, item: string): void {
+  for (const row of rows(ctx.sql.exec<ProposalRow>("SELECT * FROM mandate_proposals WHERE closed_at IS NULL AND item_ids IS NOT NULL"))) {
+    if (Object.values(proposalItemIds(row) ?? {}).includes(item)) ctx.sql.exec("UPDATE mandate_proposals SET closed_at=? WHERE id=?", ctx.now(), row.id)
+  }
 }
 
 // ---------------------------------------------------------------- pause, resume, stop
@@ -828,8 +928,9 @@ export function recordMandateUse(ctx: VaultContext, principal: Extract<AccessPri
 // The ask the relay opened, only a new one, that a mandate could have let
 // through (mandateCoverHint). A sweep already set prunes its line in time;
 // with none set, nothing else is due, and a day's sweep prunes it.
-export function recordMandateCoverAsk(ctx: VaultContext, approval: string, device: string, cover: MandateCoverHint): void {
+export function recordMandateCoverAsk(ctx: VaultContext, approval: string, device: string, item: string, cover: MandateCoverHint): void {
   ctx.sql.exec("INSERT OR IGNORE INTO mandate_cover_asks(approval,device,classes,at) VALUES (?,?,?,?)", approval, device, JSON.stringify(cover.classes), ctx.now())
+  for (const cls of cover.classes) ctx.sql.exec("INSERT OR IGNORE INTO mandate_asked(approval,device,item_id,cls,at) VALUES (?,?,?,?,?)", approval, device, item, cls, ctx.now())
   if (one(ctx.sql.exec("SELECT 1 FROM schedule WHERE area='mandates' AND key=?", MANDATE_SWEEP_KEY)) === null) ctx.schedule("mandates", MANDATE_SWEEP_KEY, ctx.now() + DAY_MS)
 }
 // The ask the relay opened, only a new one, for a request the machine's
@@ -902,6 +1003,7 @@ export function sweepMandates(ctx: VaultContext): void {
     ctx.sql.exec("DELETE FROM mandate_uses WHERE at<?", now - MANDATE_RECEIPT_KEEP_MS)
     ctx.sql.exec("DELETE FROM mandate_capped_asks WHERE at<?", now - CAPPED_ASK_KEEP_MS)
     ctx.sql.exec("DELETE FROM mandate_cover_asks WHERE at<?", now - CAPPED_ASK_KEEP_MS)
+    ctx.sql.exec("DELETE FROM mandate_asked WHERE at<=? OR at>?", now - MANDATE_ASKED_WINDOW_MS, now)
   })
   scheduleMandateSweep(ctx)
 }
@@ -923,7 +1025,7 @@ export function scheduleMandateSweep(ctx: VaultContext): void {
   // A settled end whose share's terms changed since is pruned by the next
   // sweep; one whose share went was deleted with it.
   const staleEnd = one(ctx.sql.exec("SELECT 1 FROM share_ends_settled e WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=e.share AND s.value=e.terms) LIMIT 1")) !== null
-  const leftovers = staleEnd || one(ctx.sql.exec("SELECT 1 FROM mandate_uses UNION ALL SELECT 1 FROM mandate_counts UNION ALL SELECT 1 FROM mandate_rate UNION ALL SELECT 1 FROM mandate_capped_asks UNION ALL SELECT 1 FROM mandate_cover_asks LIMIT 1")) !== null
+  const leftovers = staleEnd || one(ctx.sql.exec("SELECT 1 FROM mandate_uses UNION ALL SELECT 1 FROM mandate_counts UNION ALL SELECT 1 FROM mandate_rate UNION ALL SELECT 1 FROM mandate_capped_asks UNION ALL SELECT 1 FROM mandate_cover_asks LIMIT 1")) !== null || one(ctx.sql.exec("SELECT 1 FROM mandate_asked LIMIT 1")) !== null
   const next = due === null ? (leftovers ? now + DAY_MS : null) : Math.min(due, now + DAY_MS)
   if (next === null) ctx.unschedule("mandates", MANDATE_SWEEP_KEY)
   else ctx.schedule("mandates", MANDATE_SWEEP_KEY, Math.max(next, now + 1))
@@ -963,6 +1065,7 @@ function list(ctx: VaultContext, p: AccessPrincipal, invocation: WorkspaceInvoca
 export const workspaceMandateOps: NonNullable<Area["workspaceOps"]> = {
   "mandates.propose": { auth: ["device"], handler: (ctx, p, raw, invocation) => propose(ctx, p as AccessPrincipal, raw, invocation) },
   "mandates.mine": { auth: ["device"], handler: (ctx, p, _raw, invocation) => mine(ctx, p as AccessPrincipal, invocation) },
+  "mandates.mine_asked": { auth: ["device"], handler: (ctx, p) => askedView(ctx, p as AccessPrincipal) },
   "mandates.mine_one": { auth: ["device"], handler(ctx, p, raw) {
     mandatesAvailable(ctx)
     const principal = machineOnly(p as AccessPrincipal), { id } = parseOpInput(IdInput, raw)
@@ -998,7 +1101,7 @@ export const workspaceMandateOps: NonNullable<Area["workspaceOps"]> = {
 
 export const mandatesArea: Area = {
   name: "mandates",
-  migrations: [MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION],
+  migrations: [MANDATES_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATE_ASKED_MIGRATION, MANDATE_PROPOSALS_ITEMS_MIGRATION],
   workspaceOps: workspaceMandateOps,
   async alarm(ctx, key) {
     if (key === MANDATE_SWEEP_KEY) sweepMandates(ctx)

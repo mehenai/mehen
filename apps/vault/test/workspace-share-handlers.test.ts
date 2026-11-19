@@ -10,7 +10,7 @@
 // keeps the end exactly, removing or extending it is said beside the button
 // before the passkey, and a passed end is refused with nothing sent.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { Share, WorkspaceItemSummary, WorkspaceProject } from "@mehen/protocol/workspace"
+import type { Share, WorkspaceItemSummary, WorkspaceMemberView, WorkspaceProject } from "@mehen/protocol/workspace"
 import { renderDocument } from "../src/ui/layout.ts"
 import { workspaceProjectPage } from "../src/ui/pages/workspace-projects.ts"
 import { GALLERY_MEMBERS, GALLERY_TEAMS, VIEWERS, galleryShell } from "../src/ui/workspace-projects-gallery.ts"
@@ -65,8 +65,9 @@ afterEach(() => {
   browser = null
 })
 
-function open(): MiniBrowser {
-  const markup = renderDocument(workspaceProjectPage(galleryShell(VIEWERS.owner), { viewer: VIEWERS.owner, project, items, members: GALLERY_MEMBERS, overrides: [], teams: GALLERY_TEAMS })).value
+type Viewer = (typeof VIEWERS)[keyof typeof VIEWERS] | { role: "admin"; member: string }
+function open(shareWith: string | null = null, viewer: Viewer = VIEWERS.owner, members: WorkspaceMemberView[] | null = GALLERY_MEMBERS): MiniBrowser {
+  const markup = renderDocument(workspaceProjectPage(galleryShell(viewer), { viewer, project, items, members, overrides: [], teams: GALLERY_TEAMS, shareWith })).value
   browser = installPage(markup, (path, body) => {
     if (path === "/api/w/northwind/projects/action") return { status: 200, body: prepared((body as { input: Record<string, unknown> }).input) }
     if (path === "/api/w/northwind") return { status: 200, body: WORKSPACE }
@@ -90,6 +91,7 @@ function shareForm(b: MiniBrowser) {
   }
   return {
     option,
+    subject,
     pick(o: MiniElement) {
       o.selected = true
       subject.dispatchEvent(new MiniEvent("change", { bubbles: true }))
@@ -156,6 +158,89 @@ describe("the share form's team subjects in the browser", () => {
     form.pick(form.option("mem_tom00002"))
     await form.share()
     expect(sent(b, "/api/w/northwind/projects/action")).toEqual([{ change: "share", input: { project: PROJECT, subject: { kind: "member", member: "mem_tom00002" }, before: null, after: { level: "use", protected: false, expiresAt: null } } }])
+  })
+
+  // A share request's link names the member: the form starts
+  // open with them chosen, their current terms filled in.
+  it("?share= opens the form with that member chosen, and shares with them", async () => {
+    const b = open("mem_tom00002")
+    expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open")).toBe(true)
+    const form = shareForm(b)
+    expect(form.option("mem_tom00002").selected).toBe(true)
+    expect(b.document.querySelectorAll("option[selected]").map((o) => o.getAttribute("value"))).toEqual(["mem_tom00002"])
+    await form.share()
+    expect(sent(b, "/api/w/northwind/projects/action")).toEqual([{ change: "share", input: { project: PROJECT, subject: { kind: "member", member: "mem_tom00002" }, before: null, after: { level: "use", protected: false, expiresAt: null } } }])
+  })
+
+  it("?share= naming someone with a share starts from their terms; no ?share= leaves the form closed with no one chosen", () => {
+    const kim = shareForm(open("mem_kim00001"))
+    expect([kim.option("mem_kim00001").selected, kim.level.value, kim.protect.checked, kim.ends.value]).toEqual([true, "edit", true, KIM_DAY])
+    browser!.restore()
+    const b = open(null)
+    expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open")).toBe(false)
+    expect(b.document.querySelectorAll("option[selected]")).toEqual([])
+    expect(b.document.querySelector('[data-region="share-not-offered"]')).toBeNull()
+  })
+
+  // A share request whose member cannot be offered now (suspended or removed
+  // since it was raised, or the member list could not be read): the form
+  // says so and chooses no one, and Share prepares nothing, asking for no
+  // passkey, until the person picks someone themselves.
+  const UNAVAILABLE: [string, string, WorkspaceMemberView[] | null][] = [
+    ["suspended", "mem_tom00002", GALLERY_MEMBERS.map((m) => m.member === "mem_tom00002" ? { ...m, status: "suspended" as const } : m)],
+    ["removed", "mem_gone0001", GALLERY_MEMBERS],
+    ["unread", "mem_tom00002", null],
+  ]
+  for (const [why, shareWith, members] of UNAVAILABLE)
+    it(`?share= naming a member who is ${why === "unread" ? "not in a member list the page could not read" : why} chooses no one and shares only after a deliberate choice`, async () => {
+      const b = open(shareWith, VIEWERS.owner, members)
+      expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open")).toBe(true)
+      expect(b.document.querySelector('[data-region="share-not-offered"]')!.textContent).toBe("The person this share request named cannot be shared with here now: they may have been suspended or removed. Choose who to share with.")
+      const form = shareForm(b)
+      expect(form.subject.value).toBe("")
+      expect(b.document.querySelectorAll("option[selected]").map((o) => o.getAttribute("value"))).toEqual([""])
+      await form.share()
+      expect(sent(b, "/api/w/northwind/projects/action")).toEqual([])
+      expect(passkey.prompts).toBe(0)
+      const other = members === null ? form.subject.options.find((o) => o.getAttribute("data-kind") === "team")! : form.option("mem_kim00001")
+      form.pick(other)
+      await form.share()
+      expect(sent(b, "/api/w/northwind/projects/action")).toHaveLength(1)
+      expect(passkey.prompts).toBe(1)
+    })
+
+  it("refuses to prepare a share for anyone but the requested member unless the person changed the choice", async () => {
+    const b = open("mem_tom00002")
+    const form = shareForm(b)
+    // As a browser restoring a form can: the selection moves with no change made by the person.
+    form.option("mem_kim00001").selected = true
+    await form.share()
+    expect(sent(b, "/api/w/northwind/projects/action")).toEqual([])
+    expect(passkey.prompts).toBe(0)
+    form.pick(form.option("mem_kim00001"))
+    await form.share()
+    expect(sent(b, "/api/w/northwind/projects/action")).toEqual([expect.objectContaining({ change: "share", input: expect.objectContaining({ project: PROJECT, subject: { kind: "member", member: "mem_kim00001" } }) })])
+  })
+
+  for (const viewer of [VIEWERS.owner, { role: "admin" as const, member: "mem_tom00001" }])
+    it(`?share= naming a guest opens the form with the guest chosen for an ${viewer.role}`, () => {
+      const b = open("mem_sam00001", viewer)
+      expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open")).toBe(true)
+      expect(b.document.querySelectorAll("option[selected]").map((o) => o.getAttribute("value"))).toEqual(["mem_sam00001"])
+      expect(b.document.querySelector('[data-region="share-not-offered"]')).toBeNull()
+    })
+
+  it("?share= naming a guest a project manager may not share with says so, chooses no one, and shares with no one", async () => {
+    const b = open("mem_sam00001", VIEWERS.manager)
+    expect(b.document.querySelector('[data-region="share-fold"]')!.hasAttribute("open")).toBe(true)
+    expect(b.document.querySelector('[data-region="share-not-offered"]')!.textContent).toBe("Only an owner or admin can share this project with a guest.")
+    const form = shareForm(b)
+    expect(form.subject.value).toBe("")
+    expect(b.document.querySelectorAll("option[selected]").map((o) => o.getAttribute("value"))).toEqual([""])
+    expect(() => form.option("mem_sam00001")).toThrow()
+    await form.share()
+    expect(sent(b, "/api/w/northwind/projects/action")).toEqual([])
+    expect(passkey.prompts).toBe(0)
   })
 
   it("a prepared action about anyone but the chosen team refuses before the step-up starts", async () => {

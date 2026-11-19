@@ -4,7 +4,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest"
 import type { ApprovalBatchResult, ApprovalGroupRow, ApprovalOwnPageReason } from "@mehen/protocol/workspace"
 import type { ReviewRowBoot } from "../workspace-logic.ts"
-import { OWN_PAGE_OTHER_WORDS, OWN_PAGE_REASON_WORDS, reviewApproveLabel, reviewCodesWords, reviewCountWords, reviewEmptyWords, reviewOutcomeWords, reviewLacksButtonFor, reviewOwnPageWords, reviewRedraw, reviewReloadsForArrivals } from "./workspace-review-logic.ts"
+import { OWN_PAGE_OTHER_WORDS, OWN_PAGE_REASON_WORDS, reviewApproveLabel, reviewChangedWords, reviewCodesWords, reviewGroupCodeWords, reviewCountWords, reviewEmptyWords, reviewOutcomeWords, reviewLacksButtonFor, reviewOwnPageWords, reviewRedraw, reviewReloadsForArrivals } from "./workspace-review-logic.ts"
 
 describe("Review together's words", () => {
   const result = (outcomes: ApprovalBatchResult["results"][number]["outcome"][]): ApprovalBatchResult => ({ batch: "apb_1", results: outcomes.map((outcome, i) => ({ approval: `apr_${i}`, outcome, message: "" })), approved: 0, denied: 0, skipped: 0 })
@@ -17,7 +17,10 @@ describe("Review together's words", () => {
   })
 
   it("counts the bar's ticks and Approve, naming the ticked rows it can only deny", () => {
-    expect(reviewCodesWords(11)).toBe("I checked the codes against the agent's message (11 ticked)")
+    expect(reviewCodesWords(11)).toBe("The agent showed separate codes, and I checked them against the rows (11 ticked)")
+    expect(reviewGroupCodeWords("K7QM3P")).toBe("The agent showed me the code K7QM3P")
+    expect(reviewChangedWords(1)).toBe("An ask joined this group since the page loaded, marked New and not ticked. Check it, then tick the code again.")
+    expect(reviewChangedWords(3)).toBe("3 asks joined this group since the page loaded, marked New and not ticked. Check them, then tick the code again.")
     expect(reviewApproveLabel(11, 0)).toBe("Approve 11 with passkey")
     expect(reviewApproveLabel(10, 1)).toBe("Approve 10 with passkey (1 can only be denied)")
   })

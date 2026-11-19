@@ -161,12 +161,16 @@ export type ApiError = {
   // Only on a forbidden request that the approval dial's Let it work
   // refused rather than asking a person: why trust would not let it through.
   dialRefused?: import("./workspace.ts").ApprovalDialRefusal
+  // Only on a forbidden mandate proposal from a machine: it named every
+  // credential, or a credential or class it did not ask for lately.
+  mandateRefused?: import("./mandate-terms.ts").MandateProposalRefusal
   // Only on not_found from a Google step whose invitation is no longer
   // active, so a page can drop the code it saved without reading the message.
   reason?: "invite_inactive"
   // Only with approval_required: the review group or bundle the ask is in,
-  // and how many of its asks are open. next.url stays the ask's own page.
-  group?: { id: string; url: string; open: number }
+  // how many of its asks are open and, when it has one, the group code its
+  // Review together page shows. next.url stays the ask's own page.
+  group?: { id: string; url: string; open: number; code?: string }
   // Only with approval_required: the machine's mandate would have let this
   // request through but for today's caps of these classes.
   mandate?: { id: string; capped: import("./mandate-terms.ts").MandateClass[] }
@@ -178,7 +182,7 @@ export type ApiError = {
 }
 
 export function apiErrorExtrasValid(error: ApiError): boolean {
-  return (error.deciders === undefined || error.error === "approval_required") && (error.group === undefined || error.error === "approval_required") && (error.mandate === undefined || error.error === "approval_required") && (error.mandateCover === undefined || error.error === "approval_required") && (error.transition === undefined || error.error === "account_pending") && (error.refused === undefined || error.error === "conflict") && (error.ruleRefused === undefined || error.error === "forbidden") && (error.areaRefused === undefined || error.error === "forbidden") && (error.dialRefused === undefined || error.error === "forbidden") && (error.providerStatus === undefined || error.error === "provider_refused")
+  return (error.deciders === undefined || error.error === "approval_required") && (error.group === undefined || error.error === "approval_required") && (error.mandate === undefined || error.error === "approval_required") && (error.mandateCover === undefined || error.error === "approval_required") && (error.transition === undefined || error.error === "account_pending") && (error.refused === undefined || error.error === "conflict") && (error.ruleRefused === undefined || error.error === "forbidden") && (error.areaRefused === undefined || error.error === "forbidden") && (error.dialRefused === undefined || error.error === "forbidden") && (error.mandateRefused === undefined || error.error === "forbidden") && (error.providerStatus === undefined || error.error === "provider_refused")
 }
 
 export const ERROR_HEADER = "Mehen-Error"
@@ -607,8 +611,9 @@ export type PushRequestInput = z.infer<typeof PushRequest>
 export type ApprovalBundleOutcome = "ask" | "allowed" | "refused"
 // mandateCover: only on an "ask", as on approval_required to the machine
 // itself: a mandate could let requests like this through, and why this one
-// asked.
-export type ApprovalBundleCreated = { bundle: string; url: string; expiresAt: string; results: { index: number; outcome: ApprovalBundleOutcome; approval?: string; bindingCode?: string; mandateCover?: import("./mandate-terms.ts").MandateCoverHint; error?: Pick<ApiError, "error" | "message" | "next" | "dialRefused"> }[] }
+// asked. code: the bundle's group code, which its Review together page
+// shows, so the person checks one code for the whole bundle.
+export type ApprovalBundleCreated = { bundle: string; url: string; expiresAt: string; code?: string; results: { index: number; outcome: ApprovalBundleOutcome; approval?: string; bindingCode?: string; mandateCover?: import("./mandate-terms.ts").MandateCoverHint; error?: Pick<ApiError, "error" | "message" | "next" | "dialRefused"> }[] }
 // GET /v1/approvals/bundles/:id (long-polls up to 25 s with ?wait=1)
 export type ApprovalBundleStatus = { bundle: string; approvals: { id: string; status: ApprovalStatus["status"] }[] }
 
@@ -1077,8 +1082,9 @@ export type PendingAsk = {
 // break-glass notice of its tenant (never "join"); a member gets those plus
 // "join" when they are an owner.
 // `groups`: the review groups and bundles holding two or more of this
-// machine's open approvals, top level so no row changes shape.
-export type PendingGroup = { id: string; url: string; approvals: string[]; bundle: boolean }
+// machine's open approvals, top level so no row changes shape. code: the
+// group code its Review together page shows, when it has one.
+export type PendingGroup = { id: string; url: string; approvals: string[]; bundle: boolean; code?: string }
 export type PendingList = { pending: PendingAsk[]; notices?: SecurityNotice[]; groups?: PendingGroup[] }
 
 // GET /api/activity?days=7 (member). Counts over the audit log, per UTC day

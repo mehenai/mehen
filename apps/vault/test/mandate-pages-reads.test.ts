@@ -165,7 +165,7 @@ describe("the ask page", () => {
     if (asked.view === "detail") vault.answers.set("/approvals/apr_3mz8kq1vx5", { ...asked, approval: { ...asked.approval, owner: { kind: "member", member: TOM.member, name: "Tom" } } })
     vault.answers.set("/mandate-covers/apr_3mz8kq1vx5", { device: { id: fx.PEOPLE_DEVICE.device, name: fx.PEOPLE_DEVICE.name }, classes: ["change", "send"], state: "sign", mandate: null })
     const sign = await open(pages.ask, { id: "apr_3mz8kq1vx5" }, { viewer: TOM })
-    expect(sign).toContain(`<p class="small" data-region="mandate-cover"><a href="/w/${slug}/sign-mandate?device=${fx.PEOPLE_DEVICE.device}&amp;classes=change,send">Let ${fx.PEOPLE_DEVICE.name} carry on with requests like this</a></p>`)
+    expect(sign).toContain(`<p class="small" data-region="mandate-cover"><a href="/w/${slug}/sign-mandate?device=${fx.PEOPLE_DEVICE.device}">Let ${fx.PEOPLE_DEVICE.name} carry on with requests like this</a></p>`)
     vault.answers.set("/mandate-covers/apr_3mz8kq1vx5", { device: { id: fx.PEOPLE_DEVICE.device, name: fx.PEOPLE_DEVICE.name }, classes: ["send"], state: "paused", mandate: MANDATE().id })
     const paused = await open(pages.ask, { id: "apr_3mz8kq1vx5" }, { viewer: TOM })
     expect(paused.slice(paused.indexOf('data-region="mandate-cover"'))).toContain(`href="/w/${slug}/mandates/${MANDATE().id}"`)
@@ -209,14 +209,112 @@ describe("the mandate pages", () => {
     expect(vault.reads).not.toContain("/devices")
   })
 
-  it("opens the sign page on another mandate's terms, keeping the credentials this machine reaches", async () => {
+  // The live form, and the source's terms the person may choose to use.
+  const parts = (page: string) => {
+    const at = page.indexOf('<template data-region="mandate-source-form">')
+    return { live: at < 0 ? page : page.slice(0, at), source: at < 0 ? "" : page.slice(at, page.indexOf("</template>", at)) }
+  }
+  const checkedItems = (html: string) => [...html.matchAll(/data-input="mandate-item" value="(\w+)"[^>]*checked/g)].map((m) => m[1])
+  const checkedClasses = (html: string) => [...html.matchAll(/data-input="mandate-class" value="(\w+)" checked/g)].map((m) => m[1])
+  const broad = () => ({ ...MANDATE(), state: "expired" as const, endedReason: "expired" as const, items: "all" as const, classes: ["change", "delete", "read", "send"], caps: { read: 50_000, change: 10_000, send: 500, delete: 200 }, ttlDays: 90 as const })
+
+  it("names another mandate's terms as text with Use these terms, and opens the form narrow, for this machine or another with no history", async () => {
+    vault.answers.set(`/mandates/${MANDATE().id}`, broad())
     vault.answers.set(`/mandate-candidates?device=${fx.PEOPLE_DEVICE.device}`, { items: [CANDIDATES.items[1]!] })
     const page = await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}&from=${MANDATE().id}` })
     expect(mandateReads()).toEqual([`/mandates/${MANDATE().id}`, `/mandate-candidates?device=${fx.PEOPLE_DEVICE.device}`, "/mandates"])
-    expect([...page.matchAll(/data-input="mandate-item" value="(\w+)"[^>]*checked/g)].map((m) => m[1])).toEqual(["itm_slackplat000001"])
-    expect([...page.matchAll(/data-input="mandate-class" value="(\w+)" checked/g)].map((m) => m[1])).toEqual(["read", "change", "send"])
-    expect(page).toContain(`value="${MANDATE().note}"`)
+    const { live, source } = parts(page)
+    expect([checkedItems(live), checkedClasses(live)]).toEqual([[], ["read"]])
+    expect(live).toContain('data-input="mandate-ttl" value="30" checked')
+    expect(live).toContain('data-input="mandate-items" value="listed" checked')
+    expect(live).toContain('data-region="mandate-source"')
+    expect(live).toContain('data-action="mandate-use-source"')
+    // Its terms in words, and the form they would fill only once pressed.
+    expect(live).toContain("every credential it can use")
+    expect(source).toContain('data-input="mandate-items" value="all" checked')
+    expect(checkedClasses(source)).toEqual(["read", "change", "send", "delete"])
+    expect(source).toContain('data-input="mandate-ttl" value="90" checked')
     expect(page).not.toContain('data-region="mandate-renews"')
+  })
+
+  it("prefills only from an open, bound proposal: a closed legacy one or an expired one opens narrow, with its terms as text behind Use these terms", async () => {
+    const base = { id: "mdp_tomlaptop0000000001", device: { id: fx.PEOPLE_DEVICE.device, name: fx.PEOPLE_DEVICE.name }, items: [{ id: "itm_githubtom0000001", slug: "github-tom" }], hiddenItems: 0, classes: ["change", "delete", "read", "send"], caps: { read: 50_000, change: 10_000, send: 500, delete: 200 }, ttlDays: 90, schedule: null, note: "Everything", reason: "Everything", mandate: null, createdAt: "2026-11-01T09:00:00.000Z", expiresAt: "2026-11-08T09:00:00.000Z" }
+    const legacy = { ...base, state: "expired", items: [], unbound: ["github-tom"], closedReason: "unbound" }
+    const expired = { ...base, state: "expired" }
+    const boot = (page: string) => JSON.parse((/data-boot="([^"]*)"/.exec(page)?.[1] ?? "{}").replace(/&quot;/g, '"').replace(/&amp;/g, "&")) as { proposal?: string | null }
+    for (const [name, proposal] of [["legacy", legacy], ["expired", expired]] as const) {
+      vault.answers.set(`/mandate-proposals/${base.id}`, proposal)
+      const page = await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })
+      const { live, source } = parts(page)
+      expect([checkedItems(live), checkedClasses(live), ttl(live)], name).toEqual([[], ["read"], "30"])
+      expect(live, name).toContain('data-action="mandate-use-source"')
+      expect(boot(page).proposal, name).toBeNull()
+      expect(checkedClasses(source), name).toEqual(["read", "change", "send", "delete"])
+      expect(source, name).toContain('data-input="mandate-ttl" value="90" checked')
+      // The terms it proposed, in words on the card, whether or not any of
+      // its credentials can be offered now.
+      const card = live.slice(live.indexOf('data-region="mandate-source"'))
+      expect(card, name).toContain("read, change, send and delete")
+      expect(card, name).toContain("at most 50,000 reads")
+      expect(card, name).toContain("500 sends")
+    }
+    // A legacy one names its credentials as it named them, never matched to
+    // a credential here now.
+    vault.answers.set(`/mandate-proposals/${base.id}`, legacy)
+    const legacyCard = parts(await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })).live
+    expect(legacyCard).toContain("no credential that can be included now")
+    expect(legacyCard).toContain("It named github-tom before Mehen kept which credential each name meant")
+    // A legacy one for every credential says so on its card and in its
+    // source, while the live form stays narrow.
+    vault.answers.set(`/mandate-proposals/${base.id}`, { ...base, state: "expired", items: "all", closedReason: "unbound" })
+    const all = parts(await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` }))
+    expect([checkedItems(all.live), checkedClasses(all.live)]).toEqual([[], ["read"]])
+    expect(all.live).toContain("every credential it can use whose home you manage")
+    expect(all.source).toContain('data-input="mandate-items" value="all" checked')
+    // The open, bound one still opens on its terms, signed against it.
+    vault.answers.set(`/mandate-proposals/${base.id}`, { ...base, state: "open" })
+    const open_ = await open(pages.sign, {}, { viewer: TOM, query: `?proposal=${base.id}` })
+    expect(checkedClasses(parts(open_).live)).toEqual(["read", "change", "send", "delete"])
+    expect(boot(open_).proposal).toBe(base.id)
+    expect(open_).not.toContain('data-action="mandate-use-source"')
+  })
+
+  it("names a renewed mandate's terms as text with Use these terms, and opens the form narrow, even for an expired broad one", async () => {
+    vault.answers.set(`/mandates/${MANDATE().id}`, broad())
+    const page = await open(pages.sign, {}, { viewer: TOM, query: `?renew=${MANDATE().id}` })
+    const { live, source } = parts(page)
+    expect([checkedItems(live), checkedClasses(live)]).toEqual([[], ["read"]])
+    expect(live).toContain('data-input="mandate-ttl" value="30" checked')
+    expect(live).not.toContain('data-input="mandate-items" value="all" checked')
+    expect(live).toContain('data-action="mandate-use-source"')
+    expect(source).toContain('data-input="mandate-items" value="all" checked')
+    expect(source).toContain('data-input="mandate-ttl" value="90" checked')
+  })
+
+  it("names a renewed mandate's terms in words even when none of its credentials can be offered now", async () => {
+    vault.answers.set(`/mandates/${MANDATE().id}`, { ...broad(), items: ["gone-one", "gone-two"] })
+    const { live } = parts(await open(pages.sign, {}, { viewer: TOM, query: `?renew=${MANDATE().id}` }))
+    const card = live.slice(live.indexOf('data-region="mandate-source"'))
+    expect(card).toContain("no credential that can be included now")
+    expect(card).toContain("2 credentials it named cannot be included in this mandate now.")
+    expect(card).toContain("at most 50,000 reads")
+  })
+
+  it("says a copied mandate's credential the reader cannot include cannot be included, not that the machine cannot use it", async () => {
+    // The machine reaches slack-platform, but its home is not the reader's
+    // to manage, so the candidates leave it out.
+    vault.answers.set(`/mandates/${MANDATE().id}`, { ...broad(), items: ["github-tom", "slack-platform"] })
+    vault.answers.set(`/mandate-candidates?device=${fx.PEOPLE_DEVICE.device}`, { items: [CANDIDATES.items[0]!] })
+    const { live } = parts(await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}&from=${MANDATE().id}` }))
+    const card = live.slice(live.indexOf('data-region="mandate-source"'))
+    expect(card).toContain("One credential it named cannot be included in this mandate now.")
+    expect(card).not.toContain("can use now")
+  })
+
+  it("starts a fresh form, and a class not yet ticked, at the caps a machine may propose", async () => {
+    const page = await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}` })
+    const caps = Object.fromEntries([...page.matchAll(/data-input="mandate-cap" data-class="(\w+)" value="(\d+)"/g)].map((m) => [m[1], Number(m[2])]))
+    expect(caps).toEqual({ read: 500, change: 100, send: 10, delete: 5 })
   })
 
   it("answers an address no mandate could have as not found, reading nothing", async () => {
@@ -233,21 +331,38 @@ describe("the mandate pages", () => {
     expect([...page.matchAll(/data-input="mandate-item" value="(\w+)"/g)].map((m) => m[1])).toEqual(CANDIDATES.items.map((c) => c.id))
     expect(page).toContain('data-region="mandate-replaces"')
     expect(page).toContain('data-input="mandate-items" value="listed" checked')
-    expect(await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}&items=all` })).toContain('data-input="mandate-items" value="all" checked')
   })
 
-  it("opens from an ask on the classes it named, read always, and every class otherwise", async () => {
-    const ticked = (page: string) => [...page.matchAll(/data-input="mandate-class" value="(\w+)" checked/g)].map((m) => m[1])
-    expect(ticked(await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}&classes=send,nonsense` }))).toEqual(["read", "send"])
-    expect(ticked(await open(pages.sign, {}, { viewer: TOM, query: `?device=${fx.PEOPLE_DEVICE.device}` }))).toEqual(["read", "change", "send", "delete"])
+  const ticked = (page: string) => [...page.matchAll(/data-input="mandate-class" value="(\w+)" checked/g)].map((m) => m[1])
+  const items = (page: string) => [...page.matchAll(/data-input="mandate-item" value="(\w+)"[^>]*checked/g)].map((m) => m[1])
+  const ttl = (page: string) => /data-input="mandate-ttl" value="(\d+)" checked/.exec(page)?.[1]
+
+  it("opens with no proposal on the narrowest terms, whatever the address asks: no credential, read only, 30 days; every credential is the person's own choice", async () => {
+    for (const query of [`?device=${fx.PEOPLE_DEVICE.device}`, `?device=${fx.PEOPLE_DEVICE.device}&items=all&classes=change,send,delete`]) {
+      const page = await open(pages.sign, {}, { viewer: TOM, query })
+      expect([items(page), ticked(page), ttl(page)], query).toEqual([[], ["read"], "30"])
+      expect(page, query).toContain('data-input="mandate-items" value="listed" checked')
+      expect(page, query).toContain('<input type="radio" name="mandate-items" data-input="mandate-items" value="all">')
+    }
   })
 
-  it("renews a mandate on its terms, ticking the credentials it names that the person may name now", async () => {
+  it("opens a proposal on its own terms only: the address never widens them", async () => {
+    const proposal = { id: "mdp_tomlaptop0000000001", device: { id: fx.PEOPLE_DEVICE.device, name: fx.PEOPLE_DEVICE.name }, items: [{ id: "itm_githubtom0000001", slug: "github-tom" }], hiddenItems: 0, classes: ["change", "read"], caps: { read: 500, change: 100, send: 0, delete: 0 }, ttlDays: 7, schedule: null, note: "Triage", reason: "Triage", state: "open", mandate: null, createdAt: "2026-11-19T09:00:00.000Z", expiresAt: "2026-11-26T09:00:00.000Z" }
+    vault.answers.set(`/mandate-proposals/${proposal.id}`, proposal)
+    for (const query of [`?proposal=${proposal.id}`, `?proposal=${proposal.id}&items=all&classes=send,delete`]) {
+      const page = await open(pages.sign, {}, { viewer: TOM, query })
+      expect([items(page), ticked(page), ttl(page)], query).toEqual([["itm_githubtom0000001"], ["read", "change"], "7"])
+      expect(page, query).not.toContain('data-input="mandate-items" value="all" checked')
+    }
+  })
+
+  it("renews a mandate: its terms, with the credentials it names that the person may name now, wait behind Use these terms", async () => {
     const page = await open(pages.sign, {}, { viewer: TOM, query: `?renew=${MANDATE().id}` })
     expect(mandateReads()).toEqual([`/mandates/${MANDATE().id}`, `/mandate-candidates?device=${fx.PEOPLE_DEVICE.device}`, "/mandates"])
-    expect([...page.matchAll(/data-input="mandate-item" value="(\w+)"[^>]*checked/g)].map((m) => m[1])).toEqual(["itm_githubtom0000001", "itm_slackplat000001"])
-    expect(page).toContain('value="Triage issues and post the daily build summary"')
-    expect(page).toContain('data-input="mandate-ttl" value="30" checked')
+    const { live, source } = parts(page)
+    expect(checkedItems(live)).toEqual([])
+    expect(checkedItems(source)).toEqual(["itm_githubtom0000001", "itm_slackplat000001"])
+    expect(source).toContain('value="Triage issues and post the daily build summary"')
   })
 
   it("refuses the form to anyone but the machine's owner", async () => {

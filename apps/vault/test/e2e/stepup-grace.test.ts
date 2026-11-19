@@ -147,6 +147,51 @@ it("an ordinary approval and a private credential's deletion carry the grace on 
   expect(JSON.parse(deleted.detail)).toMatchObject({ actor: { kind: "member", member: member.id }, confirmation: { kind: "grace" } })
 })
 
+it("signing in with a passkey opens the window: an ask is then decided with no second passkey, and an always-fresh step still asks", async () => {
+  const f = await setup()
+  const machine = await f.protectedMachine(f.alex, f.work)
+  const asked = (await body<{ approval: string }>(await f.deviceCall(machine, "/v1/runs", { project: f.platform.id, env: "prod", envSource: "flag", remote: null, worktree: "/signed-in", head: null, vars: [], command: "node signed-in.js", argv: ["node", "signed-in.js"] }), 409)).approval
+  f.env.STEPUP_GRACE = "on"
+  await f.signin(f.alex)
+  const passkey = () => f.db.prepare("SELECT counter,last_used_at FROM passkeys WHERE account=?").bind(f.alex.account).all().then(r => r.results)
+  const signedIn = await passkey()
+  const seq = (await f.sql<{ seq: number }>(f.work, "SELECT MAX(seq) AS seq FROM audit"))[0]!.seq
+
+  const decide = await body<WorkspaceStepUpAction>(await f.request(`/api/w/${WS}/approvals/${asked}/action`, f.alex, { decision: "approve" }))
+  await body(await graced(f, f.alex, `/approvals/${asked}/decide`, { decision: "approve" }, decide))
+  expect(await passkey()).toEqual(signedIn)
+  const decided = await f.sql<{ detail: string }>(f.work, "SELECT detail FROM audit WHERE action LIKE 'approval.%' AND seq>?", seq)
+  expect(decided.map(row => (JSON.parse(row.detail) as { confirmation?: unknown }).confirmation)).toEqual([{ kind: "grace", provenAt: expect.any(Number) }])
+
+  const terms: MandateTerms = { device: machine.device, items: "all", classes: ["read"], caps: { read: 100, change: 0, send: 0, delete: 0 }, ttlDays: 7, schedule: null, note: "After signing in" }
+  const sign = await body<WorkspaceStepUpAction>(await f.request(`/api/w/${WS}/mandates/action`, f.alex, { op: "sign", terms }))
+  const fresh = await body<{ nonce: string; grace?: unknown }>(await f.request(`/api/w/${WS}/stepup/start`, f.alex, { action: sign }))
+  expect(fresh).toEqual({ nonce: expect.any(String), options: expect.anything() })
+})
+
+it("with the approval dial at Let it work, a passkey sign-in's window still decides a protected run's ask, and never moves the dial to ask less", async () => {
+  const f = await setup()
+  const machine = await f.protectedMachine(f.alex, f.work)
+  const less: WorkspaceStepUpAction = { type: "workspace.approvals", before: "writes", after: "work" }
+  expect(await body(await f.signed(`/api/w/${WS}/settings/approvals`, f.alex, { before: "writes", after: "work" }, less, WS))).toEqual({ level: "work" })
+  // Let it work never lets a protected run through: it still asks a person.
+  const asked = (await body<{ approval: string }>(await f.deviceCall(machine, "/v1/runs", { project: f.platform.id, env: "prod", envSource: "flag", remote: null, worktree: "/dial", head: null, vars: [], command: "node dial.js", argv: ["node", "dial.js"] }), 409)).approval
+  f.env.STEPUP_GRACE = "on"
+  await f.signin(f.alex)
+
+  const decide = await body<WorkspaceStepUpAction>(await f.request(`/api/w/${WS}/approvals/${asked}/action`, f.alex, { decision: "approve" }))
+  await body(await graced(f, f.alex, `/approvals/${asked}/decide`, { decision: "approve" }, decide))
+  expect(await f.sql(f.work, "SELECT status FROM approvals WHERE id=?", asked)).toEqual([{ status: "approved" }])
+
+  // Asking more needs no passkey; asking less again needs a fresh one, window or not.
+  expect(await body(await f.request(`/api/w/${WS}/settings/approvals`, f.alex, { before: "work", after: "writes" }))).toEqual({ level: "writes" })
+  const started = await body<{ nonce: string; grace?: unknown }>(await f.request(`/api/w/${WS}/stepup/start`, f.alex, { action: less }))
+  expect(started).toEqual({ nonce: expect.any(String), options: expect.anything() })
+  const refused = await f.request(`/api/w/${WS}/settings/approvals`, f.alex, { before: "writes", after: "work", stepUp: { nonce: started.nonce, grace: true } })
+  expect(refused.status).toBe(403)
+  expect(await body(await f.request(`/api/w/${WS}/settings/approvals`, f.alex, { before: "writes", after: "writes" }))).toEqual({ level: "writes" })
+})
+
 it("a workspace created on the window says so on its account event; one created with a passkey does not", async () => {
   const f = await setup()
   f.env.STEPUP_GRACE = "on"

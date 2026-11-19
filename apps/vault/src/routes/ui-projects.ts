@@ -159,7 +159,8 @@ export const WORKSPACE_PROJECT_PAGES: WorkspacePage[] = [
         overridesServed ? optional<{ overrides: ProjectOverride[] }>(rc, page, `/projects/${id}/overrides`) : Promise.resolve(null),
         teamsServed ? optional<{ teams: TeamView[] }>(rc, page, "/teams") : Promise.resolve(null),
       ])
-      return render(rc, page, project, (p) => workspaceProjectPage(page.shell, { viewer, project: p, items: items?.items ?? null, members, overrides: overrides?.overrides ?? null, teams: teams?.teams ?? null }))
+      const shareWith = rc.url.searchParams.get("share")
+      return render(rc, page, project, (p) => workspaceProjectPage(page.shell, { viewer, project: p, items: items?.items ?? null, members, overrides: overrides?.overrides ?? null, teams: teams?.teams ?? null, shareWith }))
     },
   },
   {

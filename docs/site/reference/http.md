@@ -24,7 +24,7 @@ Machines talk to the vault under `https://app.mehen.dev/v1/`. Every request from
 | `POST /v1/approvals/bundles`, `GET /v1/approvals/bundles/:id` | Ask for up to 20 relay requests at once, `{ requests, reason? }`, each as for `/v1/relay` without `approval` or `replaces`: the vault checks each without sending any and holds those that need a human in one bundle, answering `{ bundle, url, expiresAt, results }`. The `GET` answers `{ bundle, approvals: [{ id, status }] }`; `?wait=1` long-polls up to 25 seconds. Refused with `forbidden` where deciding asks together is off. |
 | `POST /v1/fill` | One field of a credential for one web page, `{ item, field, origin, page, context?, approval?, recipient }`, sealed to `recipient`, the machine's throwaway public key: `{ box, item, field, input, label, origin, validUntil?, by }`. `mehen fill` calls it. |
 | `POST /v1/push` | Ask for one secret field to be put into a provider's secret store ([Put a credential into another service](../guides/push.md)), `{ item, field?, to, with?, reason? }`, with `to` the destination as JSON in its canonical form. The answer is `approval_required` with the ask, or `{ push, item, field, version, destination, via, outcome, at }` when this machine did the same push in the last ten minutes. Never the value. `mehen push` calls it. |
-| `POST /v1/mandates/proposals`, `GET /v1/mandates`, `GET /v1/mandates/:id`, `GET /v1/mandates/:id/uses`, `POST /v1/mandates/:id/pause` | Propose a mandate, list this machine's mandates and open proposals, read one, page through what went through on trust, pause one ([Mandates](#mandates)). Every route answers `not_found`, "No such route.", where mandates are off. `mehen mandate` calls them. |
+| `POST /v1/mandates/proposals`, `GET /v1/mandates`, `GET /v1/mandates/asked`, `GET /v1/mandates/:id`, `GET /v1/mandates/:id/uses`, `POST /v1/mandates/:id/pause` | Propose a mandate, list this machine's mandates and open proposals, say what it may propose, read one, page through what went through on trust, pause one ([Mandates](#mandates)). Every route answers `not_found`, "No such route.", where mandates are off. `mehen mandate` calls them. |
 | `GET /v1/policy/context?item=<slug>`, `POST /v1/policy/preview`, `POST /v1/policy/proposals`, `GET /v1/policy/proposals/:id`, `POST /v1/policy/proposals/:id/cancel`, `GET /v1/policy/rules`, `POST /v1/policy/rules/:id/revoke` | Standing rules and task grants: an item's policy as this machine meets it, what a rule from a held request would be, a proposal (a rule, or with `area` a task grant), its state (`?wait=1` long-polls), cancelling your own, this key's rules (`?item=<slug>` narrows, `include=grants` adds task grants) and revoking one. `mehen policy` calls them. Where standing rules are off, preview and propose answer `forbidden`, "Policy widening is not available yet." `GET /v1/policy/state` and `POST /v1/policy/grants/:id/revoke`, from the retired policy windows, always answer so, and `POST /v1/policy/overrides/:id/revoke` answers `not_found`. |
 | `POST /v1/adoptions`, `POST /v1/adoptions/index`, `POST /v1/adoptions/:id/items`, `GET /v1/adoptions/:id`, `POST /v1/adoptions/:id/cancel` | Adoption batches: start one, send the plan's value-free index, upload items sealed to the vault into it, read where it stands (`?wait=1` long-polls) and cancel it. `mehen adopt submit`, `status` and `cancel` call them ([Bring a machine's credentials into Mehen](../guides/adopt.md)). |
 | `GET /v1/backup/recipients`, `GET /v1/backup/status`, `POST /v1/backup/exports` | Backups: the workspace's backup keys, their status with your own keys' last export, and an export to one of your keys from an owner's machine, `{ export, ciphertext }` with the ciphertext in base64 and its SHA-256 in `Mehen-Backup-Sha256`; the machine only ever receives ciphertext. `mehen backup snapshot`, `status` and `export` call them ([Back up a machine before adopting](../guides/backup.md)). |
@@ -102,13 +102,19 @@ type MandatePropose = {
     items: "all" | string[]     // credential slugs, sorted and each once, 1 to 200
     classes: MandateClass[]     // sorted and each once, always with "read"
     caps: MandateCaps           // 1 to the most for each ticked class: 50000, 10000, 500, 200
-    ttlDays: 1 | 7 | 30 | 90
+    ttlDays: 1 | 7 | 30 | 90     // a machine's proposal: at most 30
     schedule: MandateSchedule | null
     note: string                // 1 to 200
   }
   reason: string                // 1 to 200
 }
 type MandateProposalCreated = { id: string; url: string; expiresAt: string; existing?: true }
+
+// GET /v1/mandates/asked: what this machine may propose, sorted: the credentials
+// it can still reach and the classes besides read of its own held requests that
+// carried mandateCover and no person rejected, and of what its own mandates let
+// through, from the last 30 days up to now
+type MandateAsked = { items: string[]; classes: MandateClass[] }
 
 // GET /v1/mandates: newest first, at most 20, with this machine's open proposals
 type MandateList = {
@@ -145,7 +151,7 @@ type MandateReceiptsPage = {
 type MandatePause = { rev: number }
 ```
 
-A proposal with the same terms and reason as an open one of this machine answers that one with `existing: true`. A fourth open proposal is refused with `conflict`, carrying the newest one's link in `next.url`, and an eleventh in a UTC day with `rate_limited`. A workload may pause its machine's mandate but not propose or read one, and neither a team's machine nor a guest's machine may propose one; each is refused with `forbidden`, with `next.command` naming `mehen policy propose --from`. Pausing a paused or tripped mandate changes nothing and succeeds; pausing an active one at an old `rev`, or one that has ended, is `conflict`. A receipt's `entry` is the reviewed route, or `unreviewed`; its `credential` is null for a credential this machine cannot use now. The machine never sees whether its signer still stands behind a mandate.
+A proposal that names `"all"`, a credential not in `GET /v1/mandates/asked`, a class besides `read` not in it, a `ttlDays` above 30 or a cap above 500 reads, 100 changes, 10 sends or 5 deletes is refused with `forbidden` and `mandateRefused` (`items_all`, `item_unasked`, `class_unasked`, `term_too_long` or `caps_too_high`), whose message says what to drop or lower. Its `next.command`, when present, proposes the same terms cut to what is allowed, with the same `--schedule`; it is left out when there is no valid bounded retry (nothing asked for, more than 200 credentials, or an explicit list sharing none with what was asked for), and `next.say` says what to do instead. A proposal with the same terms and reason as an open one of this machine answers that one with `existing: true`. A fourth open proposal is refused with `conflict`, carrying the newest one's link in `next.url`, and an eleventh in a UTC day with `rate_limited`. A workload may pause its machine's mandate but not propose or read one, and neither a team's machine nor a guest's machine may propose one; each is refused with `forbidden`, with `next.command` naming `mehen policy propose --from`. Pausing a paused or tripped mandate changes nothing and succeeds; pausing an active one at an old `rev`, or one that has ended, is `conflict`. A receipt's `entry` is the reviewed route, or `unreviewed`; its `credential` is null for a credential this machine cannot use now. The machine never sees whether its signer still stands behind a mandate.
 
 ## Scoped enrolment
 

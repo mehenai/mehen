@@ -130,6 +130,16 @@ export function initMandateSign(boot: Boot, shell: ShellState | null): void {
   }
   form.addEventListener("change", redraw)
   form.addEventListener("input", redraw)
+  // A renewed or copied mandate's terms fill the form only when pressed.
+  const source = document.querySelector<HTMLTemplateElement>('template[data-region="mandate-source-form"]')
+  const use = document.querySelector<HTMLButtonElement>('[data-action="mandate-use-source"]')
+  if (source && use) use.addEventListener("click", () => {
+    form.replaceChildren(source.content.cloneNode(true))
+    const zone = form.querySelector<HTMLInputElement>('[data-input="mandate-tz"]')
+    if (zone && zone.value === "") zone.value = timeZone
+    use.disabled = true
+    redraw()
+  })
   redraw()
   // withBusy enables the button again after a refusal; redraw puts back
   // whether the terms can be signed.

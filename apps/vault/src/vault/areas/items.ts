@@ -29,7 +29,6 @@ import type { ItemRecord, ItemsService, NewItem } from "../services.ts"
 import { deviceCovers } from "./devices.ts"
 import { credentialOps, workspaceItemOps } from "./items-workspace.ts"
 import { workspacePostureOps } from "./postures-workspace.ts"
-import { forgetConnection } from "./oauth.ts"
 import { beforeManagementChange } from "./management-guard.ts"
 
 // Op inputs arrive as `unknown` across the DO boundary; every op parses its own.

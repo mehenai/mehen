@@ -139,9 +139,12 @@ describe("approval_required through the Worker", () => {
     }
     const first = await relay(machine, "file-one", "mehen/0.3.17")
     const [row] = await f.sql<{ review_group: string }>(f.work, "SELECT review_group FROM approvals WHERE id=?", first.approval)
-    expect(first.group).toEqual({ id: row!.review_group, url: `https://vault.test/w/${WS}/g/${row!.review_group}`, open: 1 })
+    const [stored] = await f.sql<{ code: string }>(f.work, "SELECT code FROM approval_group_codes WHERE review_group=?", row!.review_group)
+    expect(first.group).toEqual({ id: row!.review_group, url: `https://vault.test/w/${WS}/g/${row!.review_group}`, open: 1, code: stored!.code })
     expect(first.next.url).toBe(`https://vault.test/w/${WS}/a/${first.approval}`)
     for (const [file, agent] of [["file-two", "mehen/0.3.16"], ["file-three", null], ["file-four", "curl/8.0"]] as const) expect(await relay(machine, file, agent), String(agent)).not.toHaveProperty("group")
-    expect((await relay(machine, "file-five", "mehen/0.3.17")).group).toMatchObject({ open: 5 })
+    expect((await relay(machine, "file-five", "mehen/0.3.17")).group).toMatchObject({ open: 5, code: stored!.code })
+    // The page the link opens shows that one code for the person to tick.
+    expect((await page(f, `/w/${WS}/g/${row!.review_group}`, f.alex)).text).toContain(`The agent showed me the code ${stored!.code}`)
   })
 })

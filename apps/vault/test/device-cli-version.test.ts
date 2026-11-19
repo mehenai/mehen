@@ -220,9 +220,10 @@ describe("an approval_required answer's review group", () => {
       const slug = (await deviceInvocation(ctx)).workspace.slug
       const first = await refusal("one", "0.3.17")
       const group = ctx.sql.exec<{ review_group: string }>("SELECT review_group FROM approvals WHERE id=?", first.approval as string).toArray()[0]!.review_group
-      expect(first.group).toEqual({ id: group, url: `https://vault.test/w/${slug}/g/${group}`, open: 1 })
+      const code = ctx.sql.exec<{ code: string }>("SELECT code FROM approval_group_codes WHERE review_group=?", group).toArray()[0]!.code
+      expect(first.group).toEqual({ id: group, url: `https://vault.test/w/${slug}/g/${group}`, open: 1, code })
       expect((first.next as { url: string }).url).toBe(`https://vault.test/w/${slug}/a/${first.approval as string}`)
-      expect((await refusal("two", "0.4.0")).group).toEqual({ id: group, url: `https://vault.test/w/${slug}/g/${group}`, open: 2 })
+      expect((await refusal("two", "0.4.0")).group).toEqual({ id: group, url: `https://vault.test/w/${slug}/g/${group}`, open: 2, code })
       for (const version of ["0.3.16", "0.3.0", null, undefined]) expect(await refusal("three", version), String(version)).not.toHaveProperty("group")
       const off = Object.assign(Object.create(ctx) as typeof ctx, { env: { ...ctx.env, APPROVAL_BATCHES: "off" } })
       expect(await refusal("four", "0.3.17", off)).not.toHaveProperty("group")

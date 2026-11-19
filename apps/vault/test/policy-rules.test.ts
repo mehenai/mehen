@@ -19,7 +19,7 @@ import { storedApprovalProjection, workspaceApproval, workspaceApprovalOps } fro
 import { prepareCredential, storeCredential } from "../src/vault/areas/items-workspace.ts"
 import { workspacePolicyOps } from "../src/vault/areas/policy-workspace.ts"
 import { authoriseWorkspaceRelay } from "../src/vault/areas/relay-workspace.ts"
-import { accessState, principalOf as invocationPrincipal, type WorkspaceInvocationContext } from "../src/vault/areas/workspace-runtime.ts"
+import { accessState, openAskCount, principalOf as invocationPrincipal, type WorkspaceInvocationContext } from "../src/vault/areas/workspace-runtime.ts"
 import type { AccountInvocationAuth } from "../src/vault/core.ts"
 import { forwardRelay } from "../src/relay/forward.ts"
 import { setUpstreamFetch } from "../src/relay/upstream.ts"
@@ -35,7 +35,8 @@ import { PROJECT_RUN_INPUT, approvedProjectRun, projectFixture } from "./project
 import { seedRelayProject, seedRelayVar } from "./relay-fixtures.ts"
 import { registerCredentialProvider } from "../src/vault/areas/items-workspace.ts"
 import { workspaceRunOps } from "../src/vault/areas/runs-workspace.ts"
-import { credentialInput, credentialsFixture, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
+import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
+import { createWorkspaceIntake } from "../src/vault/areas/intake-workspace.ts"
 import { fixtureSql } from "./fixture-sql.ts"
 import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
@@ -153,6 +154,21 @@ async function extend(ctx: VaultContext, who: Who, id: string, ttlSeconds: RuleD
   expect(action).toMatchObject({ type: "policy.decide", proposal: id, effectDigest: await policyRuleExtendDigest(id, ttlSeconds) })
   return op(ctx, "policy.rules.extend", who, { id, ttlSeconds }, action)
 }
+
+describe("a machine at its 20 open asks", () => {
+  it("is refused a rule proposal with the link to its oldest open ask, and nothing is proposed", async () => {
+    const f = await credentialsFixture()
+    await inRules(f.tenant, async (ctx) => {
+      await seedLinear(ctx)
+      const oldest = await held(ctx, linearCall(comment("First")))
+      const asker = devicePrincipal("dev_owner"), invocation = await deviceInvocation(ctx, "dev_owner")
+      for (let n = 1; n < 20; n++) createWorkspaceIntake(ctx, asker, { kind: "api-key", slug: `asked-${n}`, reason: "test", binding: { hosts: ["api.example.com"] }, home: "project", project: "prj_a" }, invocation)
+      expect(openAskCount(ctx, "dev_owner", ctx.now())).toBe(20)
+      await expect(op(ctx, "policy.propose", { device: "dev_owner" }, { from: exampleComment("linear-work"), reason: "Comment on issues" })).rejects.toMatchObject({ code: "rate_limited", message: "This machine already has 20 open asks. Settle one before asking again.", extra: { next: { url: `https://vault.test/w/work/a/${oldest}`, say: "Ask the person to decide this machine's open asks at the link, then ask for the rest." } } })
+      expect(count(ctx, "policy_proposals")).toBe(0)
+    })
+  })
+})
 
 describe("remember and cover", () => {
   it("makes a rule from the approved request; the next commentCreate passes with Mehen-Rule and counts its use", async () => {

@@ -38,7 +38,6 @@ import type { ItemRecord, RunPlaceholder,  } from "../services.ts"
 import { digestOf } from "./approvals.ts"
 import { deviceCovers, devicePolicyState } from "./devices.ts"
 import { items } from "./items.ts"
-import { oauth } from "./oauth.ts"
 import { workspaceRelayOps } from "./relay-workspace.ts"
 import { projects } from "./projects.ts"
 import { runs } from "./runs.ts"
@@ -219,9 +218,6 @@ async function loadUsableItem(ctx: VaultContext, principal: DevicePrincipal, slu
   }
   if (item.status === "needs_reauth") {
     if(hooks)hooks.reauth(item)
-    // The OAuth service throws needs_reauth with a fresh reconnect link
-    // without decrypting anything.
-    if (item.kind === "oauth-connection") await oauth.accessToken(ctx, item)
     throw new VaultError("needs_reauth", `"${slug}" needs to be set up again by a human.`, {
       next: { url: `${ctx.env.VAULT_ORIGIN}/items/${slug}`, say: `The credential "${slug}" is no longer valid; a human must replace it in the vault.` },
     })
@@ -508,7 +504,8 @@ function injectedHeaderNames(item: ItemRecord): string[] {
 }
 
 async function secretsFor(ctx: VaultContext, item: ItemRecord): Promise<Record<string, string>> {
-  if (item.kind === "oauth-connection") return { access_token: await oauth.accessToken(ctx, item) }
+  // A connection's token is only ever read through a workspace's hooks.
+  if (item.kind === "oauth-connection") throw new VaultError("internal", `"${item.slug}" is an OAuth connection, whose token is read only through a workspace.`)
   return items.openSecrets(ctx, item)
 }
 

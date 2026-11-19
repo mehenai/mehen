@@ -21,10 +21,10 @@ Mandates are switched on workspace by workspace. Where they are off, every manda
 | Term | What it is | Default on the sign page |
 | --- | --- | --- |
 | Machine | One machine, owned by the person signing | The machine the page was opened for |
-| Credentials | Credentials ticked one by one, or every credential the machine can use whose home the signer manages, now and later | None ticked; `?items=all` on the link chooses every one |
-| Kinds | `read`, `change`, `send` and `delete`; read is always included | All four |
-| Caps | Requests a day for each kind ticked, counted per UTC day | 5000 reads, 2000 changes, 50 sends and 20 deletes; at most 50000, 10000, 500 and 200 |
-| How long | 1, 7, 30 or 90 days | 90 days |
+| Credentials | Credentials ticked one by one, or every credential the machine can use whose home the signer manages, now and later | None ticked; choosing every credential is done on the page, never by its address |
+| Kinds | `read`, `change`, `send` and `delete`; read is always included | Read alone |
+| Caps | Requests a day for each kind ticked, counted per UTC day | 500 reads, 100 changes, 10 sends and 5 deletes, for a fresh form and a kind newly ticked; at most 50000, 10000, 500 and 200 by a deliberate edit |
+| How long | 1, 7, 30 or 90 days | 30 days |
 | When | At any time, or up to seven windows of days and hours in one time zone | At any time |
 | What it is for | A note of up to 200 characters, seen by everyone who can see the machine | "Routine work on" and the machine's name |
 
@@ -46,7 +46,7 @@ Whatever is ticked, these ask every time:
 - anything in a managed or frozen workspace;
 - reveal, lease, fill, push, connect and enrolment, which a mandate is never asked about.
 
-A mandate is also only one of four things that let a held request through, and the last asked. A standing rule, task grant or posture that covers a request comes first, and that request is not a mandate use. When a request uses several credentials and one of them is covered by nothing, the request asks and nothing is spent.
+A mandate is also only one of five things that let a held request through, and the last asked. A standing rule, task grant, posture or the workspace's **Let it work** setting that covers a request comes first, and that request is not a mandate use. When a request uses several credentials and one of them is covered by nothing, the request asks and nothing is spent.
 
 ### What "never" means on a service nobody has reviewed
 
@@ -65,7 +65,7 @@ A route that sends money but whose path says nothing about money, on a service M
 - **Resume:** the signer only, never the machine. When the signer or the machine paused it and nothing has changed since they signed, resuming needs no passkey. After an owner's or admin's pause it needs the signer's passkey, which the 15-minute window may cover. After a trip, or once it has lapsed (below), it needs a fresh passkey every time.
 - **Stop:** the signer, or an owner or admin who can see the machine, with no passkey. Stop is final: to let the machine carry on later, someone signs a new one.
 
-A mandate ends on its own at its end date. Three days before, its signer is told, and the page offers **Renew**; every ended mandate the signer could sign again offers **Sign again with these terms**, however long ago it ended.
+A mandate ends on its own at its end date. Three days before, its signer is told, and the page offers **Renew**; every ended mandate the signer could sign again offers **Sign again with these terms**, however long ago it ended. Either opens the sign page on the narrowest terms with the old ones in words; pressing **Use these terms** fills them in.
 
 ## When the signer's standing changes
 
@@ -80,6 +80,8 @@ Revoking the machine ends its mandate for good, as a stop does, and so does remo
 ## How a machine asks for one
 
 The machine proposes; a person decides. `mehen mandate propose --note "<what it is for>"` (MCP `vault_mandate` with `action: "propose"`) prints an ask titled "Trust this machine" and exits 0. Nothing is covered by proposing. A team's or a guest's machine cannot propose one: the refusal is `forbidden`, with `next.command` naming `mehen policy propose --from`. The link opens the sign page on the proposed terms, which the person may change before signing. A proposal lasts 7 days.
+
+By default the proposal names the credentials and kinds this machine asked for in the last 30 days (`GET /v1/mandates/asked`), with `read`, for 30 days, at low caps: 500 reads, 100 changes, 10 sends and 5 deletes a day. A machine may propose a mandate only for what it asked for, and no wider: the vault refuses a proposal that names every credential (`mandateRefused: "items_all"`), a credential it has not asked for (`item_unasked`), a class besides `read` it has not asked for (`class_unasked`), more than 30 days (`term_too_long`) or a cap above 500 reads, 100 changes, 10 sends or 5 deletes a day (`caps_too_high`). What it may propose is what it asked for (and not rejected) or used under its own mandate: each credential and class of its own held requests that carried a `mandateCover` hint, unless a person rejected that ask, and of the requests its own mandate let through, from the last 30 days up to now, for credentials it can still reach. An ask left to lapse still counts, and so does another ask of the same credential and kind when one is rejected; another machine's never count. A machine can make that history itself, by asking: it narrows a proposal to what the agent has been doing, and the person still decides. The refusal is `forbidden`, names what to drop or lower and what it asked for, and `next.command` proposes the same terms cut to what is allowed, with the same hours (`--schedule`, quoted for a shell). There is no command when there is no valid bounded retry: when it would name more than 200 credentials (choose at most 200 with `--items`), or when an explicit list shares no credential with what was asked for (choose from those with `--items`). A proposal keeps the credential behind each slug it names: deleting a credential closes the open proposals that name it, and signing one whose slug now names another credential is refused. The sign page opens an open proposal on its own terms only, whatever its address says; a proposal that is closed, signed, expired or from before Mehen kept its credentials opens on the narrowest terms, its terms in words behind **Use these terms**. Every unsigned open proposal made before Mehen kept those credentials closes on upgrade, with a note on its page that the machine can propose again; it shows what it named as text and preselects nothing. Signed mandates are untouched. Renewing a mandate, or copying another machine's, opens the form on the narrowest terms too: the old terms are shown in words, and only pressing **Use these terms** puts them in the form. This binds the machine alone: the person who signs may tick any credential and kind, and choose any length and caps, on the sign page, with the passkey as before. A vault upgraded to this starts from the held asks with a hint it still keeps, about the last two days, and the uses of each machine's own mandates in the last 30 days.
 
 - Proposing the same terms with the same reason while they wait hands back the same link with `existing: true`, and does not count against the limits.
 - A machine may have 3 open proposals and make 10 a day. At 3 open, the refusal says how many and carries the newest one's link; at 10 a day it is `rate_limited` until tomorrow.
@@ -99,13 +101,13 @@ When the vault holds a request from a machine whose owner could sign a mandate, 
 | `outside_schedule` | It is outside the mandate's hours | Wait for its hours, or let the ask go to the person as usual |
 | `not_covering` | It is not covering requests right now, and the vault does not say why | Hand the person the page |
 
-An ask that only a cap held carries `mandate` with the caps reached instead. The person sees the same on the ask page: their own machine's ask offers "Let build-box carry on with requests like this", which opens the sign page with those kinds ticked, or a link to the mandate when it is paused or tripped.
+An ask that only a cap held carries `mandate` with the caps reached instead. The person sees the same on the ask page: their own machine's ask offers "Let build-box carry on with requests like this", which opens the sign page for that machine on the narrowest terms, or a link to the mandate when it is paused or tripped.
 
 ## What people see
 
 - **The sign page** (`/w/<slug>/sign-mandate`) offers each term, then, before the passkey, a summary of what is being signed in plain words, with the two sentences about reviewed and unreviewed services.
 - **The mandates page** (`/w/<slug>/mandates`) lists proposals waiting, then live mandates, then ended ones. **Pause all** pauses every active mandate there the reader may pause, after a confirmation that gives the count; it needs no passkey, and says how many it could not pause, if any.
-- **A mandate's page** shows its terms, today's counts against its caps, Pause, Resume and Stop for those who may press them, and **Went through on trust**: every request it let through, newest first, kept for 30 days. Its signer sees **Sign the same for** each of their other machines, which opens the sign page for that machine on the same terms (a list of credentials keeps only the ones that machine can use). There is no signature for several machines at once.
+- **A mandate's page** shows its terms, today's counts against its caps, Pause, Resume and Stop for those who may press them, and **Went through on trust**: every request it let through, newest first, kept for 30 days. Its signer sees **Sign the same for** each of their other machines, which opens the sign page for that machine on the narrowest terms, with this mandate's terms in words behind **Use these terms**; pressing it fills them in, keeping only the credentials that machine reaches and whose homes the signer manages. There is no signature for several machines at once.
 - **A machine's page** has the **Carry on without asking** card: its mandate with its controls, or **Trust this machine** for its owner.
 - **The home** says "1 machine is carrying on without asking" while any mandate is active and its signer stands behind it, and how many need the reader to resume theirs.
 
