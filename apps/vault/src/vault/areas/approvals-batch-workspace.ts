@@ -12,7 +12,7 @@ import { textWarnings } from "../../relay/spelling.ts"
 import { eligibility, principalDevice, stepUpSatisfies, type AccessAsk, type AccessPrincipal, type AccessState } from "../access.ts"
 import { randomId, type VaultContext } from "../core.ts"
 import { digestOf, parseOpInput } from "./approvals.ts"
-import { approvalRowProjection, assertApprovalGraphCurrent, batchesHere, recordDecision, workspaceApproval, workspaceApprovalStatus, type WorkspaceApprovalRow } from "./approvals-workspace.ts"
+import { approvalRowProjection, assertApprovalGraphCurrent, batchesHere, reviewGroupCode, recordDecision, workspaceApproval, workspaceApprovalStatus, type WorkspaceApprovalRow } from "./approvals-workspace.ts"
 import type { ProtectedSnapshot } from "./projects-workspace.ts"
 import { isPushSubject } from "./push-records.ts"
 import { askingWorkload } from "./workloads.ts"
@@ -129,7 +129,7 @@ export function approvalGroupView(ctx: VaultContext, state: AccessState, princip
   const owner = machine?.owner.kind === "team" ? { kind: "team" as const, team: machine.owner.id, name: state.teams.find((t) => t.id === machine.owner.id)?.name ?? "" } : { kind: "member" as const, member: machine?.owner.id ?? "", name: state.members.find((m) => m.id === machine?.owner.id)?.name ?? "" }
   const workload = reads ? askingWorkload(ctx, workloadId).workload ?? null : null
   const asked = JSON.parse(first.row.ask) as AccessAsk
-  return { group: id, kind, workspace: invocation.workspace, machine: { device, name: first.row.device_name, owner, workload }, item: kind === "machine" && asked.credential !== null ? { slug: first.row.item } : null, reason: reads ? bundle?.reason ?? null : null, rows }
+  return { group: id, kind, workspace: invocation.workspace, machine: { device, name: first.row.device_name, owner, workload }, item: kind === "machine" && asked.credential !== null ? { slug: first.row.item } : null, reason: reads ? bundle?.reason ?? null : null, code: reads ? reviewGroupCode(ctx, id) : null, rows }
 }
 
 // The action a batch signs, from storage: each ask's stored digest and its

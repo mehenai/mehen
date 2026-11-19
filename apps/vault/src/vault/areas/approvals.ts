@@ -5,7 +5,7 @@ import { z } from "zod"
 import { VaultError } from "../../http.ts"
 import { one,type Area,type VaultContext } from "../core.ts"
 import type { ApprovalPresentation } from "../services.ts"
-import { workspaceApprovalOps, WORKSPACE_APPROVAL_MIGRATION, WORKSPACE_APPROVAL_BINDING_MIGRATION, WORKSPACE_APPROVAL_WORKLOAD_MIGRATION, WORKSPACE_APPROVAL_BATCH_MIGRATION } from "./approvals-workspace.ts"
+import { workspaceApprovalOps, WORKSPACE_APPROVAL_MIGRATION, WORKSPACE_APPROVAL_BINDING_MIGRATION, WORKSPACE_APPROVAL_WORKLOAD_MIGRATION, WORKSPACE_APPROVAL_BATCH_MIGRATION, WORKSPACE_APPROVAL_GROUP_CODE_MIGRATION } from "./approvals-workspace.ts"
 import { WORKSPACE_PROTECTED_GRANTS_MIGRATION } from "./projects-workspace.ts"
 import { workspaceApprovalBatchOps } from "./approvals-batch-workspace.ts"
 
@@ -86,6 +86,7 @@ export const approvalsArea: Area = {
     WORKSPACE_APPROVAL_BINDING_MIGRATION,
     WORKSPACE_APPROVAL_WORKLOAD_MIGRATION,
     WORKSPACE_APPROVAL_BATCH_MIGRATION,
+    WORKSPACE_APPROVAL_GROUP_CODE_MIGRATION,
   ],
   // Keyed by approval id, for cards with a `settled` form: an approval that
   // expires undecided stops keeping what only its pending card showed.

@@ -113,8 +113,19 @@ export function reviewFloorMarks(row: ApprovalGroupRow): string[] {
   return [...new Set(row.floor.map((reason) => FLOOR_MARK_WORDS[reason] ?? FLOOR_UNNAMED_WORDS))]
 }
 
+// The group code tick: the one code mehen prints with the group's link.
+export function reviewGroupCodeWords(code: string): string {
+  return `The agent showed me the code ${code}`
+}
+// The other tick, for an agent that showed each ask's code instead (a mehen
+// before group codes, or a group made before them): every ticked row checked.
 export function reviewCodesWords(ticked: number): string {
-  return `I checked the codes against the agent's message (${ticked} ticked)`
+  return `The agent showed separate codes, and I checked them against the rows (${ticked} ticked)`
+}
+// Asks that joined the group after the page was drawn: the code ticks are
+// cleared, so nothing is approved before the person has seen them.
+export function reviewChangedWords(arrived: number): string {
+  return `${arrived === 1 ? "An ask" : `${arrived} asks`} joined this group since the page loaded, marked New and not ticked. Check ${arrived === 1 ? "it" : "them"}, then tick the code again.`
 }
 
 // approve: the ticked rows Approve decides. denyOnly: the ticked rows it

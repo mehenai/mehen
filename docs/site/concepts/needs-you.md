@@ -40,6 +40,7 @@ Every ask a machine makes is recorded in the workspace's ledger on that machine 
 - the account's own asks, and the asks they may approve or deny (in the detail or stop view their rights allow);
 - intakes and connects they may fill in, and credentials flagged for review that they manage;
 - member confirmations and scope proposals to those who sign them;
+- **share requests**, to the people who may share the project with that member (for a guest, only owners and admins): a member's machine was refused a run because the project is not shared with that member (`project_unshared`). Its Share button opens the project's Shared with form with the member chosen. It is raised once a day however often the machine retries, and it leaves Needs you once the project is shared with them, or once you may no longer share it with them. If that member cannot be offered when you open it (suspended or removed since), the form says so and chooses no one;
 - **pending enrolments**, only to the people who may act on them: owners and admins of the intended workspace, the account a connect code claimed it for, and whoever may admit it;
 - notices: a machine added, a mandate signed, tripped, about to end or lapsed, credentials to rotate, a backup key added, able to receive exports or removed, a protection change, and account and membership changes such as a recovery, an owner added or removed, a member joining, a suspension or the workspace scheduled for deletion.
 

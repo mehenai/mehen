@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import { digestOf } from "../src/vault/areas/approvals.ts"
 import { assertApprovedUse, consumeApprovedUse, prepareApprovedUse } from "../src/vault/areas/projects-workspace.ts"
-import { approvalBatchesOn, staleWorkspaceConsent, workspaceApproval, workspaceApprovalStatus, type ApprovalAskBatch } from "../src/vault/areas/approvals-workspace.ts"
+import { approvalBatchesOn, machineAsksFull, staleWorkspaceConsent, workspaceApproval, workspaceApprovalStatus, type ApprovalAskBatch } from "../src/vault/areas/approvals-workspace.ts"
 import { policyRulesOn } from "../src/vault/areas/policy-rules-workspace.ts"
 import { approvalsArea } from "../src/vault/areas/approvals.ts"
 import { applyMigrations } from "../src/vault/tenant-vault.ts"
@@ -11,7 +11,7 @@ import { VaultError } from "../src/http.ts"
 import { projectFixture, projectState, inAccess, callProject } from "./projects-workspace-fixture.ts"
 import { credentialsFixture, deviceInvocation, devicePrincipal, seedCredential } from "./credentials-test-support.ts"
 import { authoriseWorkspaceRelay, workspaceRelayOps } from "../src/vault/areas/relay-workspace.ts"
-import { setSetting } from "../src/vault/areas/workspace-runtime.ts"
+import { openAskCount, setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import type { ApprovalBundleCreated } from "@mehen/protocol/api"
 const SUBJECT = { item: "key-project", method: "POST", url: "https://api.example.com/write", contentType: "application/json", contentEncoding: null, headersSha256: digestOf([]), bodySha256: digestOf("{}"), constraints: { uses: 1, ttlSeconds: 600 } }
 const PRESENTATION = { title: "Write a record", details: [{ label: "Action", value: "Write" }], body: "{}", headers: [] as [string, string][] }
@@ -200,9 +200,30 @@ describe("asking with batch approvals", () => {
     const f = await projectFixture()
     await inAccess(f.tenant, (ctx) => {
       const asked = Array.from({ length: 20 }, (_, n) => ask(ctx, projectState(ctx), `body ${n}`))
-      expect(refusal(() => ask(ctx, projectState(ctx), "body 20"))).toEqual({ error: "rate_limited", message: "This machine already has 20 open asks. Settle one before asking again." })
+      const group = batchColumns(ctx, asked[0]!).review_group
+      expect(refusal(() => ask(ctx, projectState(ctx), "body 20"))).toEqual({ error: "rate_limited", message: "This machine already has 20 open asks. Settle one before asking again.", next: { url: `https://vault.test/w/work/g/${group}`, say: "Ask the person to decide this machine's open asks at the link, then ask for the rest." } })
       const replacement = ask(ctx, projectState(ctx), "body 20", { replaces: asked[0] })
       expect(batchColumns(ctx, asked[0]!)).toMatchObject({ policy_status: "superseded", superseded_by: replacement })
+    })
+  })
+
+  it("at the cap, sends the person to the asker's own oldest open ask: its group or bundle when it shares one, else its own page, else the workspace's home", async () => {
+    const f = await projectFixture()
+    await inAccess(f.tenant, (ctx) => {
+      const full = (asker: { device: string; workload?: string }) => machineAsksFull(ctx, asker, "work", "full").toJSON().next?.url
+      expect(full({ device: "dev_member" })).toBe("https://vault.test/w/work/")
+      const alone = ask(ctx, projectState(ctx), "alone")
+      expect(full({ device: "dev_member" })).toBe(`https://vault.test/w/work/a/${alone}`)
+      ask(ctx, projectState(ctx), "second")
+      expect(full({ device: "dev_member" })).toBe(`https://vault.test/w/work/g/${batchColumns(ctx, alone).review_group}`)
+      ctx.sql.exec("UPDATE approvals SET bundle='bnd_planned' WHERE id=?", alone)
+      expect(full({ device: "dev_member" })).toBe("https://vault.test/w/work/g/bnd_planned")
+      // With batch approvals switched off, Review together refuses: the ask's own page.
+      expect(machineAsksFull(switchedOff(ctx), { device: "dev_member" }, "work", "full").toJSON().next?.url).toBe(`https://vault.test/w/work/a/${alone}`)
+      ctx.sql.exec("UPDATE approvals SET bundle=NULL WHERE id=?", alone)
+      expect(machineAsksFull(switchedOff(ctx), { device: "dev_member" }, "work", "full").toJSON().next?.url).toBe(`https://vault.test/w/work/a/${alone}`)
+      // A workload is never sent to its machine's other asks.
+      expect(full({ device: "dev_member", workload: "wkl_other" })).toBe("https://vault.test/w/work/")
     })
   })
 
@@ -237,15 +258,31 @@ describe("asking with batch approvals", () => {
       const off = switchedOff(ctx)
       const kept = ask(off, projectState(off), "kept")
       const before = ctx.sql.exec("SELECT * FROM approvals").toArray()
-      ctx.sql.exec("DROP INDEX approvals_review_group; DROP INDEX approvals_shape; DROP INDEX approvals_bundle; DROP TABLE approval_bundles")
+      ctx.sql.exec("DROP INDEX approvals_review_group; DROP INDEX approvals_shape; DROP INDEX approvals_bundle; DROP TABLE approval_bundles; DROP TABLE approval_group_codes")
       for (const column of ["review_group", "shape", "floor", "bundle", "superseded_by"]) ctx.sql.exec(`ALTER TABLE approvals DROP COLUMN ${column}`)
-      ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='approvals'", approvalsArea.migrations.length - 1)
+      ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='approvals'", approvalsArea.migrations.length - 2)
       applyMigrations(ctx.sql, ctx.storage, [approvalsArea])
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='approvals'").toArray()[0]!.applied).toBe(approvalsArea.migrations.length)
       expect(ctx.sql.exec("SELECT * FROM approvals").toArray()).toEqual(before)
       expect(batchColumns(ctx, kept)).toEqual({ review_group: null, shape: null, floor: null, bundle: null, superseded_by: null, policy_status: null })
       expect(ctx.sql.exec("SELECT * FROM approval_bundles").toArray()).toEqual([])
+      expect(ctx.sql.exec("SELECT * FROM approval_group_codes").toArray()).toEqual([])
       expect(ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='approvals' AND name IN ('approvals_review_group','approvals_shape','approvals_bundle') ORDER BY name").toArray().map((r) => r.name)).toEqual(["approvals_bundle", "approvals_review_group", "approvals_shape"])
+    })
+  })
+
+  it("adds group codes to a workspace that ran the batch migration: its bundles and groups keep no code, and new asks get one", async () => {
+    const f = await projectFixture()
+    await inAccess(f.tenant, (ctx) => {
+      ctx.sql.exec("INSERT INTO approval_bundles(id,device,workload,reason,created_at,expires_at) VALUES ('bnd_before','dev_kim',NULL,NULL,?,?)", ctx.now(), ctx.now() + 3_600_000)
+      ctx.sql.exec("DROP TABLE approval_group_codes; ALTER TABLE approval_bundles DROP COLUMN code")
+      ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='approvals'", approvalsArea.migrations.length - 1)
+      applyMigrations(ctx.sql, ctx.storage, [approvalsArea])
+      expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='approvals'").toArray()[0]!.applied).toBe(approvalsArea.migrations.length)
+      expect(ctx.sql.exec("SELECT id,code FROM approval_bundles").toArray()).toEqual([{ id: "bnd_before", code: null }])
+      expect(ctx.sql.exec("SELECT * FROM approval_group_codes").toArray()).toEqual([])
+      ask(ctx, projectState(ctx), "after")
+      expect(ctx.sql.exec<{ code: string }>("SELECT code FROM approval_group_codes").toArray().map((r) => r.code)).toEqual([expect.stringMatching(/^[A-Z2-9]{6}$/)])
     })
   })
 })
@@ -263,13 +300,56 @@ describe("asking for a bundle", () => {
   }
   const nothingAsked = (ctx: VaultContext) => [ctx.sql.exec("SELECT * FROM approval_bundles").toArray(), ctx.sql.exec("SELECT * FROM audit WHERE action='approval.bundle'").toArray()]
 
+  // Two asks racing at 19 open: each is checked and stored in one
+  // synchronous transaction, so exactly one opens and the other is refused.
+  it("lets exactly one of two asks racing at 19 open asks through, and refuses the other at the cap", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await held(ctx)
+      for (let n = 0; n < 19; n++) expect(await refused(async () => authoriseWorkspaceRelay(ctx, devicePrincipal(), request(100 + n), await deviceInvocation(ctx)))).toMatchObject({ error: "approval_required" })
+      // A transaction run while both are in flight shows they did race.
+      let active = 0, overlapped = false
+      const tx = ctx.storage.transactionSync.bind(ctx.storage)
+      const spy = vi.spyOn(ctx.storage, "transactionSync").mockImplementation(<T>(fn: () => T): T => { if (active === 2) overlapped = true; return tx(fn) })
+      const race = await Promise.all([1, 2].map((n) => refused(async () => { active++; try { return await authoriseWorkspaceRelay(ctx, devicePrincipal(), request(n), await deviceInvocation(ctx)) } finally { active-- } })))
+      spy.mockRestore()
+      expect(overlapped).toBe(true)
+      expect(race.map((r) => r.error).sort()).toEqual(["approval_required", "rate_limited"])
+      expect(openAskCount(ctx, "dev_member", ctx.now())).toBe(20)
+    })
+  })
+
+  // A bundle's first check is made before its requests are asked, one await
+  // at a time. Asks that land meanwhile can only turn the bundle's later
+  // requests into refusals, each at the cap: the machine never passes 20.
+  it("never lets a bundle and asks that interleave with it pass 20 open asks; the bundle's requests past the cap are refused one by one", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      await held(ctx)
+      for (let n = 0; n < 17; n++) expect(await refused(async () => authoriseWorkspaceRelay(ctx, devicePrincipal(), request(100 + n), await deviceInvocation(ctx)))).toMatchObject({ error: "approval_required" })
+      const singles = (from: number) => [0, 1, 2].map((n) => refused(async () => authoriseWorkspaceRelay(ctx, devicePrincipal(), request(from + n), await deviceInvocation(ctx))))
+      // The bundle's first check sees 17 + 3 = 20 and lets it in; three more asks then race it.
+      const bundle = op(ctx, "approvals.bundle", { requests: [request(1), request(2), request(3)] }) as Promise<ApprovalBundleCreated>
+      const raced = await Promise.all([bundle, ...singles(200)])
+      const created = raced[0] as ApprovalBundleCreated, others = raced.slice(1) as { error: string }[]
+      const asked = created.results.filter((r) => r.outcome === "ask").length + others.filter((r) => r.error === "approval_required").length
+      expect(asked).toBe(3)
+      expect(openAskCount(ctx, "dev_member", ctx.now())).toBe(20)
+      // Every request that did not open an ask was refused at the cap, on its own.
+      for (const r of created.results.filter((r) => r.outcome !== "ask")) expect(r).toMatchObject({ outcome: "refused", error: { error: "rate_limited" } })
+      for (const r of others.filter((r) => r.error !== "approval_required")) expect(r).toMatchObject({ error: "rate_limited" })
+      // The asks did land between the bundle's own: it opened some and had some refused.
+      expect(created.results.some((r) => r.outcome === "ask") && created.results.some((r) => r.outcome === "refused")).toBe(true)
+    })
+  })
+
   it("refuses rate_limited before creating anything when the open asks and the requests would pass 20", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       await held(ctx)
       for (let n = 0; n < 18; n++) expect(await refused(async () => authoriseWorkspaceRelay(ctx, devicePrincipal(), request(100 + n), await deviceInvocation(ctx)))).toMatchObject({ error: "approval_required" })
       const before = ctx.sql.exec("SELECT * FROM approvals ORDER BY id").toArray()
-      expect(await refused(() => op(ctx, "approvals.bundle", { requests: [request(1), request(2), request(3)] }))).toEqual({ error: "rate_limited", message: "This machine's open asks and these 3 requests would pass its 20. Settle some, or send fewer at once." })
+      expect(await refused(() => op(ctx, "approvals.bundle", { requests: [request(1), request(2), request(3)] }))).toEqual({ error: "rate_limited", message: "This machine's open asks and these 3 requests would pass its 20. Settle some, or send fewer at once.", next: { url: `https://vault.test/w/work/g/${ctx.sql.exec<{ review_group: string }>("SELECT review_group FROM approvals ORDER BY created_at,id LIMIT 1").toArray()[0]!.review_group}`, say: "Ask the person to decide this machine's open asks at the link, then ask for the rest." } })
       expect(ctx.sql.exec("SELECT * FROM approvals ORDER BY id").toArray()).toEqual(before)
       expect(nothingAsked(ctx)).toEqual([[], []])
       const fits = await op(ctx, "approvals.bundle", { requests: [request(1), request(2)] }) as ApprovalBundleCreated
@@ -301,6 +381,10 @@ describe("asking for a bundle", () => {
       await held(ctx)
       const created = await op(ctx, "approvals.bundle", { requests: [request(1)] }) as ApprovalBundleCreated
       const asked = created.results[0]!.approval!
+      // The bundle's one code, which its Review together page shows, is the one stored with it.
+      expect(created.code).toMatch(/^[A-Z2-9]{6}$/)
+      expect(ctx.sql.exec<{ code: string }>("SELECT code FROM approval_bundles WHERE id=?", created.bundle).toArray()[0]!.code).toBe(created.code)
+      expect(ctx.sql.exec("SELECT * FROM approval_group_codes").toArray()).toEqual([])
       expect(await op(ctx, "approvals.bundle_status", { id: created.bundle })).toEqual({ bundle: created.bundle, approvals: [{ id: asked, status: "pending" }] })
       const missing = { error: "not_found", message: "No such object." }
       expect(await refused(() => op(ctx, "approvals.bundle_status", { id: created.bundle }, "dev_admin"))).toEqual(missing)

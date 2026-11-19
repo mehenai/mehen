@@ -190,6 +190,8 @@ export class MockVault {
   // bundle's asks, which GET /v1/approvals/bundles/:id reports pending
   // unless `sequences` has "bundle:<id>".
   readonly bundles = new Map<string, string[]>()
+  // The group code POST /v1/approvals/bundles answers with; none when undefined.
+  bundleCode: string | undefined = undefined
   // The origin the mock writes into the links it hands back (enrol, intake,
   // connect); null for its own. A test sets it to prove a foreign link is
   // refused, as a vault whose VAULT_ORIGIN differs from the URL a device
@@ -457,7 +459,7 @@ export class MockVault {
       const bundle = this.id("bnd")
       const results = requests.map((_, index) => ({ index, outcome: "ask", approval: this.id("apr"), bindingCode: `CODE${index + 1}` }))
       this.bundles.set(bundle, results.map((r) => r.approval))
-      return Response.json({ bundle, url: this.link(seen.claims.ten, `/g/${bundle}`), expiresAt: MOCK_EXPIRES_AT, results })
+      return Response.json({ bundle, url: this.link(seen.claims.ten, `/g/${bundle}`), expiresAt: MOCK_EXPIRES_AT, ...(this.bundleCode === undefined ? {} : { code: this.bundleCode }), results })
     }
     if (request.method === "GET" && parts[0] === "approvals" && parts[1] === "bundles" && parts[2]) {
       const approvals = (this.bundles.get(parts[2]) ?? []).map((id) => ({ id, status: "pending" }))

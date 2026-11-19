@@ -29,7 +29,7 @@ import { one, randomId, type VaultContext } from "../core.ts"
 import type { ConsentBasis, ConsentLineage, ItemRecord } from "../services.ts"
 import { waitForStorageWrite } from "../storage-waits.ts"
 import { bindingCode, digestOf, parseOpInput } from "./approvals.ts"
-import { STANDING_CONSENT_PREFIX, readConsent, standingConsentCurrent, storeConsent, workspaceApproval, type WorkspaceApprovalRow } from "./approvals-workspace.ts"
+import { MACHINE_MAX_OPEN_ASKS, STANDING_CONSENT_PREFIX, machineAsksFull, readConsent, standingConsentCurrent, storeConsent, workspaceApproval, type WorkspaceApprovalRow } from "./approvals-workspace.ts"
 import { devicePolicyState } from "./devices.ts"
 import { items } from "./items.ts"
 import { AREA_REFUSAL_WORDS } from "./policy-area-refusal-words.ts"
@@ -844,8 +844,8 @@ function heldAnchor(ctx: VaultContext, principal: Extract<AccessPrincipal, { kin
   return { row, bound, refusal, held: refusal === null && stored && request ? { ...stored, request } : null }
 }
 
-function assertRuleAskRoom(ctx: VaultContext, principal: Extract<AccessPrincipal, { kind: "device" }>): void {
-  if (openAskCount(ctx, principal.deviceId, ctx.now()) >= 20) throw new VaultError("rate_limited", "This machine already has 20 open asks. Settle one before asking again.")
+function assertRuleAskRoom(ctx: VaultContext, principal: Extract<AccessPrincipal, { kind: "device" }>, slug: string): void {
+  if (openAskCount(ctx, principal.deviceId, ctx.now()) >= MACHINE_MAX_OPEN_ASKS) throw machineAsksFull(ctx, { device: principal.deviceId, ...(principal.workload !== undefined ? { workload: principal.workload } : {}) }, slug, "This machine already has 20 open asks. Settle one before asking again.")
   assertWorkloadAskRoom(ctx, principal.workload, ctx.now())
 }
 
@@ -1217,7 +1217,7 @@ function openMachineProposal(ctx: VaultContext, principal: Extract<AccessPrincip
       throw new VaultError("conflict", `This key already has a pending proposal for this credential (${pending.id}); cancel it first.`)
     }
     if (pending) ctx.sql.exec("UPDATE policy_proposals SET status='expired' WHERE id=?", pending.id)
-    assertRuleAskRoom(ctx, principal)
+    assertRuleAskRoom(ctx, principal, invocation.workspace.slug)
     const snapshot = approvedUseSnapshot(ctx, state, principal, checkedCredential(state, item), useContext(bound.context), now, bound.mode)
     if (!snapshot.ask) throw new VaultError("bad_request", "This credential needs an approval subject.")
     const name = devicePolicyState(ctx, asker.device)?.name ?? asker.device

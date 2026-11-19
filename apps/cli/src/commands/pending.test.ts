@@ -279,6 +279,21 @@ describe("mehen pending review groups", () => {
     expect(json(await runJv(["pending", "apr_g2", "--json"], env)).ask).toMatchObject({ id: "apr_g2", group: { id: "grp_Q2mX9", url: groupUrl, open: 3 } })
   })
 
+  test("a group's code, from a vault that sends one, is on the group, on each of its asks and on the group's line", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.pending = approvals(["apr_g1", "apr_g2"])
+    const groupUrl = `${vault.url}/w/mock-space/g/grp_Q2mX9`
+    vault.groups = [{ id: "grp_Q2mX9", url: groupUrl, approvals: ["apr_g1", "apr_g2"], bundle: false, code: "K7QM3P" }]
+    const list = json(await runJv(["pending", "--json"], env)) as { pending: Record<string, unknown>[]; groups: unknown[] }
+    expect(list.groups).toEqual([{ id: "grp_Q2mX9", url: groupUrl, approvals: ["apr_g1", "apr_g2"], bundle: false, code: "K7QM3P" }])
+    expect(list.pending.map((a) => a.group)).toEqual(Array(2).fill({ id: "grp_Q2mX9", url: groupUrl, open: 2, code: "K7QM3P" }))
+    const lines = (await runJv(["pending"], env)).stdout.trimEnd().split("\n")
+    expect(lines.at(-1)).toBe(`2 asks from sam-mac-mini: review together at ${groupUrl}; the page shows code K7QM3P`)
+    // A code outside the binding codes' alphabet is dropped, the group kept.
+    vault.groups = [{ id: "grp_Q2mX9", url: groupUrl, approvals: ["apr_g1", "apr_g2"], bundle: false, code: "<b>bad" }]
+    expect((json(await runJv(["pending", "--json"], env)) as { groups: unknown[] }).groups).toEqual([{ id: "grp_Q2mX9", url: groupUrl, approvals: ["apr_g1", "apr_g2"], bundle: false }])
+  })
+
   test("a group whose link is off this vault or not its own /g/ page is left out and counted, a malformed one is left out, and neither is shown", async () => {
     await vault.enrolSoftware(dir.path)
     vault.pending = approvals(["apr_g1", "apr_g2"])

@@ -184,6 +184,12 @@ export class MiniElement {
       this.children.push(node)
     }
   }
+  prepend(...nodes: (MiniNode | string)[]): void {
+    const kept = this.children
+    this.children = []
+    this.append(...nodes)
+    this.children.push(...kept)
+  }
   appendChild(node: MiniNode): MiniNode {
     this.append(node)
     return node

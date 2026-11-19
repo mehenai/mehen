@@ -18,6 +18,7 @@ beforeEach(async () => {
   env = { MEHEN_CONFIG_DIR: dir.path, MEHEN_VAULT_URL: vault.url }
   vault.overrides.clear()
   vault.sequences.clear()
+  vault.bundleCode = undefined
   await vault.enrolSoftware(dir.path)
 })
 afterEach(async () => dir.remove())
@@ -174,6 +175,20 @@ describe("mehen plan submit", () => {
     expect(lines.find((l) => /^request 1: POST https:\/\/api\.openai\.com\/v1\/a with openai-personal: waits for approval apr_mock\d+, code CODE1$/.test(l))).toBeDefined()
     expect(lines.find((l) => l.startsWith("  repeat: mehen fetch github-work DELETE https://api.github.com/repos/acme/app --approval apr_"))).toBeDefined()
     expect(lines.at(-1)).toBe(`then:    mehen wait ${bundle}`)
+  })
+
+  test("a vault that sends the bundle's group code: it is the ask's one check, in --json and in the block, the requests keeping their own codes", async () => {
+    vault.bundleCode = "K7QM3P"
+    const path = await writePlan({ version: 1, requests: [{ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/a", body: "one" }, { item: "github-work", method: "DELETE", url: "https://api.github.com/repos/acme/app" }] })
+    const out = json(await runJv(["plan", "submit", path, "--json"], env)) as { ask: Record<string, unknown>; results: Result[] }
+    expect(out.ask.check).toEqual({ label: "code", value: "K7QM3P" })
+    expect(out.results.map((r) => r.bindingCode)).toEqual(["CODE1", "CODE2"])
+    const human = await runJv(["plan", "submit", path], env)
+    expect(human.stdout).toContain("  check:   the page shows code K7QM3P")
+    expect(human.stdout).not.toContain("CODE1, CODE2 (2)")
+    // A code not in the binding codes' alphabet is never shown as the check.
+    vault.bundleCode = "k7qm3p"
+    expect((json(await runJv(["plan", "submit", path, "--json"], env)) as { ask: Record<string, unknown> }).ask.check).toEqual({ label: "codes", value: "CODE1, CODE2 (2)" })
   })
 
   test("an ask a mandate could cover carries mandateCover on its result, its page checked, and a mandate: line under the request", async () => {
