@@ -2,7 +2,7 @@ import { type Bytes, utf8 } from "@mehen/protocol/bytes"
 import { z } from "zod"
 import { FETCH_MAX_TIME_SECONDS, timedOut } from "../commands/fetch.ts"
 import { usageError } from "../errors.ts"
-import { bodyForJson, type UpstreamHead, fetchContext, parseJsonBody, parseSelectPath, readLimited, relayReplaces, relayRequest, replacingRefused, selectJson, upstreamHead } from "../operations.ts"
+import { bodyForJson, type UpstreamHead, fetchContext, parseSelectPath, readLimited, relayReplaces, relayRequest, replacingRefused, selectBody, upstreamHead } from "../operations.ts"
 import { mandateAllowed, mandateCapped } from "../mandate-operations.ts"
 import { type PostureAllowed, type RuleAllowed, postureAllowed, ruleEnded, rulesAllowed } from "../policy-operations.ts"
 import { sessionLabel } from "../session.ts"
@@ -16,12 +16,17 @@ export function decodeBase64(text: string): Bytes {
 
 const MCP_SELECT = { option: "select", help: "mehen fetch --help" }
 
+type FetchHead = UpstreamHead & { rules?: RuleAllowed[]; postures?: PostureAllowed[]; mandate?: string }
+
 // vault_fetch's result without select: the body as text, cut at 256 KiB.
-async function fetchOutput(head: UpstreamHead & { rules?: RuleAllowed[]; postures?: PostureAllowed[]; mandate?: string }, response: Response): Promise<ToolOutput> {
+async function fetchOutput(head: FetchHead, response: Response): Promise<ToolOutput> {
   const { bytes, truncated, size } = await readLimited(response, FETCH_BODY_LIMIT)
+  return bodyOutput(head, bytes, truncated, size, [])
+}
+
+function bodyOutput(head: FetchHead, bytes: Bytes, truncated: boolean, size: number | null, notes: string[]): ToolOutput {
   const strict = truncated ? null : bodyForJson(bytes)
   const text = strict && "body" in strict ? strict.body : new TextDecoder().decode(bytes)
-  const notes: string[] = []
   if (truncated) notes.push(`The body was cut at 256 KiB${size ? ` of ${size} bytes` : ""}; pass select to pick the part you need from the whole response, or use \`mehen fetch -o <file>\` in a shell to save all of it.`)
   if (strict && "bodyBase64" in strict) notes.push("The body is not UTF-8 text; invalid bytes are shown as replacement characters.")
   return plain({ ...head, body: text, truncated, ...(notes.length ? { note: notes.join(" ") } : {}) })
@@ -78,7 +83,13 @@ export const vaultFetch = tool({
       const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}) }
       if (select !== null) {
         const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY)
-        const picked = selectJson(parseJsonBody(bytes, head.status, MCP_SELECT), select)
+        const chosen = selectBody(bytes, head.status, request.method, select, MCP_SELECT)
+        if (!chosen.json) {
+          const cut = bytes.length > FETCH_BODY_LIMIT
+          const output = bodyOutput(head, cut ? bytes.slice(0, FETCH_BODY_LIMIT) : bytes, cut, bytes.length, [chosen.note])
+          return { ...output, structured: { ...output.structured, selected: null, found: false } }
+        }
+        const picked = chosen.picked
         return plain({ ...head, selected: picked.value, found: picked.found, ...(picked.found ? {} : { note: `select ${args.select} matched nothing in the body.` }) })
       }
       return await fetchOutput(head, response)

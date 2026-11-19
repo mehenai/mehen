@@ -33,7 +33,7 @@ import type { z } from "zod"
 import { relativeExpiry } from "./ask.ts"
 import { CliError, usageError } from "./errors.ts"
 import { MANDATES_OFF_LINE } from "./mandate-operations.ts"
-import { type VaultApi, VaultApiError } from "./vault-api.ts"
+import { type VaultApi, VaultApiError, retrySafeMethod } from "./vault-api.ts"
 
 export function zodMessage(error: z.ZodError): string {
   return error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message)).join("; ")
@@ -962,14 +962,22 @@ export function selectJson(value: unknown, path: readonly (string | number)[]): 
   return { found: true, value: current }
 }
 
-// The upstream body parsed as JSON for --select, or a usage error saying the
-// request was sent but the body is not JSON.
-export function parseJsonBody(bytes: Bytes, status: number, { option, help }: SelectOption = FETCH_SELECT): unknown {
+// What --select picks from the upstream body. A body that is not JSON has
+// nothing to pick from: for a read, a usage error saying to run it again
+// without the option; for a write, which a second send could repeat, the
+// body as it came with a note, never advice to send it again.
+export type SelectedBody = { json: true; picked: Selected } | { json: false; note: string }
+
+export function selectBody(bytes: Bytes, status: number, method: string, path: readonly (string | number)[], { option, help }: SelectOption = FETCH_SELECT): SelectedBody {
+  let value: unknown
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))
   } catch {
-    throw usageError(`The upstream answered ${status} with a body that is not JSON, so ${option} has nothing to pick from. The request was sent; run it again without ${option} to see the body.`, help)
+    const notJson = `The upstream answered ${status} with a body that is not JSON, so ${option} has nothing to pick from.`
+    if (retrySafeMethod(method)) throw usageError(`${notJson} The request was sent; run it again without ${option} to see the body.`, help)
+    return { json: false, note: `${notJson} The request was sent and may have taken effect: here is the body as it came. Do not send it again to see it.` }
   }
+  return { json: true, picked: selectJson(value, path) }
 }
 
 export function bodyForJson(bytes: Bytes): { body: string } | { bodyBase64: string } {

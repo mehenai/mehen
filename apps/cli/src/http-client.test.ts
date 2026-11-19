@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { ERROR_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
 import { type ProofSigner, parseProof } from "@mehen/protocol/proof"
 import { readConfig } from "./config.ts"
-import { errorBody, toCliError } from "./errors.ts"
+import { DEFAULT_NEXT, OUTCOME_UNKNOWN_SAY, errorBody, toCliError } from "./errors.ts"
 import { loadDeviceKey } from "./device-key.ts"
 import { HttpVaultApi } from "./http-client.ts"
 import { MOCK_TENANT, MockVault, vaultError } from "./testing/mock-vault.ts"
@@ -305,9 +305,22 @@ describe("HttpVaultApi relay", () => {
     expect(error).toBeInstanceOf(VaultApiError)
     expect(error.body.error).toBe("internal")
     vault.overrides.set("POST /v1/relay", () => new Response("Bad Gateway", { status: 502 }))
-    const proxied = await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e)
+    const proxied = await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e)
     expect(proxied).toBeInstanceOf(RelayUnmarkedAnswerError)
     expect((proxied as RelayUnmarkedAnswerError).status).toBe(502)
+  })
+
+  test("an unmarked 502 or 504 after a write is outcome unknown, never internal with retry advice; after a read it stays retryable", async () => {
+    const api = await client()
+    for (const status of [502, 504]) {
+      vault.overrides.set("POST /v1/relay", () => new Response("Gateway", { status }))
+      const write = await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e)
+      expect(write).toBeInstanceOf(RelayOutcomeUnknownError)
+      const cli = toCliError(write)
+      expect([cli.code, cli.next?.say]).toEqual(["outcome_unknown", OUTCOME_UNKNOWN_SAY])
+      const read = toCliError(await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e))
+      expect([read.code, read.next?.say]).toEqual(["internal", DEFAULT_NEXT.internal.say])
+    }
   })
 })
 

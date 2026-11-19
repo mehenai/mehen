@@ -12,7 +12,7 @@ import {
   bodyForJson,
   parseDurationSeconds,
   parseHeader,
-  parseJsonBody,
+  selectBody,
   parseSelectPath,
   readLimited,
   fetchContext,
@@ -194,10 +194,17 @@ export const fetchCommand: Command = {
       const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}) }
       if (select !== null) {
         const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY)
-        const picked = selectJson(parseJsonBody(bytes, head.status), select)
-        if (!picked.found) note(`mehen: --select ${selectText} matched nothing in the body, so it prints null`)
-        if (json) printJson({ ...head, selected: picked.value, found: picked.found })
-        else await writeStdout(utf8(`${JSON.stringify(picked.value, null, 2)}\n`))
+        const chosen = selectBody(bytes, head.status, request.method, select)
+        if (!chosen.json) {
+          note(`mehen: ${chosen.note}`)
+          if (json) printJson({ ...head, ...bodyForJson(bytes), selected: null, found: false, note: chosen.note })
+          else await writeStdout(bytes)
+        } else {
+          const picked = chosen.picked
+          if (!picked.found) note(`mehen: --select ${selectText} matched nothing in the body, so it prints null`)
+          if (json) printJson({ ...head, selected: picked.value, found: picked.found })
+          else await writeStdout(utf8(`${JSON.stringify(picked.value, null, 2)}\n`))
+        }
       } else if (output !== null) {
         const written = await writeBody(response, handle)
         note(`mehen: wrote ${written} bytes to ${output}`)

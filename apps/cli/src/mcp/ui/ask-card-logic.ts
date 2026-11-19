@@ -155,7 +155,7 @@ export function askView(value: unknown): AskView | null {
 
 // The card for a vault_request, vault_connect, vault_policy or vault_pending
 // result, or for an error that hands over an ask. Anything else draws nothing.
-// A pending ask marked stale (its vault was unreachable) may be settled: no card.
+// A pending ask marked stale (its vault did not confirm it) may be settled: no card.
 export function askCardView(result: CallToolResult): AskCardView {
   const structured = record(result.structuredContent)
   if (!structured) return { kind: "none" }

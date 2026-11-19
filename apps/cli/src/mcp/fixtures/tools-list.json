@@ -1051,7 +1051,7 @@
     {
       "name": "vault_pending",
       "title": "Open asks",
-      "description": "Everything this machine has asked a human for that is still open, across every workspace this server may use (or the one named): intakes, connections, approvals, policy proposals and enrolments it started. Approvals a human can review together carry `group`, listed in `groups`. Each has an ask with its checked link, so a conversation that lost the link can hand it over again. Asks from an unreachable vault carry `stale: true`, never handed over. Member-only policy reviews are not included. Creates and extends nothing.",
+      "description": "Everything this machine has asked a human for that is still open, across every workspace this server may use (or the one named): intakes, connections, approvals, policy proposals and enrolments it started. Approvals a human can review together carry `group`, listed in `groups`. Each has an ask with its checked link, so a conversation that lost the link can hand it over again. Asks the vault did not confirm carry `stale: true`, never handed over. Member-only policy reviews are not included. Creates and extends nothing.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:te
 import { approvalAsk, askUrlFor } from "../ask.ts"
 import { addLedgerEntry } from "../ledger.ts"
 import { MockVault } from "../testing/mock-vault.ts"
+import { askCardView } from "./ui/ask-card-logic.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
 
 let vault: MockVault
@@ -132,5 +133,30 @@ test("offline, vault_pending marks each recorded ask stale, warns from the unrea
     expect(result.content.map((c) => c.text ?? "").join("\n")).not.toContain('vault_wait { "id": "apr_7Hq2" }')
   } finally {
     vault = shared
+  }
+})
+
+test("an ask the vault did not confirm is stale and never handed over: a workspace that refuses, and one a working vault's answer leaves out", async () => {
+  const second = { id: "tn_second00000001", slug: "second-space", name: "Second Space" }
+  const inAnHour = new Date(Date.now() + 3_600_000).toISOString()
+  const ask = (id: string, workspace: string) => approvalAsk({ id, url: askUrlFor({ ...vault.askVault(), workspaceSlug: workspace }, "approval", id)!.url, summary: "Send an email", bindingCode: "K7Q2MX", expiresAt: inAnHour, requestedBy: { device: "test-machine", session: null } })
+  await addLedgerEntry(vault.slotDir(dir.path), vault.ledgerScope(), { ask: ask("apr_live", "mock-space") })
+  await addLedgerEntry(vault.slotDir(dir.path), vault.ledgerScope(), { ask: ask("apr_gone", "mock-space") })
+  const b = await vault.enrolSoftware(dir.path, { config: { tenant: second.id, workspaceSlug: second.slug, workspaceName: second.name } })
+  const secondScope = { vaultUrl: vault.url, workspace: second.id, device: b, workspaceSlug: second.slug }
+  await addLedgerEntry(vault.slotDir(dir.path, second.id), secondScope, { ask: ask("apr_revoked", second.slug) })
+  const record = vault.devices.get(b)
+  if (record) record.revoked = true
+  vault.pending = [{ kind: "approval", id: "apr_live", url: `${vault.url}/w/mock-space/a/apr_live`, title: "Send an email", expiresAt: inAnHour, bindingCode: "K7Q2MX" }]
+  try {
+    const result = await pending()
+    expect(result.structuredContent.pending.map((a) => [a.id, a.stale])).toEqual([["apr_live", undefined], ["apr_gone", true], ["apr_revoked", true]])
+    expect(result.structuredContent.warning).toContain("marked stale")
+    expect(result.content.filter((c) => c.type === "resource_link").map((c) => c.uri)).toEqual([`${vault.url}/w/mock-space/a/apr_live`])
+    const text = result.content.map((c) => c.text ?? "").join("\n")
+    expect(text).not.toMatch(/apr_gone|apr_revoked/)
+    expect(askCardView(result as never)).toMatchObject({ kind: "single", ask: { id: "apr_live" } })
+  } finally {
+    if (record) record.revoked = false
   }
 })

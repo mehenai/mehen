@@ -189,8 +189,9 @@ function buildFromServerEntry(entry: ServerPendingEntry, url: AskUrl, expiresAt:
 }
 
 // An open ask and the item slug it creates, when known, for lookup by slug.
-// stale: read from this machine's record alone, its vault unreachable, so
-// the vault may have settled it since.
+// stale: read from this machine's record alone, its state not confirmed by
+// the vault (unreachable, refusing, or listing it no more), so it may be
+// settled.
 export type PendingItem = { ask: Ask; slug: string | null; stale?: true }
 
 // `refusedLinks` counts server entries whose url was not on this vault;
@@ -212,7 +213,7 @@ async function slotPending(env: Env, slot: LocalContext, now: Date, open: Pendin
   try {
     server = await api.request<ServerPending>("GET", "/v1/pending")
   } catch (error) {
-    if (error instanceof VaultApiError && error.status === 404) return { items: fromLedger(ledger, context), notices: [], groups: [], source: "ledger", refusedLinks: 0 }
+    if (error instanceof VaultApiError && error.status === 404) return { items: staleFromLedger(ledger, context), notices: [], groups: [], source: "ledger", refusedLinks: 0 }
     throw error
   }
   const by = requestedBy(env, slot.config.name ?? null)
@@ -228,7 +229,8 @@ async function slotPending(env: Env, slot: LocalContext, now: Date, open: Pendin
     if (ask) items.push({ ask: withContext(ask, context), slug: typeof entry.item === "string" ? entry.item : (known?.slug ?? null) })
   }
   const seen = new Set(items.map((i) => i.ask.id))
-  for (const entry of ledger) if (!seen.has(entry.ask.id)) items.push({ ask: withContext(entry.ask, context), slug: entry.slug })
+  // One the vault's answer leaves out may have been settled since.
+  for (const entry of ledger) if (!seen.has(entry.ask.id)) items.push({ ask: withContext(entry.ask, context), slug: entry.slug, stale: true })
   const groupList = serverGroups(server.groups, scope)
   const grouped = items.map((item) => {
     const group = item.ask.kind === "approval" ? groupList.groups.find((g) => g.approvals.includes(item.ask.id)) : undefined
@@ -239,8 +241,8 @@ async function slotPending(env: Env, slot: LocalContext, now: Date, open: Pendin
   return { items: grouped, notices: [...noticeList.notices, ...machineList.notices], groups: groupList.groups, source: "vault", refusedLinks: refusedLinks + groupList.refusedLinks + noticeList.refusedLinks + machineList.refusedLinks }
 }
 
-function fromLedger(entries: LedgerEntry[], context: SessionContext): PendingItem[] {
-  return entries.map((e) => ({ ask: withContext(e.ask, context), slug: e.slug }))
+function staleFromLedger(entries: LedgerEntry[], context: SessionContext): PendingItem[] {
+  return entries.map((e) => ({ ask: withContext(e.ask, context), slug: e.slug, stale: true }))
 }
 
 // Everything open across the allowed set: every active
@@ -275,8 +277,8 @@ export async function listPending(env: Env, now = new Date(), span?: PendingSpan
       unavailable.push({ slot: slot.dir, error: failure.code, message: failure.message })
       const context = sessionContext(slot.config)
       const scope = { vaultUrl: slot.config.vault, workspace: slot.config.tenant, device: slot.config.device, workspaceSlug: slot.config.workspaceSlug ?? null }
-      const kept = fromLedger((await readLedger(slot.dir, scope, now).catch(() => [])).filter(isListedAsk), context)
-      found = { items: failure.code === "network" ? kept.map((item) => ({ ...item, stale: true as const })) : kept, notices: [], groups: [], source: "ledger", refusedLinks: 0 }
+      const kept = staleFromLedger((await readLedger(slot.dir, scope, now).catch(() => [])).filter(isListedAsk), context)
+      found = { items: kept, notices: [], groups: [], source: "ledger", refusedLinks: 0 }
     }
     items.push(...found.items)
     notices.push(...found.notices)
@@ -307,7 +309,7 @@ function shortWhat(ask: Ask): string {
   return what.charAt(0).toLowerCase() + what.slice(1)
 }
 
-const STALE_ASK_NEXT: NextStep = { say: "The vault could not be asked; this link may already be settled. Check the network, then run mehen pending again." }
+const STALE_ASK_NEXT: NextStep = { say: "The vault did not confirm this ask is open; it may already be settled. Do not hand the link over as live: run mehen pending again once the vault answers." }
 
 export const pendingCommand: Command = {
   summary: "list the asks still waiting for a human, or show one again (mehen pending [<id>|<slug>])",
@@ -316,7 +318,7 @@ export const pendingCommand: Command = {
   async run({ args, json, env }) {
     const now = new Date()
     const { items, notices, groups, vaultUrl, refusedLinks, unavailable } = await listPending(env, now)
-    for (const gone of unavailable) note(`mehen: warning: the vault for ${gone.slot} could not be asked (${gone.error}: ${gone.message}); its asks are listed from this machine's record${gone.error === "network" ? ", marked stale: the vault may have settled them, so do not hand their links over as live" : ""}.`)
+    for (const gone of unavailable) note(`mehen: warning: the vault for ${gone.slot} could not be asked (${gone.error}: ${gone.message}); its asks are listed from this machine's record, marked stale: the vault may have settled them, so do not hand their links over as live.`)
     if (refusedLinks > 0) note(`mehen: warning: ${refusedLinks === 1 ? "one pending entry" : `${refusedLinks} pending entries`} came with a link not on the vault or an id mehen does not know; ${refusedLinkWarning(vaultUrl)}`)
     const asks = items.map((i) => i.ask)
     const wanted = args.positionals[0]

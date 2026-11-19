@@ -481,22 +481,34 @@ describe("mehen mcp tools", () => {
     await addLedgerEntry(vault.slotDir(dir.path), scope(), { ask: approvalAsk({ id: "apr_7Hq2", url: vaultLink("/a/apr_7Hq2"), summary: "Send an email to sam@example.com", item: "gmail-alex", bindingCode: "K7Q2MX", expiresAt: inMinutes(50), requestedBy: by }) })
     const made = await callTool("vault_request", { kind: "api-key", name: "openai-new", reason: "summarise mail", provider: "openai" })
     const intake = (made.structuredContent as { intake: string }).intake
-    const result = await callTool("vault_pending", {})
-    expect(result.isError).toBe(false)
-    const pending = (result.structuredContent as { pending: { id: string; kind: string }[] }).pending
-    expect(pending.map((a) => [a.kind, a.id])).toEqual([["approval", "apr_7Hq2"], ["intake", intake]])
-    expectLinksMatchAsks(result)
-    expect(text(result)).toContain("Human needed: approve a request")
-    expect(text(result)).toContain('  then:    vault_wait { "id": "apr_7Hq2" }')
-    expect(text(result)).toContain(`  then:    vault_wait { "id": "${intake}" }`)
-    // The vault's own list is merged in when the server has it.
-    vault.pending = [{ kind: "connect", id: "con_srv", url: `${vault.url}/w/mock-space/c/con_srv`, title: "Connect gmail-work to Gmail", expiresAt: null, requestedBy: { device: "d", deviceName: "sam-mac-mini", session: "pi-4f2a" }, item: "gmail-work", provider: "google-gmail", account: "work@example.com" }]
+    // With no list from the vault (404) nothing is confirmed: both are stale,
+    // with no link or block to hand over.
+    const unconfirmed = await callTool("vault_pending", {})
+    expect((unconfirmed.structuredContent as { pending: { id: string; stale?: true }[] }).pending.map((a) => [a.id, a.stale])).toEqual([["apr_7Hq2", true], [intake, true]])
+    expect(resourceLinks(unconfirmed)).toEqual([])
+    expect(text(unconfirmed)).not.toContain("Human needed")
+    const requested = { device: "d", deviceName: "test-box", session: "pi-1" }
+    vault.pending = [
+      { kind: "approval", id: "apr_7Hq2", url: `${vault.url}/w/mock-space/a/apr_7Hq2`, title: "Send an email to sam@example.com", expiresAt: inMinutes(50), requestedBy: requested, item: "gmail-alex", bindingCode: "K7Q2MX" },
+      { kind: "intake", id: intake, url: `${vault.url}/w/mock-space/i/${intake}`, expiresAt: inMinutes(50), requestedBy: requested, item: "openai-new", provider: "openai", kindRequested: "api-key" },
+    ]
     try {
+      const result = await callTool("vault_pending", {})
+      expect(result.isError).toBe(false)
+      const pending = (result.structuredContent as { pending: { id: string; kind: string }[] }).pending
+      expect(pending.map((a) => [a.kind, a.id])).toEqual([["approval", "apr_7Hq2"], ["intake", intake]])
+      expectLinksMatchAsks(result)
+      expect(text(result)).toContain("Human needed: approve a request")
+      expect(text(result)).toContain('  then:    vault_wait { "id": "apr_7Hq2" }')
+      expect(text(result)).toContain(`  then:    vault_wait { "id": "${intake}" }`)
+      // An ask the vault's list leaves out may be settled: stale, never handed over.
+      vault.pending = [{ kind: "connect", id: "con_srv", url: `${vault.url}/w/mock-space/c/con_srv`, title: "Connect gmail-work to Gmail", expiresAt: null, requestedBy: { device: "d", deviceName: "sam-mac-mini", session: "pi-4f2a" }, item: "gmail-work", provider: "google-gmail", account: "work@example.com" }]
       const merged = await callTool("vault_pending", {})
-      const all = (merged.structuredContent as { pending: { id: string; requestedBy: unknown }[] }).pending
-      expect(all.map((a) => a.id)).toEqual(["con_srv", "apr_7Hq2", intake])
+      const all = (merged.structuredContent as { pending: { id: string; requestedBy: unknown; stale?: true }[] }).pending
+      expect(all.map((a) => [a.id, a.stale])).toEqual([["con_srv", undefined], ["apr_7Hq2", true], [intake, true]])
       expect(all[0]?.requestedBy).toEqual({ device: "sam-mac-mini", session: "pi-4f2a" })
-      expectLinksMatchAsks(merged)
+      expect(resourceLinks(merged).map((l) => l.uri)).toEqual([`${vault.url}/w/mock-space/c/con_srv`])
+      expect(text(merged)).not.toContain("apr_7Hq2")
     } finally {
       vault.pending = null
     }
@@ -881,6 +893,31 @@ describe("mehen mcp tools", () => {
     expect(notJson.isError).toBe(true)
     expect(notJson.structuredContent).toMatchObject({ error: "usage" })
     expect(String((notJson.structuredContent as { message: string }).message)).toContain("so select has nothing to pick from")
+  })
+
+  test("vault_fetch: an unmarked 502 or 504 after a write is outcome_unknown with no retry advice; after a read it stays retryable", async () => {
+    await vault.enrolSoftware(dir.path)
+    for (const status of [502, 504]) {
+      vault.relay = () => new Response("Gateway", { status })
+      const write = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", body: "{}" })
+      expect(write.isError).toBe(true)
+      expect(write.structuredContent).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+      expect(JSON.stringify(write.structuredContent)).not.toMatch(/[Rr]etry/)
+      const read = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/x" })
+      expect(read.structuredContent).toMatchObject({ error: "internal", next: { say: expect.stringContaining("Retry once") } })
+    }
+  })
+
+  test("vault_fetch select on a write whose body is not JSON gives the body as it came and never says to send it again", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.relay = () => new Response("<html>created</html>", { status: 201, headers: { [UPSTREAM_HEADER]: "1" } })
+    const result = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/apps", body: "{}", select: "data" })
+    expect(result.isError).toBe(false)
+    expect(result.structuredContent).toMatchObject({ status: 201, body: "<html>created</html>", selected: null, found: false, note: expect.stringContaining("Do not send it again") })
+    expect(JSON.stringify(result)).not.toMatch(/run it again|[Rr]etry/)
+    vault.relay = () => new Response("<html>", { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
+    const read = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/apps", select: "data" })
+    expect(read.structuredContent).toMatchObject({ error: "usage", message: expect.stringContaining("run it again without select") })
   })
 
   test("vault_fetch with timeoutSeconds stops waiting: a read with a network error safe to resend, a write with outcome_unknown", async () => {

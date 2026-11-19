@@ -112,6 +112,20 @@ describe("mehen fetch", () => {
     expect(failing.stderr).toContain("500")
   })
 
+  test("an unmarked 502 or 504 from a proxy after a write is outcome_unknown with the check-first step and no retry; after a read it stays retryable", async () => {
+    await enrolled()
+    for (const status of [502, 504]) {
+      vault.relay = () => new Response("Gateway", { status })
+      const write = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/x", "-d", "{}", "--json"], env)
+      expect(write.code).toBe(EXIT.transient)
+      expect(json(write)).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+      expect(json(write)).not.toHaveProperty("retryAfter")
+      expect(write.stdout).not.toMatch(/[Rr]etry/)
+      const read = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/x", "--json"], env)
+      expect(json(read)).toMatchObject({ error: "internal", next: { say: expect.stringContaining("Retry once") } })
+    }
+  })
+
   test("--json returns status, headers and body", async () => {
     await enrolled()
     vault.relay = () => new Response("hello", { status: 404, headers: { [UPSTREAM_HEADER]: "1", [ITEM_HEADER]: "openai-personal", "x-request-id": "r1" } })
@@ -474,6 +488,18 @@ describe("mehen fetch for agents: --output, --select, -i and --max-time", () => 
     const asJson = json(await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/apps", "--select", "data.1", "--json"], env))
     expect(asJson).toMatchObject({ status: 200, selected: { id: "app_2" }, found: true })
     expect(asJson).not.toHaveProperty("body")
+  })
+
+  test("--select on a write whose body is not JSON gives the body as it came and never says to send it again", async () => {
+    await enrolled()
+    vault.relay = () => new Response("<html>created</html>", { status: 201, headers: { [UPSTREAM_HEADER]: "1" } })
+    const asJson = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/apps", "-d", "{}", "--select", "data", "--json"], env)
+    expect(asJson.code).toBe(EXIT.ok)
+    expect(json(asJson)).toMatchObject({ status: 201, body: "<html>created</html>", selected: null, found: false, note: expect.stringContaining("Do not send it again") })
+    const human = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/apps", "-d", "{}", "--select", "data"], env)
+    expect(human.code).toBe(EXIT.ok)
+    expect(human.stdout).toBe("<html>created</html>")
+    for (const out of [asJson, human]) expect(`${out.stdout}${out.stderr}`).not.toMatch(/run it again|[Rr]etry/)
   })
 
   test("--select on a body that is not JSON is a usage error that says the request was sent", async () => {

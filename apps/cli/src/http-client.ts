@@ -239,10 +239,11 @@ export class HttpVaultApi implements VaultApi {
     }
     if (!response.headers.has(UPSTREAM_HEADER)) {
       await response.body?.cancel()
-      throw new RelayUnmarkedAnswerError(response.status, {
-        error: "internal",
-        message: `The vault answered the relay with HTTP ${response.status} but neither ${UPSTREAM_HEADER} nor ${ERROR_HEADER}, so mehen will not treat it as the upstream's answer.`,
-      })
+      const message = `The vault answered the relay with HTTP ${response.status} but neither ${UPSTREAM_HEADER} nor ${ERROR_HEADER}, so mehen will not treat it as the upstream's answer.`
+      // A 5xx from something in front of the vault, such as a proxy's 502 or
+      // 504, may have come after the vault sent the write upstream.
+      if (write && response.status >= 500) throw new RelayOutcomeUnknownError(message)
+      throw new RelayUnmarkedAnswerError(response.status, { error: "internal", message })
     }
     return withDecodedHeaders(response)
   }
