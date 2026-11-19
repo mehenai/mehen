@@ -20,6 +20,8 @@ import type { AccountShell } from "../shell.ts"
 import { recoveryStatusWords } from "../client/security-logic.ts"
 import { emailCodeOption } from "./email-code.ts"
 
+export const COPY_REFUSED_WORDS = "This browser would not copy them. Use Download to save them to a file instead."
+
 export const RECOVERY_SETUP_WORDS = "Before you can join or create a workspace, set up a way back in: save ten recovery codes and type one back, or add a second passkey."
 
 // The recovery step, shared by sign-up and /account/recovery. Codes are
@@ -37,6 +39,7 @@ export function recoveryStep(heading: string): Html {
       <ol class="codes mono" data-region="codes-list"></ol>
       <div class="actions"><button type="button" class="btn secondary sm" data-action="copy-codes">${icon("copy")}<span>Copy</span></button>
         <button type="button" class="btn secondary sm" data-action="download-codes"><span>Download</span></button></div>
+      <p class="small muted" role="status" data-region="codes-copy-error" hidden>${COPY_REFUSED_WORDS}</p>
       <label class="field"><span class="label">Type code number <b data-region="codes-position"></b> to show you saved them</span>
         <input type="text" class="mono" data-input="codes-confirm" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="64"></label>
       <p class="inline-error" role="alert" data-region="codes-error" hidden></p>

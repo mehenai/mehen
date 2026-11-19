@@ -53,6 +53,7 @@ export function wireRecoveryStep(root: ParentNode, done: () => void, afterSignup
   let codes: readonly string[] = []
   const finished = () => {
     issued.hidden = true
+    must('[data-region="codes-copy-error"]', root).hidden = true
     list.replaceChildren()
     codes = []
     must('[data-region="recovery-done"]', root).hidden = false
@@ -81,16 +82,33 @@ export function wireRecoveryStep(root: ParentNode, done: () => void, afterSignup
       make.hidden = true
     })
   })
+  // The label it starts with, read once, and one reset at a time, so quick
+  // clicks never leave "Copied" behind. A clipboard the browser refuses
+  // says to use Download; the codes stay where they are.
+  const copyLabel = copy.querySelector("span") ?? copy
+  const copyWords = copyLabel.textContent ?? "Copy"
+  const copyRefused = must('[data-region="codes-copy-error"]', root)
+  let copyReset: ReturnType<typeof setTimeout> | undefined
   copy.addEventListener("click", () => {
     if (codes.length === 0) return
-    void navigator.clipboard.writeText(recoveryCodesLines(codes)).then(() => {
-      const label = copy.querySelector("span") ?? copy
-      const before = label.textContent
-      label.textContent = "Copied"
-      setTimeout(() => {
-        label.textContent = before
-      }, COPIED_FOR_MS)
-    })
+    const written = (async () => navigator.clipboard.writeText(recoveryCodesLines(codes)))()
+    written.then(
+      () => {
+        copyRefused.hidden = true
+        copyLabel.textContent = "Copied"
+        clearTimeout(copyReset)
+        copyReset = setTimeout(() => {
+          copyLabel.textContent = copyWords
+          copyReset = undefined
+        }, COPIED_FOR_MS)
+      },
+      () => {
+        clearTimeout(copyReset)
+        copyReset = undefined
+        copyLabel.textContent = copyWords
+        copyRefused.hidden = false
+      },
+    )
   })
   download.addEventListener("click", () => {
     if (codes.length > 0) saveText(RECOVERY_CODES_FILE, recoveryCodesLines(codes))

@@ -1028,6 +1028,54 @@ describe("recovery", () => {
     }
   })
 
+  async function codesShown() {
+    const codes = Array.from({ length: 10 }, generateRecoveryCode)
+    const entry = accountGallery().find((e) => e.id === "account-recovery")!
+    open(renderDocument(entry.page).value, (path) => (path === "/api/account/stepup/start" ? ok({ nonce: "n", options: {} }) : path === "/api/account/recovery/generate" ? ok({ batch: "b", codes, confirmPosition: 3, expiresAt: "x" }) : never()))
+    initAccountRecovery()
+    $('[data-action="make-codes"]').click()
+    await settle()
+    return codes
+  }
+  const copyLabel = () => $('[data-action="copy-codes"] span').textContent
+
+  it("a clipboard that refuses says to use Download, shows no code, and leaves Copy as it was", async () => {
+    vi.stubGlobal("navigator", { clipboard: { writeText: async () => { throw new Error("NotAllowedError: Document is not focused.") } } })
+    try {
+      const codes = await codesShown()
+      $('[data-action="copy-codes"]').click()
+      await settle()
+      const note = $('[data-region="codes-copy-error"]')
+      expect(note.hidden).toBe(false)
+      expect(note.textContent).toBe("This browser would not copy them. Use Download to save them to a file instead.")
+      for (const code of codes) expect(note.textContent).not.toContain(code)
+      expect(copyLabel()).toBe("Copy")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("two quick clicks on Copy end with Copy again, after one reset", async () => {
+    vi.stubGlobal("navigator", { clipboard: { writeText: async () => undefined } })
+    try {
+      await codesShown()
+      vi.useFakeTimers()
+      $('[data-action="copy-codes"]').click()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(copyLabel()).toBe("Copied")
+      $('[data-action="copy-codes"]').click()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(copyLabel()).toBe("Copied")
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(copyLabel()).toBe("Copy")
+      expect(vi.getTimerCount()).toBe(0)
+      expect($('[data-region="codes-copy-error"]').hidden).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it("the account recovery page wires the same recovery step", async () => {
     const entry = accountGallery().find((e) => e.id === "account-recovery")!
     open(renderDocument(entry.page).value, (path) => (path === "/api/account/stepup/start" ? ok({ nonce: "n", options: {} }) : path === "/api/account/recovery/generate" ? ok({ batch: "b", codes: Array.from({ length: 10 }, generateRecoveryCode), confirmPosition: 1, expiresAt: "x" }) : never()))
