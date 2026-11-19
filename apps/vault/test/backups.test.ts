@@ -13,6 +13,7 @@ import { auditLine } from "../src/ui/wording.ts"
 import { noticesFor } from "../src/vault/areas/workspace-runtime.ts"
 import { editAccessFixture, workspaceInvoke, accountAuth } from "./access-test-support.ts"
 import { credentialsFixture, deviceInvocation, inAccess, memberInvocation, memberPrincipal, seedCredential, seedOAuthConnection } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const DAY = BACKUP_RECIPIENT_DELAY_MS
 const SECRET = "test-secret-never-returned"
@@ -131,7 +132,7 @@ describe("backup recipients", () => {
       expect(await refused(remove(ctx, view.id, "admin"))).toMatchObject({ error: "forbidden" })
       expect(await refused(remove(ctx, view.id, "member"))).toMatchObject({ error: "forbidden" })
       expect(await refused(call(ctx, "backup.recipient_remove", { id: view.id }, memberInvocation(ctx)))).toMatchObject({ error: "forbidden", message: expect.stringContaining("passkey") })
-      ctx.sql.exec("UPDATE members SET role='owner' WHERE id='mem_admin'")
+      fixtureSql(ctx).exec("UPDATE members SET role='owner' WHERE id='mem_admin'")
       expect(await remove(ctx, view.id, "admin")).toEqual({ id: view.id, removed: true })
       expect(await refused(remove(ctx, view.id))).toMatchObject({ error: "not_found" })
       expect(notices(ctx).filter((n) => n.payload.kind === "backup_recipient" && n.payload.change === "removed")[0]!.payload).toMatchObject({ by: "mem_admin", member: "mem_owner" })
@@ -139,7 +140,7 @@ describe("backup recipients", () => {
       expect(ctx.sql.exec("SELECT key FROM schedule WHERE area='backups'").toArray()).toEqual([])
       // A registrant demoted since may still remove their own.
       const own = await add(ctx, (await keyPair()).recipient)
-      ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_owner'")
+      fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_owner'")
       expect(await remove(ctx, own.id)).toEqual({ id: own.id, removed: true })
     })
   })
@@ -216,9 +217,9 @@ describe("backup exports", () => {
         await seedCredential(ctx, "openai")
         const { id, later } = await activeRecipient(ctx)
         if (change === "restricted") updateRestriction(ctx, "acc_owner", 0, { reason: "recovery", until: ctx.now() + 2 * DAY, notice: "ntc_recovery" })
-        if (change === "removed") ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_owner'")
-        if (change === "suspended") ctx.sql.exec("UPDATE members SET status='suspended' WHERE id='mem_owner'")
-        if (change === "demoted") ctx.sql.exec("UPDATE members SET role='admin' WHERE id='mem_owner'")
+        if (change === "removed") fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_owner'")
+        if (change === "suspended") fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE id='mem_owner'")
+        if (change === "demoted") fixtureSql(ctx).exec("UPDATE members SET role='admin' WHERE id='mem_owner'")
         const expected = { restricted: { error: "forbidden", message: expect.stringContaining("Your sign-in was recovered.") }, removed: { error: "owner_inactive" }, suspended: { error: "owner_inactive" }, demoted: { error: "forbidden" } }[change]
         expect(await refused(exportTo(later, id, await deviceInvocation(ctx, "dev_owner"))), change).toMatchObject(expected)
         // A removed member has no session to call with.

@@ -21,6 +21,7 @@ import { MANDATE_HEADER, POSTURE_HEADER, type WorkspaceRunCreated } from "@mehen
 import { signMandate, terms } from "./mandates-test-support.ts"
 import { auditLine } from "../src/ui/wording.ts"
 import { DELETE_COMMENT, OPEN_ISSUE, UNREVIEWED, relayAs, seedGithub, setPosture } from "./postures-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 afterEach(() => { setRelayServices({}); setUpstreamFetch(null); vi.restoreAllMocks() })
 it("the shared relay engine cannot mint legacy approval grants without workspace authority",async () => {
@@ -363,7 +364,7 @@ describe("a posture in the approve hook", () => {
       await seedGithub(ctx, "github-mine", { kind: "member", member: "mem_member" })
       ctx.sql.exec("UPDATE devices SET scope=json_set(scope,'$.privateCredentials',json('true')) WHERE id='dev_member'")
       await setPosture(ctx, "member", "github-mine", { level: "trust", machines: null })
-      ctx.sql.exec("UPDATE members SET role='guest' WHERE id='mem_member'")
+      fixtureSql(ctx).exec("UPDATE members SET role='guest' WHERE id='mem_member'")
       for (const request of [OPEN_ISSUE, UNREVIEWED]) expect((await relayAs(ctx, "dev_member", request, "github-mine")).error?.code).toBe("approval_required")
       expect(audits(ctx, "posture.use")).toEqual([])
     })

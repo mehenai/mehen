@@ -15,6 +15,7 @@ import { type AdoptionChoice, adoptionActions, adoptionDecisions, adoptionRefusa
 import { ADOPTION_HOLDER_GONE } from "../src/adoption-words.ts"
 import type { ApiError } from "@mehen/protocol/api"
 import { assertCredentialNameFree, checkedCredential, prepareCredential, registerCredentialServices, storeCredential } from "../src/vault/areas/items-workspace.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 // seedCredential's value.
 const STORED = "test-secret-never-returned"
@@ -236,7 +237,7 @@ describe("the view of a compare row", () => {
       const held = await seedCredential(ctx, "soon-gone")
       const { adoption } = await start(ctx)
       await upload(ctx, adoption, [await item(ctx, adoption, "a001", "soon-gone", STORED, { compare: true })])
-      ctx.sql.exec("DELETE FROM items WHERE id=?", held.id)
+      fixtureSql(ctx).exec("DELETE FROM items WHERE id=?", held.id)
       const [row] = (await view(ctx, adoption)).items
       expect([row!.compare, row!.problem]).toEqual([null, "What this row was compared with is gone or hidden from you; send it again or leave it out."])
     })
@@ -419,7 +420,7 @@ describe("approve with actions", () => {
       const held = await seedCredential(ctx, "soon-hidden")
       const { adoption } = await start(ctx)
       await upload(ctx, adoption, [await item(ctx, adoption, "a001", "soon-hidden", SENTINEL, { compare: true })])
-      ctx.sql.exec("UPDATE items SET home_kind='member',home_id='mem_admin' WHERE id=?", held.id)
+      fixtureSql(ctx).exec("UPDATE items SET home_kind='member',home_id='mem_admin' WHERE id=?", held.id)
       const v = await view(ctx, adoption)
       const hidden = "What this row was compared with is gone or hidden from you; send it again or leave it out."
       expect([v.items[0]!.compare, v.items[0]!.problem]).toEqual([null, hidden])
@@ -436,8 +437,8 @@ describe("approve with actions", () => {
       const hidden = await seedCredential(ctx, "page-hidden"), gone = await seedCredential(ctx, "page-gone")
       const { adoption } = await start(ctx)
       await upload(ctx, adoption, [await item(ctx, adoption, "a001", "page-hidden", SENTINEL, { compare: true }), await item(ctx, adoption, "a002", "page-gone", SENTINEL, { compare: true })])
-      ctx.sql.exec("UPDATE items SET home_kind='member',home_id='mem_admin' WHERE id=?", hidden.id)
-      ctx.sql.exec("DELETE FROM items WHERE id=?", gone.id)
+      fixtureSql(ctx).exec("UPDATE items SET home_kind='member',home_id='mem_admin' WHERE id=?", hidden.id)
+      fixtureSql(ctx).exec("DELETE FROM items WHERE id=?", gone.id)
       const v = await view(ctx, adoption)
       expect(v.items.map(i => [i.ref, i.compare, i.problem, adoptionActions(i, adoption)])).toEqual([["a001", null, ADOPTION_HOLDER_GONE, ["rename"]], ["a002", null, ADOPTION_HOLDER_GONE, ["rename"]]])
       const page = (choices: [string, AdoptionChoice][]) => { const built = adoptionDecisions(adoption, v.items, new Map(choices)); if (!built.ok) throw new Error(built.error.message); return built.decisions }

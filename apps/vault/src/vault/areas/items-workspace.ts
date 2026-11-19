@@ -18,7 +18,7 @@ import { devicePolicyState } from "./devices.ts"
 import { PostureTerms, forgetPosture, machinePosture, personPosture, postureAction, resetPostureOnRehome } from "./postures-workspace.ts"
 import { assertPushableChange, itemPushable, pushesOn } from "./push-allowance.ts"
 import { latestPushes } from "./push-records.ts"
-import { lapseMandatesOnRehome, settleShareExpiries } from "./mandates-workspace.ts"
+import { lapseMandatesOnRehome } from "./mandates-workspace.ts"
 import { beforeManagementChange } from "./management-guard.ts"
 import { accessState, eligibilityState, authorise, managedSetting, nameMiss, recordExposure, registerAccessStateProvider, registerExposureProvider, registerOffboardingHook, requireStepUp, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 
@@ -572,7 +572,7 @@ export const workspaceItemOps = {
         }
         requireStepUp(ctx, decision, { type: "item.delete", item: item.id }, invocation)
         if(p.kind!=="member")throw new VaultError("forbidden","Only a person can delete a credential.")
-        settleShareExpiries(ctx)
+        beforeManagementChange(ctx)
         onCredentialRemoved(ctx,item,"deleted",p.memberId)
         invalidateCredentialDependencies(ctx, item.id)
         ctx.sql.exec("DELETE FROM item_secret_history WHERE item=?", item.id)
@@ -590,7 +590,7 @@ export const workspaceItemOps = {
       return ctx.storage.transactionSync(() => {
         requireStepUp(ctx, assertItemRight(ctx, invocation, { type: "credential.rehome" }, { credential: item.id, destinationHome: home }), { type: "item.rehome", item: item.id, before: item.home, after: home, dependencyRevision: item.dependencyRevision }, invocation)
         if(p.kind!=="member")throw new VaultError("forbidden","Only a person can rehome a credential.")
-        settleShareExpiries(ctx)
+        beforeManagementChange(ctx)
         rehomeCredentialDependencies(ctx, item, home)
         lapseMandatesOnRehome(ctx, item, home)
         onCredentialRemoved(ctx,item,"rehomed",p.memberId)

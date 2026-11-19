@@ -17,7 +17,7 @@ describe("PROJECTS nullable access-change targets with real hooks", () => {
     it(`${change} voids team-machine authority, audit rollback=${auditFailure}`, async () => {
       const f = await projectFixture()
       await inAccess(f.tenant, async (ctx) => {
-        ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','manage','$.protected',json('true')) WHERE id='shr_service'")
+        fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','manage','$.protected',json('true')) WHERE id='shr_service'")
         const own = await approvedProjectRun(ctx)
         const service = await approvedProjectRun(ctx, undefined, "dev_service")
         ctx.sql.exec("INSERT INTO devices(id,name,backend,jwk,thumbprint,scope,created_at,owner_kind,owner_id) SELECT 'dev_service2','Other service','software','{}','service2-key',scope,?,'team','tm_service' FROM devices WHERE id='dev_service'", ctx.now())
@@ -56,6 +56,7 @@ describe("PROJECTS nullable access-change targets with real hooks", () => {
 })
 
 import { accessChanged, registerOffboardingHook, runOffboardingHooks } from "../src/vault/areas/workspace-runtime.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 describe("real PROJECTS member lifecycle hooks", () => {
   for (const change of ["offboard", "suspend"] as const) for (const rollback of [false, true]) it(`${change} revokes own and decided-for-others authority, rollback=${rollback}`, async () => {
     const f = await projectFixture()

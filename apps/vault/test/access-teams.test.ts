@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { beginAccessSideEffectChecks, finishAccessSideEffectChecks, accessFixture, accessSnapshot, accountAuth, inAccess, registerFixtureLifecycleHooks, workspaceInvoke } from "./access-test-support.ts"
 import { accessState } from "../src/vault/areas/workspace-runtime.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
@@ -51,8 +52,8 @@ describe("access teams", () => {
     expect(await workspaceInvoke(tenant, "access.team.update", create, accountAuth("owner", { type: "team.update", ...create }))).toMatchObject({ ok: true, value: { name: "New", slug: "new-team" } })
     expect(await workspaceInvoke(tenant, "access.team.update", rename, accountAuth("owner", { type: "team.update", ...rename }))).toMatchObject({ ok: true, value: { name: "Renamed", slug: "renamed-team" } })
     await inAccess(tenant, (ctx) => {
-      ctx.sql.exec("INSERT INTO team_members(team,member) VALUES ('tm_new','mem_member')")
-      ctx.sql.exec("INSERT INTO project_shares VALUES ('shr_new','prj_a','team','tm_new',?)", JSON.stringify({ id: "shr_new", project: "prj_a", subject: { kind: "team", team: "tm_new" }, level: "use", protected: false, expiresAt: null }))
+      fixtureSql(ctx).exec("INSERT INTO team_members(team,member) VALUES ('tm_new','mem_member')")
+      fixtureSql(ctx).exec("INSERT INTO project_shares VALUES ('shr_new','prj_a','team','tm_new',?)", JSON.stringify({ id: "shr_new", project: "prj_a", subject: { kind: "team", team: "tm_new" }, level: "use", protected: false, expiresAt: null }))
     })
     const deletion = { team: "tm_new", change: "delete", name: null, slug: null } as const
     expect(await workspaceInvoke(tenant, "access.team.update", deletion, accountAuth("owner", { type: "team.update", ...deletion }))).toEqual({ ok: true, value: {} })

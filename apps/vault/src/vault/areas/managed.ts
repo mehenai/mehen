@@ -273,6 +273,7 @@ export async function deleteSubject(ctx: VaultContext, actor: string): Promise<{
   ctx.storage.transactionSync(() => {
     const removed = { devices, items: count(ctx, "SELECT count(*) AS count FROM items"), projects: count(ctx, "SELECT count(*) AS count FROM projects"), providerRevoked }
     const present = new Set(rows(ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'")).map((t) => t.name))
+    beforeManagementChange(ctx)
     for (const table of DELETION_TABLES) if (present.has(table)) ctx.sql.exec(`DELETE FROM ${table}`)
     ctx.sql.exec("UPDATE devices SET name=id,provisioned_by=NULL")
     ctx.sql.exec("UPDATE workloads SET label='',scope='{}'")

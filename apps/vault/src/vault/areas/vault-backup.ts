@@ -17,6 +17,7 @@ import { WORKSPACE_GENERATION } from "../../directory/workspace-cutover.ts"
 import type { Area, VaultContext } from "../core.ts"
 import { parseRootKeys } from "../keys.ts"
 import { setSetting, setting } from "./workspace-runtime.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 
 const OBJECT_FORMAT = "mehen-vault-backup/v1"
 const DUMP_FORMAT = "mehen-vault-dump/v1"
@@ -281,6 +282,8 @@ export async function stageDumpRestore(ctx: VaultContext, intent: string, date: 
   const staged = ctx.storage.transactionSync((): RestoreStaged => {
     // Checked again: another call may have written while the dump was fetched.
     assertEmpty(ctx)
+    // The restore writes every table, the management graph among them.
+    beforeManagementChange(ctx)
     ctx.sql.exec("PRAGMA defer_foreign_keys = ON")
     for (const name of applicationTables(ctx)) ctx.sql.exec(`DROP TABLE ${quoted(name)}`)
     for (const entry of dump.schema) ctx.sql.exec(entry.sql)

@@ -20,6 +20,7 @@ import { restoreAwaitingRestart } from "./areas/vault-backup.ts"
 import { admitManagedDeviceCall, managedAuditShape, managedPurged } from "./managed-platform.ts"
 import { TenantKeys, parseRootKeys } from "./keys.ts"
 import { wakeStorageWaiters } from "./storage-waits.ts"
+import { assertManagementWrite, inManagementScope } from "./areas/management-guard.ts"
 
 const CORE: Area = {
   name: "core",
@@ -48,7 +49,7 @@ function countWrites(storage: DurableObjectStorage, counted: () => void): SqlSto
   }
   storage.transactionSync = <T>(closure: () => T): T => {
     try {
-      return transactionSync(closure)
+      return inManagementScope(storage, () => transactionSync(closure))
     } catch (error) {
       wrote()
       throw error
@@ -68,6 +69,22 @@ function countWrites(storage: DurableObjectStorage, counted: () => void): SqlSto
     },
     Cursor: raw.Cursor,
     Statement: raw.Statement,
+  }
+}
+// The context's SQL: every statement checked against the management guard
+// (management-guard.ts) before it runs. Migrations run on the counted SQL
+// beneath it.
+function guardManagementWrites(storage: DurableObjectStorage, sql: SqlStorage): SqlStorage {
+  return {
+    exec(query, ...bindings) {
+      assertManagementWrite(storage, query)
+      return sql.exec(query, ...bindings)
+    },
+    get databaseSize() {
+      return sql.databaseSize
+    },
+    Cursor: sql.Cursor,
+    Statement: sql.Statement,
   }
 }
 
@@ -118,9 +135,10 @@ export class TenantVault extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
-    this.sql = countWrites(ctx.storage, () => { this.storageWrites++ })
+    const counted = countWrites(ctx.storage, () => { this.storageWrites++ })
+    this.sql = guardManagementWrites(ctx.storage, counted)
     this.areas = new Map(AREAS.map((a) => [a.name, a]))
-    applyMigrations(this.sql, ctx.storage, [CORE, ...AREAS])
+    applyMigrations(counted, ctx.storage, [CORE, ...AREAS])
     this.context = this.makeContext()
   }
 

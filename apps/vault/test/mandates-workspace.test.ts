@@ -10,7 +10,7 @@ import { policyAreaGrantTermsDigest, policyRuleTermsDigest } from "@mehen/protoc
 import { VaultError } from "../src/http.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { can } from "../src/vault/access.ts"
-import { MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATES_MIGRATION, mandatesArea, scheduleMandateSweep, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
+import { MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATES_MIGRATION, mandatesArea, scheduleMandateSweep, settleShareExpiries, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
 import { AREAS } from "../src/vault/registry.ts"
 import { auditLine } from "../src/ui/wording.ts"
 import { projects } from "../src/vault/areas/projects.ts"
@@ -33,6 +33,7 @@ import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal,
 import { OPEN_ISSUE, relayAs, seedGithub, setPosture, type Relayed } from "./postures-test-support.ts"
 import { PROJECT_RUN_INPUT, approvedProjectRun, projectFixture } from "./projects-workspace-fixture.ts"
 import { counts, fillRate, mandateAction, mandateOp, mandateState, notices, rateRows, receipts, signMandate, terms } from "./mandates-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const DAY = 86_400_000
 const READ_ISSUES = { method: "GET", url: "https://api.github.com/repos/acme/app/issues", headers: [] as [string, string][] }
@@ -438,7 +439,7 @@ describe("the relay on a mandate", () => {
       expect(await mandateOp(ctx, "mandates.cover_ask", "owner", { approval })).toMatchObject({ state: "sign" })
       // The credential is now another member's own: the owner may still sign
       // for the machine, but no longer see the ask.
-      ctx.sql.exec("UPDATE items SET home_kind='member',home_id='mem_admin' WHERE slug='github-work'")
+      fixtureSql(ctx).exec("UPDATE items SET home_kind='member',home_id='mem_admin' WHERE slug='github-work'")
       expect((await workspaceApprovalOps["approvals.view"]!.handler(ctx, memberPrincipal(ctx, "owner"), { id: approval }, memberInvocation(ctx, "owner")) as { view: string }).view).not.toBe("detail")
       expect(await refusal(() => mandateOp(ctx, "mandates.cover_ask", "owner", { approval }))).toMatchObject({ code: "not_found", message: "No such ask." })
     })
@@ -510,7 +511,7 @@ describe("the relay on a mandate", () => {
       // A demoted signer, before and without any lapse written, while paused.
       const demoted = (await signMandate(ctx, "owner", terms())).mandate
       await mandateOp(ctx, "mandates.pause", "owner", { id: demoted.id, rev: 1 })
-      ctx.sql.exec("UPDATE members SET role='admin' WHERE id='mem_owner'")
+      fixtureSql(ctx).exec("UPDATE members SET role='admin' WHERE id='mem_owner'")
       expect(await cover(), "demoted").toMatchObject({ state: "not_covering", mandate: demoted.id })
     })
   })
@@ -977,6 +978,65 @@ describe("the signer at each use", () => {
       })
     })
 
+    // The fourth review's runtime findings: a share's end passed with no
+    // sweep and no change to access since.
+    it("settles with one read and no write when no manage share's end is due, and reads access and writes only once one is", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        await seedGithub(ctx, "github-work", PROJECT)
+        const execs = vi.spyOn(ctx.sql, "exec")
+        const cost = (c: VaultContext) => {
+          execs.mockClear()
+          const writes = ctx.storageWrites
+          settleShareExpiries(c)
+          return [execs.mock.calls.length, ctx.storageWrites - writes]
+        }
+        expect(cost(ctx)).toEqual([1, 0])
+        const { end } = await endKims(ctx)
+        expect(cost(ctx)).toEqual([1, 0])
+        const [statements, writes] = cost(at(ctx, end + 1))
+        expect(statements).toBeGreaterThan(1)
+        expect(writes).toBeGreaterThan(0)
+        expect(cost(at(ctx, end + 2))).toEqual([1, 0])
+      })
+    })
+
+    it("lapses the whole mandate when a request on another credential it names comes after a share it managed one through has ended, before any sweep", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        const a = await seedGithub(ctx, "github-work", PROJECT)
+        ctx.sql.exec("UPDATE devices SET scope=json_set(scope,'$.privateCredentials',json('true')) WHERE id='dev_kim'")
+        const b = await seedGithub(ctx, "kim-own", { kind: "member", member: "mem_kim" })
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim", items: [a.id, b.id].sort() }))
+        expect((await relayAs(ctx, "dev_kim", READ_ISSUES, "kim-own")).error).toBeNull()
+        const { end } = await endKims(ctx)
+        const later = at(ctx, end + 1)
+        expect((await relayAs(later, "dev_kim", READ_ISSUES, "kim-own")).error?.code).toBe("approval_required")
+        expect(lapsedAt(ctx, mandate.id)).not.toBeNull()
+        expect(audits(ctx, "mandate.lapse").map((row) => row.detail)).toEqual([{ device: "dev_kim", cause: "share" }])
+      })
+    })
+
+    it("plans a passkey resume for a mandate its signer paused once a share it rested on has ended, and the resume sticks past the sweep", async () => {
+      const f = await fixture()
+      await inAccess(f.tenant, async (ctx) => {
+        const a = await seedGithub(ctx, "github-work", PROJECT)
+        const { mandate } = await signMandate(ctx, "kim", terms({ device: "dev_kim", items: [a.id] }))
+        await mandateOp(ctx, "mandates.pause", "kim", { id: mandate.id, rev: 1 })
+        const { end } = await endKims(ctx)
+        const later = at(ctx, end + 1)
+        const { rev } = mandateState(ctx, mandate.id)!
+        expect(lapsedAt(ctx, mandate.id)).toBeNull()
+        const action = await mandateAction(later, "kim", { op: "resume", id: mandate.id, rev })
+        expect(action).toMatchObject({ type: "mandate.resume", rev, from: "lapsed" })
+        expect(lapsedAt(ctx, mandate.id)).not.toBeNull()
+        expect((await refusal(() => mandateOp(later, "mandates.resume", "kim", { id: mandate.id, rev }))).code).toBe("forbidden")
+        expect(await mandateOp(later, "mandates.resume", "kim", { id: mandate.id, rev }, action)).toMatchObject({ mandate: { state: "active", rev: rev + 1 } })
+        sweepMandates(at(ctx, end + 2))
+        expect([lapsedAt(ctx, mandate.id), mandateState(ctx, mandate.id)]).toEqual([null, { state: "active", rev: rev + 1 }])
+      })
+    })
+
     it("lets a manage share expire, and granting it again, even before the sweep, does not restore cover until resumed", async () => {
       const f = await fixture()
       await inAccess(f.tenant, async (ctx) => {
@@ -1126,7 +1186,7 @@ describe("the signer at each use", () => {
         await memberOp(at(ctx, clock), "access.members.remove", { member: "mem_kim" }, { type: "member.remove", member: "mem_kim" })
         expect(settled()).toBe(0)
         await endAndSettle({ kind: "member", member: "mem_member" })
-        ctx.sql.exec("UPDATE items SET home_kind='workspace',home_id=NULL WHERE home_kind='project'")
+        fixtureSql(ctx).exec("UPDATE items SET home_kind='workspace',home_id=NULL WHERE home_kind='project'")
         await projectWorkspaceOps["projects.delete"]!.handler(at(ctx, clock), memberPrincipal(ctx, "owner"), { project: "prj_a" }, memberInvocation(ctx, "owner", { type: "project.delete", project: "prj_a" }))
         expect(settled()).toBe(0)
       })
@@ -1402,13 +1462,13 @@ describe("the signer at each use", () => {
       // Kim's share on prj_a drops from manage to use, written straight to
       // the table: the machine still reaches the credential, but Kim no
       // longer manages where it lives, which each use works out again.
-      ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE id='shr_kim'")
       expect(await answer()).toBe("approval_required")
-      ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','manage') WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','manage') WHERE id='shr_kim'")
       expect(await answer()).toBeNull()
       // Rehomed to the workspace, which a member does not manage, while the
       // machine still reaches it.
-      ctx.sql.exec("UPDATE items SET home_kind='workspace',home_id=NULL WHERE slug='github-work'")
+      fixtureSql(ctx).exec("UPDATE items SET home_kind='workspace',home_id=NULL WHERE slug='github-work'")
       expect(await answer()).toBe("approval_required")
       expect(ctx.sql.exec("SELECT role FROM members WHERE id='mem_kim'").toArray()).toEqual([{ role: "member" }])
     })
@@ -1545,10 +1605,10 @@ describe("pausing, resuming and stopping", () => {
       // Paused by the signer, then their role changed: a passkey again.
       const lapsed = (await signMandate(ctx, "owner", terms())).mandate
       await mandateOp(ctx, "mandates.pause", "owner", { id: lapsed.id, rev: 1 })
-      ctx.sql.exec("UPDATE members SET role='admin' WHERE id='mem_owner'")
+      fixtureSql(ctx).exec("UPDATE members SET role='admin' WHERE id='mem_owner'")
       expect(await mandateAction(ctx, "owner", { op: "resume", id: lapsed.id, rev: 2 })).toMatchObject({ type: "mandate.resume", rev: 2, from: "lapsed" })
       expect((await refusal(() => mandateOp(ctx, "mandates.resume", "owner", { id: lapsed.id, rev: 2 }))).code).toBe("forbidden")
-      ctx.sql.exec("UPDATE members SET role='owner' WHERE id='mem_owner'")
+      fixtureSql(ctx).exec("UPDATE members SET role='owner' WHERE id='mem_owner'")
 
       // Tripped: a passkey, whoever paused it before.
       const tripped = (await signMandate(ctx, "owner", terms())).mandate
@@ -1650,7 +1710,7 @@ describe("a signer who no longer stands behind their mandate", () => {
       const { mandate } = await signMandate(ctx, "owner", terms())
       expect(mandate).toMatchObject({ state: "active", signerCurrent: true })
       expect((await refusal(() => mandateAction(ctx, "owner", { op: "resume", id: mandate.id, rev: 1 }))).code).toBe("conflict")
-      ctx.sql.exec("UPDATE members SET role='admin' WHERE id='mem_owner'")
+      fixtureSql(ctx).exec("UPDATE members SET role='admin' WHERE id='mem_owner'")
       expect(await mandateOp(ctx, "mandates.show", "owner", { id: mandate.id })).toMatchObject({ state: "active", rev: 1, signerCurrent: false })
       expect((await relayAs(ctx, "dev_owner", READ_ISSUES)).error?.code).toBe("approval_required")
       expect((await refusal(() => mandateOp(ctx, "mandates.resume", "owner", { id: mandate.id, rev: 1 }))).code).toBe("forbidden")
@@ -1723,7 +1783,7 @@ describe("what each reader sees", () => {
       const seen = async () => [await mandateOp(ctx, "mandates.show", "kim", { id: mandate.id }) as MandateView, (await mandateOp(ctx, "mandates.uses", "kim", { id: mandate.id }) as MandateReceiptsPage).receipts] as const
       const [before, beforeUses] = await seen()
       expect([before.items, before.hiddenItems, beforeUses[0]?.credential]).toEqual([["github-work"], 0, { slug: "github-work", host: "api.github.com", entry: expect.any(String), run: null }])
-      ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id='shr_kim'")
       const [after, afterUses] = await seen()
       expect([after.items, after.hiddenItems, afterUses[0]?.credential]).toEqual([[], 1, null])
       expect(JSON.stringify([after, afterUses])).not.toMatch(/github-work|api\.github\.com/)

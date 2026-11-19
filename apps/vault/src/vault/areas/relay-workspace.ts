@@ -23,7 +23,7 @@ import { assertAreaGrantCurrent, assertRuleCurrent, coveringAreaGrant, coveringR
 import { digestOf, parseOpInput } from "./approvals.ts"
 import { assertPostureCurrent, countPostureAsk, coveringPosture, recordPostureUse, type PostureUse } from "./postures-workspace.ts"
 import { assertDialCurrent, coveringDial, dialRefusal, recordDialUse, approvalDial, type DialUse } from "./approval-dial-workspace.ts"
-import { addMandatePlanned, assertMandateCurrent, coveringMandate, mandateCoverHint, newMandatePlanned, newMandateReservation, type MandatePlanned, recordMandateCappedAsk, recordMandateCoverAsk, recordMandateUse } from "./mandates-workspace.ts"
+import { addMandatePlanned, assertMandateCurrent, coveringMandate, settleBeforeMandateUse, mandateCoverHint, newMandatePlanned, newMandateReservation, type MandatePlanned, recordMandateCappedAsk, recordMandateCoverAsk, recordMandateUse } from "./mandates-workspace.ts"
 import type { PolicyFloorView } from "@mehen/protocol/policy-mode"
 import { POLICY_FLOOR, classifyPolicyRequest, evaluatePolicyFloor, policyPathFloorReasons } from "@mehen/protocol/policy-safety"
 
@@ -214,6 +214,9 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
         throw new VaultError("conflict", "The credential changed; review and try again.")
       checked.set(item.slug, refreshed)
       return { secrets: { access_token: accessToken }, item: refreshed }
+    },
+    settle() {
+      settleBeforeMandateUse(ctx, reservation)
     },
     assertCurrent() {
       const current = accessState(ctx)

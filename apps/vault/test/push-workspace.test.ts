@@ -15,6 +15,7 @@ import { workspacePendingOps, type WorkspaceInboxAnswer } from "../src/vault/are
 import { applyMigrations } from "../src/vault/tenant-vault.ts"
 import { editAccessFixture } from "./access-test-support.ts"
 import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 export const switchedPush = (ctx: VaultContext, value: string): VaultContext => Object.assign(Object.create(ctx) as VaultContext, { env: { ...ctx.env, PUSH: value } })
 
@@ -207,7 +208,7 @@ describe("asking for a push", () => {
       expect(await prepare(ctx, { ...pushRequest(), to: { provider: "fly", app: "api", name: "KEY" } })).toMatchObject({ code: "bad_request", message: "Pushing to Fly is not available yet." })
       await seedGitHubVia(ctx, "gh-other")
       expect(await prepare()).toMatchObject({ code: "ambiguous", extra: { choices: [{ slug: "gh-other", account: "acme-bot" }, { slug: "gh-token", account: "acme-bot" }] } })
-      ctx.sql.exec("DELETE FROM items WHERE provider='github-pat'")
+      fixtureSql(ctx).exec("DELETE FROM items WHERE provider='github-pat'")
       expect(await prepare()).toMatchObject({ code: "not_found", message: "This machine may use no GitHub credential to push with." })
     })
   })
@@ -249,9 +250,9 @@ describe("asking for a push", () => {
       expect(asked).toMatchObject({ code: "approval_required" })
       expect(JSON.parse(workspaceApproval(ctx, asked.extra.approval as string)!.presentation).push).toMatchObject({ via: "gh-token" })
       // The previewed via gone, with one other left: refused, never carried by the other.
-      ctx.sql.exec("DELETE FROM items WHERE slug='gh-other'")
+      fixtureSql(ctx).exec("DELETE FROM items WHERE slug='gh-other'")
       const second = await prepare()
-      ctx.sql.exec("DELETE FROM items WHERE slug='gh-token'")
+      fixtureSql(ctx).exec("DELETE FROM items WHERE slug='gh-token'")
       await seedGitHubVia(ctx, "gh-other")
       expect(await refusal(async () => ask(second))).toMatchObject({ code: "not_found", message: 'No credential called "gh-token".' })
     })
@@ -263,7 +264,7 @@ describe("asking for a push", () => {
       await pushReady(ctx)
       const prepared = await workspacePushOps["push.prepare"]!.handler(ctx, devicePrincipal(), pushRequest(), await deviceInvocation(ctx)) as PushPrepared
       const before = ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug='gh-token'").toArray()[0]!.id
-      ctx.sql.exec("DELETE FROM items WHERE slug='gh-token'")
+      fixtureSql(ctx).exec("DELETE FROM items WHERE slug='gh-token'")
       await seedGitHubVia(ctx)
       expect(ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug='gh-token'").toArray()[0]!.id).not.toBe(before)
       expect(await refusal(async () => workspacePushOps["push.ask"]!.handler(ctx, { kind: "system" }, { ticket: prepared.ticket, preview: null }, systemInvocation(ctx)))).toMatchObject({ code: "not_found", message: 'No credential called "gh-token".' })
@@ -524,7 +525,7 @@ describe("who may push a credential again", () => {
       const queued = (await again("kim")).pushes
       expect(queued).toHaveLength(1)
       // Checked again when it is sent: a manager who now only edits sends nothing.
-      ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','edit') WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','edit') WHERE id='shr_kim'")
       expect(await workspacePushOps["push.execute"]!.handler(ctx, { kind: "system" }, { push: queued[0]! }, systemInvocation(ctx))).toMatchObject({ sent: false, reason: "You may no longer push this credential; nothing was sent." })
     })
   })

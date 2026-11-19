@@ -3,6 +3,7 @@ import { canonicalJson } from "@mehen/protocol"
 import type { SessionIdentityCheck, WorkspaceStepUpAction } from "@mehen/protocol"
 import { accessState, digest, memberRows, setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import { accessFixture, accessSnapshot, accountAuth, beginAccessSideEffectChecks, finishAccessSideEffectChecks, inAccess, registerFixtureLifecycleHooks, workspaceInvoke } from "./access-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const system = { kind: "system", reason: "verified OIDC test" } as const
 const rule = { provider: "google", domains: ["example.com"], roles: ["owner", "admin", "member"] } as const
@@ -172,12 +173,12 @@ it.each([false, true])("aborts only an exact pending invite source and repeats t
   const before = await accessSnapshot(tenant)
   for (const patch of [{ account: "acc_wrong" }, { member: "mem_wrong" }, { codeHash: "wrong" }]) expect(await workspaceInvoke(tenant, "access.invites.abort", { ...source, ...patch }, system)).toEqual({ ok: true, value: { aborted: false } })
   expect(await accessSnapshot(tenant)).toBe(before)
-  await inAccess(tenant, ctx => ctx.sql.exec("UPDATE members SET status='active' WHERE id='mem_new'"))
+  await inAccess(tenant, ctx => fixtureSql(ctx).exec("UPDATE members SET status='active' WHERE id='mem_new'"))
   const active = await accessSnapshot(tenant)
   expect(await workspaceInvoke(tenant, "access.invites.abort", source, system)).toEqual({ ok: false, error: { status: 409, vaultError: { error: "conflict", message: "This membership is already active." } } })
   expect(await accessSnapshot(tenant)).toBe(active)
   await inAccess(tenant, ctx => {
-    ctx.sql.exec("UPDATE members SET status='unconfirmed' WHERE id='mem_new'")
+    fixtureSql(ctx).exec("UPDATE members SET status='unconfirmed' WHERE id='mem_new'")
     if (expired) ctx.sql.exec("UPDATE invites SET terms=? WHERE id='inv_abort'", JSON.stringify({ ...terms, expiresAt: new Date(ctx.now() - 1).toISOString() }))
   })
   const expected = { ok: true, value: { aborted: true, state: expired ? "expired" : "open" } }

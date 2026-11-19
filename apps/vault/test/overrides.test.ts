@@ -10,6 +10,7 @@ import { newDeviceKey, publicJwk } from "./devices.ts"
 import { projectFixture, inAccess } from "./projects-workspace-fixture.ts"
 import { accountAuth, accessSnapshot, workspaceInvoke } from "./access-test-support.ts"
 import { seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 let network: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>
 beforeEach(() => { network = vi.spyOn(globalThis, "fetch").mockImplementation(async () => { throw new Error("Unexpected upstream send in overrides test") }) })
@@ -112,7 +113,7 @@ describe("personal overrides through TenantVault.invoke", () => {
     if (refusal === "unknown-variable") input.variable = "ABSENT"
     if (["foreign-private", "shared-credential", "unknown-credential", "unknown-field"].includes(refusal)) input.source = { kind: "item", item: refusal === "foreign-private" ? foreign.slug : refusal === "shared-credential" ? "key-workspace" : refusal === "unknown-credential" ? "absent-key" : f.privateItem.slug, field: refusal === "unknown-field" ? "absent" : "key" }
     if (refusal === "secret-plain") input.source = { kind: "plain", value: "-----BEGIN PRIVATE KEY-----" }
-    if (refusal === "no-use") await inAccess(f.tenant, ctx => ctx.sql.exec("DELETE FROM project_shares WHERE subject_id IN('mem_member','tm_engineering')"))
+    if (refusal === "no-use") await inAccess(f.tenant, ctx => fixtureSql(ctx).exec("DELETE FROM project_shares WHERE subject_id IN('mem_member','tm_engineering')"))
     const action = { type: "override.set", ...input } as const
     const proof = refusal === "no-proof" ? undefined : refusal === "wrong-proof" ? { type: "workspace.unfreeze" as const } : refusal === "source-changed" ? { ...action, source: { kind: "plain" as const, value: "other" } } : action
     const before = await accessSnapshot(f.tenant)
@@ -160,7 +161,7 @@ for (const change of ["delete", "rehome", "remove", "leave", "suspend", "project
   else if (change === "rehome") {
     op = "items.rehome"; input = { slug: f.privateItem.slug, home: { kind: "project", project: "prj_a" } }
     action = value<WorkspaceStepUpAction>(await workspaceInvoke(f.tenant, "items.action", { slug: f.privateItem.slug, action: "rehome", home: input.home }, accountAuth("member")))
-  } else if (change === "project-delete") { op = "projects.delete"; input = { project: "prj_a" }; action = { type: "project.delete", project: "prj_a" }; await inAccess(f.tenant, ctx => ctx.sql.exec("UPDATE items SET home_kind='workspace',home_id=NULL WHERE home_kind='project'")) }
+  } else if (change === "project-delete") { op = "projects.delete"; input = { project: "prj_a" }; action = { type: "project.delete", project: "prj_a" }; await inAccess(f.tenant, ctx => fixtureSql(ctx).exec("UPDATE items SET home_kind='workspace',home_id=NULL WHERE home_kind='project'")) }
   else { op = `access.members.${change}`; input = { member: "mem_member" }; action = { type: change === "remove" ? "member.remove" : change === "leave" ? "member.leave" : "member.suspend", member: "mem_member" } }
   const auth = accountAuth(change === "delete" || change === "rehome" || change === "leave" ? "member" : "owner", action)
   const before = await accessSnapshot(f.tenant)
@@ -357,7 +358,7 @@ it("a stale override pointing at a credential that is no longer the member's own
   const f = await fixture()
   value(await f.set({ kind: "item", item: f.privateItem.slug, field: "key" }))
   await inAccess(f.tenant, async ctx => {
-    ctx.sql.exec("UPDATE items SET home_id='mem_kim' WHERE id=?", f.privateItem.id)
+    fixtureSql(ctx).exec("UPDATE items SET home_id='mem_kim' WHERE id=?", f.privateItem.id)
     const open = vi.spyOn(ctx, "openField")
     try {
       expect(wire(await f.device("runs.create", runInput))).toEqual({ ok: false, error: { error: "not_found", message: "No such object." } })

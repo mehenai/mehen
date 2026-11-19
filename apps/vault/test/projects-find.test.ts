@@ -6,6 +6,7 @@ import { registerAccessStateProvider } from "../src/vault/areas/workspace-runtim
 import type { VaultContext } from "../src/vault/core.ts"
 import { WORKSPACE_FULL_SCOPE } from "./workspace-fixtures.ts"
 import { inAccess, projectDeviceInvocation, projectFixture } from "./projects-workspace-fixture.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const REMOTE_A = "github.com/acme/app"
 const REMOTE_B = "github.com/acme/billing"
@@ -82,7 +83,7 @@ describe("projects.find: the project bound to a checkout's remote, for a machine
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
       bindRemotes(ctx)
-      ctx.sql.exec("UPDATE members SET status='suspended' WHERE id='mem_member'")
+      fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE id='mem_member'")
       const answers = [await miss(ctx, "dev_member", REMOTE_A), await miss(ctx, "dev_member", REMOTE_B), await miss(ctx, "dev_member", "github.com/acme/absent")]
       expect(answers.map((a) => (a.body as { error: string }).error)).toEqual(["owner_inactive", "owner_inactive", "owner_inactive"])
       expect(new Set(answers.map((a) => JSON.stringify(a))).size).toBe(1)

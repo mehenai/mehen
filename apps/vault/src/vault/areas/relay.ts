@@ -199,6 +199,9 @@ export type RelayAuthorisationHooks = {
   // item's policy said approve, or the item is protected.
   approve(item: ItemRecord, subject: ApprovalSubject, presentation: import("../services.ts").ApprovalPresentation, held: import("./policy-rules-workspace.ts").HeldRequest & { policyApprove: boolean; protectedUse: boolean }): boolean
   secrets?(item: ItemRecord): Promise<{secrets:Record<string,string>;item:ItemRecord}>
+  // Runs, and commits on its own, just before the final transaction, so a
+  // change it makes (a mandate lapsed) stays when that transaction refuses.
+  settle?(): void
   assertCurrent(): void
   consume(): void
   // Plan mode (a bundle): stop after the approval loop, before any secret is
@@ -753,6 +756,7 @@ export async function authoriseRelay(ctx: VaultContext, principal: DevicePrincip
     }
     // No await after this point. The baseline is the value actually opened,
     // including this request's own maintenance refresh, never an unrelated edit.
+    hooks.settle?.()
     ctx.storage.transactionSync(() => {
       hooks.assertCurrent()
       assertRelayCurrent(ctx, principal, checked, req, dest, protectedSlugs, hooks)

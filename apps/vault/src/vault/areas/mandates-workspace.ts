@@ -508,8 +508,8 @@ function checkResumable(ctx: VaultContext, invocation: WorkspaceInvocationContex
 // for first, so the sweep never lapses the resumed mandate for it again.
 function resume(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation: WorkspaceInvocationContext): MandateChanged {
   const { id, rev } = parseOpInput(PersonChange, raw)
+  settleShareExpiriesNow(ctx)
   return ctx.storage.transactionSync(() => {
-    settleShareExpiries(ctx)
     const { decision, row, action } = checkResumable(ctx, invocation, id, rev)
     if (action !== null) requireStepUp(ctx, decision, action, invocation)
     if (p.kind !== "member") throw new VaultError("forbidden", "Only a person can resume a mandate.")
@@ -569,17 +569,19 @@ const manageShareEnd = (share: Share): number | null => share.level === "manage"
 // lapse nor restore management before the sweep reads it. A record goes
 // with its share (ON DELETE CASCADE); one whose share's terms changed since
 // is pruned here.
-// Access is read only when a manage share's end has passed unsettled, so
-// the guard costs one query on every other write it runs before.
+// On the path where no manage share's end has passed unsettled, which is
+// nearly every call, it runs one query, a read, and writes nothing; access
+// is read, and records whose share's terms changed are pruned, only when
+// one has.
 export function settleShareExpiries(ctx: VaultContext): void {
   const now = ctx.now()
-  ctx.sql.exec("DELETE FROM share_ends_settled WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=share_ends_settled.share AND s.value=share_ends_settled.terms)")
   const due = new Set<string>()
-  for (const row of ctx.sql.exec<{ id: string; value: string }>("SELECT s.id,s.value FROM project_shares s WHERE json_extract(s.value,'$.level')='manage' AND json_extract(s.value,'$.expiresAt') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM share_ends_settled e WHERE e.share=s.id AND e.terms=s.value)")) {
+  for (const row of ctx.sql.exec<{ id: string; value: string }>(UNSETTLED_MANAGE_ENDS)) {
     const end = manageShareEnd(JSON.parse(row.value) as Share)
     if (end !== null && Number.isFinite(end) && end <= now) due.add(row.id)
   }
   if (due.size === 0) return
+  ctx.sql.exec("DELETE FROM share_ends_settled WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=share_ends_settled.share AND s.value=share_ends_settled.terms)")
   const state = accessState(ctx)
   for (const share of state.shares) {
     if (!due.has(share.id)) continue
@@ -588,6 +590,22 @@ export function settleShareExpiries(ctx: VaultContext): void {
     lapseMandatesOnLostManagement(ctx, before, state, "share", end)
     ctx.sql.exec("INSERT OR IGNORE INTO share_ends_settled(share,terms) SELECT id,value FROM project_shares WHERE id=?", share.id)
   }
+}
+const UNSETTLED_MANAGE_ENDS = "SELECT s.id,s.value FROM project_shares s WHERE json_extract(s.value,'$.level')='manage' AND json_extract(s.value,'$.expiresAt') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM share_ends_settled e WHERE e.share=s.id AND e.terms=s.value)"
+// Whether a manage share's end has passed and is not yet settled.
+export function shareExpiryDue(ctx: VaultContext): boolean {
+  const now = ctx.now()
+  for (const row of ctx.sql.exec<{ value: string }>(UNSETTLED_MANAGE_ENDS)) {
+    const end = manageShareEnd(JSON.parse(row.value) as Share)
+    if (end !== null && Number.isFinite(end) && end <= now) return true
+  }
+  return false
+}
+// Settles in a transaction of its own, which commits whatever the caller
+// does next: a use or a resume refused because of the lapse it finds
+// cannot roll that lapse back. Never called inside another transaction.
+export function settleShareExpiriesNow(ctx: VaultContext): void {
+  if (shareExpiryDue(ctx)) ctx.storage.transactionSync(() => settleShareExpiries(ctx))
 }
 // A revoked machine's mandate ends for good, as a stopped one, and its open
 // proposals close: nobody is asked to resume or renew it, or told it ends.
@@ -642,6 +660,9 @@ registerSecurityChangeHook("mandates", (ctx, account) => {
 async function planAction(ctx: VaultContext, _p: AccessPrincipal, raw: unknown, invocation: WorkspaceInvocationContext): Promise<MandateActionAnswer> {
   const input = parseOpInput(MandateActionRequestSchema, raw)
   if (input.op === "sign") return await signAction(ctx, invocation, input.terms, input.proposal)
+  // A share's end that passed lapses the mandate first, durably, so the
+  // plan asks for the passkey the resume will need.
+  settleShareExpiriesNow(ctx)
   return checkResumable(ctx, invocation, input.id, input.rev).action ?? { stepUp: null }
 }
 
@@ -674,6 +695,9 @@ export function newMandateReservation(): MandateReservation {
 export function coveringMandate(ctx: VaultContext, principal: Extract<AccessPrincipal, { kind: "device" }>, credential: CheckedCredential, held: HeldRequest, reservation: MandateReservation, options: { plan: boolean; shape: string; planned?: MandatePlanned }): boolean {
   reservation.capped = null
   if (!mandatesHere(ctx) || frozen(ctx) || principal.workload !== undefined || projects.isProtectedItem(ctx, credential.slug)) return false
+  // A share's end that passed with no sweep since lapses the whole mandate
+  // before it is read, whichever of its credentials this request uses.
+  settleShareExpiriesNow(ctx)
   const row = liveRow(ctx, principal.deviceId)
   const now = ctx.now()
   if (!row || stateNow(row, now) !== "active" || reservation.mandate !== null && reservation.mandate !== row.id) return false
@@ -756,6 +780,12 @@ function trip(ctx: VaultContext, row: MandateRow, state: AccessState): void {
   })
 }
 
+// Just before the relay's last transaction, in a transaction of its own that
+// commits: a share's end that passed since the hook lapses the mandate, so
+// the final check refuses the use while the lapse stays.
+export function settleBeforeMandateUse(ctx: VaultContext, reservation: MandateReservation): void {
+  if (reservation.mandate !== null) settleShareExpiriesNow(ctx)
+}
 // Inside the relay's last transaction: the mandate the hook read, unchanged
 // and still covering, and still within its caps and rate counting what was
 // let through since. Anything else asks the machine to send it again, and
@@ -765,6 +795,10 @@ export function assertMandateCurrent(ctx: VaultContext, reservation: MandateRese
   const row = mandateRow(ctx, reservation.mandate), now = ctx.now()
   const changed = () => new VaultError("conflict", "This machine's mandate changed since this request was checked; send it again.")
   if (!row || row.rev !== reservation.rev || stateNow(row, now) !== "active" || !mandatesHere(ctx) || frozen(ctx) || !mandateScheduleOpen(termsOf(row).schedule, now)) throw changed()
+  // The relay settled just before this transaction (settleBeforeMandateUse):
+  // a share's end still unsettled here passed since, so the request is
+  // sent again, when the hook settles it.
+  if (shareExpiryDue(ctx)) throw changed()
   const state = accessState(ctx)
   for (const slug of reservation.covered.keys()) if (!mandateSignerCurrent(ctx, state, row, live(slug), now)) throw changed()
   if (cappedClasses(ctx, row, reservation.classes, now).length > 0) throw changed()

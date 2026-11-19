@@ -18,6 +18,7 @@ import { checkWorkspaceTypedGroup,enrolRegistration,startWorkspaceEnrolment,work
 import { enrolmentFingerprint } from "../src/directory/enrolment.ts"
 import { createWorkspaceFixture,type WorkspaceTestFixture } from "./workspace-fixtures.ts"
 import { newDeviceKey,publicJwk } from "./devices.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 let f: WorkspaceTestFixture
 beforeEach(async () => { beginAccessSideEffectChecks(); f = await createWorkspaceFixture() })
 const origin = "https://vault.test"
@@ -144,7 +145,7 @@ describe("enrolment public view and own acceptance",() => {
   })
   it("sole owner defaults on and a team defaults off without binding any owner at GET",async () => {
     const live = await directoryRuntimeFixture(); setPasskeyCeremonies(directoryCeremonies)
-    await inAccess(live.tenant,ctx => { ctx.sql.exec("UPDATE members SET status='removed' WHERE account!='acc_owner'") })
+    await inAccess(live.tenant,ctx => { fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE account!='acc_owner'") })
     const get = workspaceEnrolRoutes.find(route => route.method === "GET")!
     const s = await start("work"),rc = live.context("",undefined,{ ref: s.started.code })
     const ws = await resolveWorkspace(rc),own = WorkspaceEnrolViewSchema.parse(await (await get.handler(rc,ws)).json())
@@ -355,7 +356,7 @@ describe("the claim in the workspace",() => {
   })
   it("a claimed account that is suspended is refused at acceptance",async () => {
     const { tenant } = await accessFixture(),value = await registered(tenant,"acc_member")
-    await inAccess(tenant,ctx => { ctx.sql.exec("UPDATE members SET status='suspended' WHERE id='mem_member'") })
+    await inAccess(tenant,ctx => { fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE id='mem_member'") })
     expect(await acceptAs(tenant,value,"member")).toMatchObject({ ok: false,error: { vaultError: { error: "not_found" } } })
   })
 })
@@ -397,7 +398,7 @@ describe("access.enrol.visible: may view and may act",() => {
   })
   it("a suspended caller is refused with the workspace's own code",async () => {
     const { tenant } = await accessFixture(),value = await registered(tenant)
-    await inAccess(tenant,ctx => { ctx.sql.exec("UPDATE members SET status='suspended' WHERE id='mem_admin'") })
+    await inAccess(tenant,ctx => { fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE id='mem_admin'") })
     expect(await workspaceInvoke(tenant,"access.enrol.visible",{ candidate: candidateOf(value) },accountAuth("admin"))).toMatchObject({ ok: false,error: { vaultError: { error: "owner_inactive" } } })
   })
 })

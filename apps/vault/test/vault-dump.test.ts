@@ -23,6 +23,7 @@ import { accountAuth, inAccess } from "./access-test-support.ts"
 import { credentialsFixture, seedCredential } from "./credentials-test-support.ts"
 import { platformAuth } from "./managed-support.ts"
 import { createWorkspaceFixture, type WorkspaceTestFixture } from "./workspace-fixtures.ts"
+import { beforeManagementChange } from "../src/vault/areas/management-guard.ts"
 
 const SECRET = "test-secret-never-returned"
 const SLUG = "acme-billing-ledger-key"
@@ -67,6 +68,7 @@ function wipe(ctx: VaultContext): void {
   const tables = ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT IN ('_migrations','_workspace_generation') ORDER BY rowid DESC").toArray()
   ctx.storage.transactionSync(() => {
     ctx.sql.exec("PRAGMA defer_foreign_keys = ON")
+    beforeManagementChange(ctx)
     for (const { name } of tables) ctx.sql.exec(`DELETE FROM "${name}"`)
   })
 }

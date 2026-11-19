@@ -4,6 +4,7 @@ import { auditPrivateEvent, verifyAuditChain, type AuditRow } from "../src/vault
 import { credentialAudit } from "../src/vault/areas/items-workspace.ts"
 import { accessFixture, accessSnapshot, accountAuth, beginAccessSideEffectChecks, editAccessFixture, finishAccessSideEffectChecks, inAccess, workspaceInvoke } from "./access-test-support.ts"
 import { credentialsFixture, devicePrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 async function read(tenant: string, role = "member", query: Record<string, unknown> = {}): Promise<WorkspaceAuditPage> {
   const result = await workspaceInvoke(tenant, "tenant.audit", query, accountAuth(role))
@@ -67,7 +68,7 @@ describe("tenant.audit workspace visibility", () => {
 
   it("removes project/team visibility when current shares and membership end", async () => {
     const { tenant } = await fixture()
-    await inAccess(tenant, ctx => { ctx.sql.exec("DELETE FROM project_shares WHERE subject_id IN ('mem_member','tm_engineering')"); ctx.sql.exec("DELETE FROM team_members WHERE member='mem_member'") })
+    await inAccess(tenant, ctx => { fixtureSql(ctx).exec("DELETE FROM project_shares WHERE subject_id IN ('mem_member','tm_engineering')"); fixtureSql(ctx).exec("DELETE FROM team_members WHERE member='mem_member'") })
     const result = await read(tenant)
     expect(result.events.map(row => row.action)).toEqual(["relay.allow", "workspace.credential", "own.machine", "own.action"])
   })
@@ -77,7 +78,7 @@ describe("tenant.audit workspace visibility", () => {
     await inAccess(tenant, ctx => {
       for (const row of ctx.sql.exec<{ id: string; value: string }>("SELECT id,value FROM project_shares WHERE subject_id='mem_member'").toArray()) {
         const share = JSON.parse(row.value)
-        ctx.sql.exec("UPDATE project_shares SET value=? WHERE id=?", canonicalJson({ ...share, expiresAt: new Date(ctx.now() - 1).toISOString() }), row.id)
+        fixtureSql(ctx).exec("UPDATE project_shares SET value=? WHERE id=?", canonicalJson({ ...share, expiresAt: new Date(ctx.now() - 1).toISOString() }), row.id)
       }
     })
     expect((await read(tenant)).events.some(row => row.action === "project.edit")).toBe(false)
@@ -105,8 +106,8 @@ describe("tenant.audit workspace visibility", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async ctx => {
       const item = await seedCredential(ctx, "purged-private", { kind: "member", member: "mem_member" })
-      ctx.storage.transactionSync(() => { ctx.sql.exec("DELETE FROM items WHERE id=?", item.id); credentialAudit(ctx, { ...accountAuth("admin"), kind: "member", memberId: "mem_admin" }, item, "item.delete", "allowed") })
-      ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_admin'")
+      ctx.storage.transactionSync(() => { fixtureSql(ctx).exec("DELETE FROM items WHERE id=?", item.id); credentialAudit(ctx, { ...accountAuth("admin"), kind: "member", memberId: "mem_admin" }, item, "item.delete", "allowed") })
+      fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_admin'")
       auditPrivateEvent(ctx, { action: "missing-index", at: ctx.now(), actor: { kind: "member", member: "mem_member" }, session: null, item: item.id, slug: item.slug, outcome: "allowed", run: null }, "mem_member")
       ctx.sql.exec("DELETE FROM audit_private_owners WHERE seq=(SELECT MAX(seq) FROM audit)")
     })

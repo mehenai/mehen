@@ -246,8 +246,10 @@ export function drainOutbox(ctx: VaultContext, limit: number): z.infer<typeof Ou
 export function newMember(ctx: VaultContext, account: string, name: string, role: import("@mehen/protocol").WorkspaceRole, status: AccessMember["status"], id = randomId("mem")): string {
   const existing = one(ctx.sql.exec<{ account: string }>("SELECT account FROM members WHERE id=?", id))
   if (existing) { if (existing.account !== account) throw new VaultError("conflict", "This membership reservation belongs to another account."); return id }
-  beforeManagementChange(ctx)
-  ctx.sql.exec("INSERT INTO members(id,account,name,role,status,joined_at) VALUES (?,?,?,?,?,?)", id, account, name, role, status, ctx.now())
+  ctx.storage.transactionSync(() => {
+    beforeManagementChange(ctx)
+    ctx.sql.exec("INSERT INTO members(id,account,name,role,status,joined_at) VALUES (?,?,?,?,?,?)", id, account, name, role, status, ctx.now())
+  })
   if (!security(ctx, account)) saveSecurity(ctx, { account, installedEpoch: 0, pending: null, restriction: null, revokedSessionIds: [], removedFactorIds: [], deleting: false })
   return id
 }
@@ -256,11 +258,13 @@ export function newMember(ctx: VaultContext, account: string, name: string, role
 // confirmation or on a redemption that joins straight away. The caller has
 // checked the terms and owns the synchronous transaction.
 export function activateInvitedMember(ctx: VaultContext, member: string, invite: string, terms: import("@mehen/protocol").InviteTerms): void {
-  beforeManagementChange(ctx)
-  for (const team of terms.teams) ctx.sql.exec("INSERT INTO team_members(team,member) VALUES (?,?)", team, member)
-  for (const share of terms.shares) { const value = { ...share, id: randomId("shr"), subject: { kind: "member", member } }; ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", value.id, share.project, "member", member, canonicalJson(value)) }
-  ctx.sql.exec("UPDATE members SET status='active',revision=revision+1 WHERE id=?", member)
-  ctx.sql.exec("UPDATE invites SET status='active' WHERE id=?", invite)
+  ctx.storage.transactionSync(() => {
+    beforeManagementChange(ctx)
+    for (const team of terms.teams) ctx.sql.exec("INSERT INTO team_members(team,member) VALUES (?,?)", team, member)
+    for (const share of terms.shares) { const value = { ...share, id: randomId("shr"), subject: { kind: "member", member } }; ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", value.id, share.project, "member", member, canonicalJson(value)) }
+    ctx.sql.exec("UPDATE members SET status='active',revision=revision+1 WHERE id=?", member)
+    ctx.sql.exec("UPDATE invites SET status='active' WHERE id=?", invite)
+  })
 }
 
 // The caller owns authorisation and the surrounding synchronous transaction.
@@ -271,10 +275,12 @@ export function setProjectShare(ctx: VaultContext, after: import("@mehen/protoco
   const id = subject.subject.kind === "member" ? subject.subject.member : subject.subject.team
   const old = one(ctx.sql.exec<{ value: string }>("SELECT value FROM project_shares WHERE project=? AND subject_kind=? AND subject_id=?", subject.project, subject.subject.kind, id))
   if (canonicalJson(old ? JSON.parse(old.value) : null) !== canonicalJson(before)) throw new VaultError("conflict", "The expected state changed.")
-  beforeManagementChange(ctx)
-  if (after) ctx.sql.exec("INSERT INTO project_shares(id,project,subject_kind,subject_id,value) VALUES (?,?,?,?,?) ON CONFLICT(project,subject_kind,subject_id) DO UPDATE SET value=excluded.value", after.id, after.project, after.subject.kind, id, canonicalJson(after))
-  else ctx.sql.exec("DELETE FROM project_shares WHERE id=?", subject.id)
-  bumpAccessRevision(ctx)
+  ctx.storage.transactionSync(() => {
+    beforeManagementChange(ctx)
+    if (after) ctx.sql.exec("INSERT INTO project_shares(id,project,subject_kind,subject_id,value) VALUES (?,?,?,?,?) ON CONFLICT(project,subject_kind,subject_id) DO UPDATE SET value=excluded.value", after.id, after.project, after.subject.kind, id, canonicalJson(after))
+    else ctx.sql.exec("DELETE FROM project_shares WHERE id=?", subject.id)
+    bumpAccessRevision(ctx)
+  })
 }
 
 const openAskCounters = new Map<string, (ctx: VaultContext, device: string, now: number) => number>()

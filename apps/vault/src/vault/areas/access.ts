@@ -72,6 +72,7 @@ function openInvite(ctx: VaultContext, hash: string): { row: InviteRow; terms: z
   return { row, terms }
 }
 import { workspaceMemberOps } from "./workspace-members.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 
 export const OperatorWorkspaceViewSchema = z.strictObject({ frozen: z.boolean(), owners: z.array(z.strictObject({ account: z.string(), name: z.string() })), unconfirmed: z.number().int().nonnegative() })
 export const OperatorFreezeAnswerSchema = z.strictObject({ frozen: z.literal(true), already: z.boolean(), notify: z.array(z.string()) })
@@ -230,6 +231,7 @@ export const accessArea: Area = {
         if (member.status !== "unconfirmed" || invite.status !== "pending_confirmation" || !one(ctx.sql.exec("SELECT id FROM members WHERE id=? AND invite=?", member.id, invite.id))) return { aborted: false }
         const state = Date.parse(InviteTermsSchema.parse(JSON.parse(invite.terms)).expiresAt) > ctx.now() ? "open" as const : "expired" as const
         ctx.sql.exec("DELETE FROM workspace_identity_checks WHERE member=?", member.id)
+        beforeManagementChange(ctx)
         ctx.sql.exec("DELETE FROM members WHERE id=? AND account=? AND status='unconfirmed'", member.id, member.account)
         ctx.sql.exec("DELETE FROM tenant_state WHERE key=?", `identity_install:${member.id}`)
         ctx.sql.exec("UPDATE invites SET status=?,used_by=NULL,member=NULL WHERE id=?", state, invite.id)

@@ -10,6 +10,8 @@ import { accessState, authorise, eligibilityState, memberRows, setSetting } from
 import { workspacePendingOps } from "../src/vault/areas/pending-workspace.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { accessFixture, accountAuth, inAccess, installTestIdentity, workspaceInvoke } from "./access-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
+import { beforeManagementChange } from "../src/vault/areas/management-guard.ts"
 
 const ACCESS_STATE_READ = "SELECT id,owner_kind,owner_id,scope,revoked_at FROM devices WHERE owner_kind IS NOT NULL"
 function builds(ctx: VaultContext): () => number {
@@ -60,7 +62,7 @@ describe("accessState across the invocations of one object", () => {
       calls[1]!.sql.exec("UPDATE members SET name='Kim B' WHERE id='mem_kim'")
       expect(calls.map((call) => name(call, "mem_kim"))).toEqual(["Kim B", "Kim B", "Kim B"])
       expect(count()).toBe(2)
-      base.sql.exec("UPDATE members SET status='removed' WHERE id='mem_kim'")
+      fixtureSql(base).exec("UPDATE members SET status='removed' WHERE id='mem_kim'")
       expect(calls.map((call) => accessState(call).members.find((m) => m.id === "mem_kim")?.status)).toEqual(["removed", "removed", "removed"])
       expect(count()).toBe(3)
     })
@@ -138,6 +140,7 @@ describe("accessState across the invocations of one object", () => {
       return ctx.storage.transactionSync(() => {
         authorise(ctx, invocation, { type: "member.invite" }, {}, ctx.now())
         allowedBefore++
+        beforeManagementChange(ctx)
         ctx.sql.exec(change.sql)
         authorise(ctx, invocation, { type: "member.invite" }, {}, ctx.now())
         return {}

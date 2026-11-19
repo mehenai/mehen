@@ -16,6 +16,7 @@ import { accessState, principalOf, setting } from "../../src/vault/areas/workspa
 import { variableChange } from "../../src/ui/client/workspace-logic.ts"
 import { body, journey, type Machine } from "./workspace-journey.ts"
 import { projectSigned } from "./ui-projects-journey.ts"
+import { fixtureSql } from "../fixture-sql.ts"
 
 type Journey = Awaited<ReturnType<typeof journey>>
 type Seeded = Journey & { work: WorkspaceRef; agent: Machine; peer: Machine; projects: string[] }
@@ -61,7 +62,7 @@ async function fullWorkspace(): Promise<Seeded> {
   await adoption(f, machine, "a002", "adopted-two")
   const alexMember = await f.member(f.alex, work)
   await runInDurableObject(env.TENANT_VAULT.getByName(work.id), (instance) => {
-    const sql = instance.context.sql
+    const sql = fixtureSql(instance.context)
     const copy = (table: string, row: Record<string, SqlStorageValue>) => sql.exec(`INSERT INTO ${table}(${Object.keys(row).join(",")}) VALUES (${Object.keys(row).map(() => "?").join(",")})`, ...Object.values(row))
     const item = sql.exec<Record<string, SqlStorageValue>>("SELECT * FROM items WHERE slug='seed-key'").one()
     const secrets = sql.exec<Record<string, SqlStorageValue>>("SELECT * FROM item_secrets WHERE item=?", item.id).toArray()

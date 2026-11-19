@@ -4,6 +4,7 @@ import { checkedCredential } from "../src/vault/areas/items-workspace.ts"
 import { createWorkspaceIntake, submitWorkspaceIntake } from "../src/vault/areas/intake-workspace.ts"
 import { sealToVault } from "./l2-helpers.ts"
 import { credentialsFixture, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 describe("human intake final authority", () => {
   for (const race of ["removed", "cancelled"] as const)
     it(`refuses ${race} during sealing without storing a credential or completing the request`, async () => {
@@ -17,7 +18,7 @@ describe("human intake final authority", () => {
           ...ctx, async sealField(ref: Parameters<typeof ctx.sealField>[0], plain: Parameters<typeof ctx.sealField>[1]) {
             const sealed = await ctx.sealField(ref, plain)
             if (race === "removed")
-              ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_member'")
+              fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_member'")
             else
               ctx.sql.exec("UPDATE workspace_credential_requests SET status='cancelled' WHERE id=?", created.intake)
             return sealed
@@ -71,7 +72,7 @@ it("lets project users read prospective metadata but not fill, and hides it from
   const f = await credentialsFixture()
   await inAccess(f.tenant, async (ctx) => {
     const created = createWorkspaceIntake(ctx, memberPrincipal(ctx, "kim"), { provider: "openai", slug: "read-only-project", home: "project", project: "prj_a" }, memberInvocation(ctx, "kim"))
-    ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE id='shr_direct'")
+    fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE id='shr_direct'")
     const p = memberPrincipal(ctx, "member"), i = memberInvocation(ctx, "member")
     await expect(workspaceIntakeOps["intake.view"].handler(ctx, p, { intake: created.intake }, i)).resolves.toMatchObject({ intake: created.intake, slug: "read-only-project" })
     await expect(submitWorkspaceIntake(ctx, p, { intake: created.intake, slug: "read-only-project", home: { kind: "project", project: "prj_a" }, binding: { hosts: ["api.openai.com"] }, publicFields: {}, tags: [], sealed: {} }, i)).rejects.toMatchObject({ code: "forbidden", message: "You are not allowed to do that." })
@@ -185,9 +186,9 @@ for(const kind of ["intake","connect"] as const)it(`human ${kind} cancellation r
     const own=create(`own-${kind}`,true),fillable=create(`fillable-${kind}`),unfillable=create(`unfillable-${kind}`)
     expect(cancelCredentialRequest(ctx,p,own,kind,i)).toEqual({})
     expect(cancelCredentialRequest(ctx,p,fillable,kind,i)).toEqual({})
-    ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE subject_kind='member' AND subject_id='mem_member'")
+    fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE subject_kind='member' AND subject_id='mem_member'")
     const removed=memberPrincipal(ctx,"admin"),removedInvocation=memberInvocation(ctx,"admin")
-    ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_admin'")
+    fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_admin'")
     const open=vi.spyOn(ctx,"openField"),send=vi.spyOn(globalThis,"fetch"),before=JSON.stringify(ctx.sql.exec("SELECT * FROM workspace_credential_requests ORDER BY id").toArray())
     for(const [actor,auth] of [[p,i],[removed,removedInvocation]] as const)for(const id of [unfillable,"absent-request"]){
       let failure:unknown
@@ -254,7 +255,7 @@ it("long-poll status rechecks a removed owner after its wait without revealing m
     const p=devicePrincipal(),i=await deviceInvocation(ctx),created=createWorkspaceIntake(ctx,p,{provider:"openai",kind:"api-key",slug:"wait-removed",home:"project",project:"prj_a",reason:"test"},i)
     const before=JSON.stringify(ctx.sql.exec("SELECT * FROM workspace_credential_requests").toArray()),open=vi.spyOn(ctx,"openField"),send=vi.spyOn(globalThis,"fetch")
     const refused=expect(workspaceIntakeOps["intake.status"].handler(ctx,p,{intake:created.intake,waitMs:500},i)).rejects.toMatchObject({code:"not_found",message:"No such credential request."})
-    await new Promise(resolve=>setTimeout(resolve,20));ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_member'")
+    await new Promise(resolve=>setTimeout(resolve,20));fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_member'")
     await refused
     expect(JSON.stringify(ctx.sql.exec("SELECT * FROM workspace_credential_requests").toArray())).toBe(before)
     expect(open).not.toHaveBeenCalled();expect(send).not.toHaveBeenCalled();open.mockRestore();send.mockRestore()

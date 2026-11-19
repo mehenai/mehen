@@ -13,6 +13,7 @@ import { workspacePending } from "../src/vault/areas/pending-workspace.ts"
 import { workspaceMemberOps } from "../src/vault/areas/workspace-members.ts"
 import { accessChanged, openAskCount, runOffboardingHooks, setSetting, type WorkspaceInvocationContext } from "../src/vault/areas/workspace-runtime.ts"
 import { credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const SENTINEL = "sk-proj-adopt-sentinel-0123456789abcdefghij"
 
@@ -339,7 +340,7 @@ describe("adoptions", () => {
       expect(await refused(approve(ctx, v, decide(v), "member"))).toMatchObject({ error: "conflict", refused: [{ ref: "a001", reason: "You cannot add credentials to this home; choose another." }] })
       expect((await approve(ctx, v, decisions, "member", digest)).status).toBe("approved")
       // A team machine's batch is decided by an owner or admin.
-      ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','edit') WHERE id='shr_service'")
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','edit') WHERE id='shr_service'")
       const team = await start(ctx, "dev_service")
       expect(await upload(ctx, team.adoption, [await item(ctx, team.adoption, "a001", "team-batch", SENTINEL, { home: { kind: "project", project: "prj_a" } })], "dev_service")).toMatchObject({ accepted: ["a001"] })
       expect(await refused(view(ctx, team.adoption, "member"))).toEqual({ error: "not_found", message: "No such adoption." })
@@ -394,9 +395,9 @@ describe("adoptions", () => {
       await upload(ctx, adoption, [await item(ctx, adoption, "a001", "demoted-one", SENTINEL, { home: { kind: "project", project: "prj_a" } })], "dev_member")
       const other = await start(ctx, "dev_member")
       // Without the role hook, the upload itself refuses a guest's machine.
-      ctx.sql.exec("UPDATE members SET role='guest' WHERE id='mem_member'")
+      fixtureSql(ctx).exec("UPDATE members SET role='guest' WHERE id='mem_member'")
       expect(await refused(upload(ctx, other.adoption, [await item(ctx, other.adoption, "a001", "demoted-two")], "dev_member"))).toMatchObject({ error: "forbidden", message: "A guest's machine cannot adopt secrets." })
-      ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_member'")
+      fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_member'")
       workspaceMemberOps["access.members.role"]!.handler(ctx, memberPrincipal(ctx), { member: "mem_member", role: "guest" }, memberInvocation(ctx, "owner", { type: "member.role", member: "mem_member", before: "member", after: "guest" }))
       expect(ctx.sql.exec<{ id: string; status: string }>("SELECT id,status FROM adoption_batches ORDER BY id").toArray().map(b => b.status)).toEqual(["cancelled", "cancelled"])
       expect(ctx.sql.exec("SELECT * FROM adoption_secrets").toArray()).toEqual([])

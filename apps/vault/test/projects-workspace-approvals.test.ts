@@ -13,6 +13,7 @@ import { credentialsFixture, deviceInvocation, devicePrincipal, seedCredential }
 import { authoriseWorkspaceRelay, workspaceRelayOps } from "../src/vault/areas/relay-workspace.ts"
 import { setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import type { ApprovalBundleCreated } from "@mehen/protocol/api"
+import { fixtureSql } from "./fixture-sql.ts"
 const SUBJECT = { item: "key-project", method: "POST", url: "https://api.example.com/write", contentType: "application/json", contentEncoding: null, headersSha256: digestOf([]), bodySha256: digestOf("{}"), constraints: { uses: 1, ttlSeconds: 600 } }
 const PRESENTATION = { title: "Write a record", details: [{ label: "Action", value: "Write" }], body: "{}", headers: [] as [string, string][] }
 const BATCH = { floor: [], shape: "shape-write", replaces: null }
@@ -65,7 +66,7 @@ describe("protected approval lifecycle", () => {
     const f = await projectFixture()
     await inAccess(f.tenant, (ctx) => {
       const state = projectState(ctx), item = state.credentials.find((c) => c.home.kind === "project")!
-      ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id='shr_kim'")
       const open = vi.spyOn(ctx, "openField"), send = vi.spyOn(globalThis, "fetch")
       try { prepareApprovedUse(ctx, state, { principal: { kind: "device", deviceId: "dev_kim" }, workspace: { id: ctx.tenant, name: "Work", slug: "work" }, presentation: PRESENTATION, batch: BATCH }, { ...item, slug: "key-project", version: 1 }, { project: "prj_a", env: "prod" }, SUBJECT, null, ctx.now()); throw new Error("accepted") } catch (error) { expect((error as import("../src/http.ts").VaultError).toJSON()).toEqual({ error: "not_found", message: "No such object." }) }
       expect(ctx.sql.exec("SELECT * FROM approvals").toArray()).toEqual([])

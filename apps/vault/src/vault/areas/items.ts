@@ -536,10 +536,12 @@ export const items: ItemsService = {
   },
 
   deleteItem(ctx, item, actor) {
-    beforeManagementChange(ctx)
-    ctx.sql.exec("DELETE FROM item_secret_history WHERE item = ?", item.id)
-    ctx.sql.exec("DELETE FROM item_secrets WHERE item = ?", item.id)
-    ctx.sql.exec("DELETE FROM items WHERE id = ?", item.id)
+    ctx.storage.transactionSync(() => {
+      beforeManagementChange(ctx)
+      ctx.sql.exec("DELETE FROM item_secret_history WHERE item = ?", item.id)
+      ctx.sql.exec("DELETE FROM item_secrets WHERE item = ?", item.id)
+      ctx.sql.exec("DELETE FROM items WHERE id = ?", item.id)
+    })
     ctx.audit({ actor: actorOf(actor), action: "item.delete", target: item.slug, detail: { kind: item.kind, hosts: item.binding.hosts } })
   },
 

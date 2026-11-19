@@ -4,6 +4,7 @@ import { installTestIdentity, accessFixture, accessSnapshot, accountAuth, inAcce
 import { freshTenant } from "./helpers.ts"
 import { verifyAuditChain } from "../src/vault/audit.ts"
 import type { AuditRow } from "../src/vault/audit.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 const system = { kind: "system", reason: "test" } as const
 
 describe("workspace runtime seam", () => {
@@ -325,7 +326,7 @@ describe("workspace runtime seam", () => {
   it("overlays admission on the live rejoined member only and defaults covered gates closed", async () => {
     const { tenant } = await accessFixture()
     await inAccess(tenant, (ctx) => {
-      ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_member'")
+      fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_member'")
       newMember(ctx, "acc_member", "Rejoined", "member", "active", "mem_rejoined")
       setSetting(ctx, "identity_rule", { provider: "google", domains: ["example.com"], roles: ["member"] }); setSetting(ctx, "identity_rule_rev", 2)
       const auth = accountAuth("member")

@@ -91,7 +91,7 @@ describe("all-applicable-project runtime approval", () => {
     await inAccess(f.tenant, (ctx) => {
       ctx.sql.exec("UPDATE vars SET item='key-workspace' WHERE project='prj_a' AND env='prod'")
       ctx.sql.exec("INSERT INTO vars(project,env,name,item,field,updated_by,updated_at) VALUES('prj_b','prod','TOKEN','key-workspace','key','member:mem_owner',?)", ctx.now())
-      ctx.sql.exec("INSERT INTO project_shares VALUES('shr_both_b','prj_b','member','mem_member',?)", canonicalJson({ id: "shr_both_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: true, expiresAt: null }))
+      fixtureSql(ctx).exec("INSERT INTO project_shares VALUES('shr_both_b','prj_b','member','mem_member',?)", canonicalJson({ id: "shr_both_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: true, expiresAt: null }))
       const state = projectState(ctx), item = state.credentials.find((c) => c.home.kind === "workspace")!, caller = { principal: { kind: "device" as const, deviceId: "dev_kim" }, workspace: { id: ctx.tenant, name: "Work", slug: "work" }, presentation: { title: "Protected", details: [], body: null }, batch: { floor: [], shape: "test-shape", replaces: null } }, credential = { ...item, slug: "key-workspace", version: 1 }, context = { project: "prj_a", env: "prod" }, subject = { item: "key-workspace", method: "POST", url: "https://api.example.com/", contentType: null, contentEncoding: null, headersSha256: digestOf([]), bodySha256: digestOf(null), constraints: { uses: 1, ttlSeconds: 600 } }
       const required = prepareApprovedUse(ctx, state, caller, credential, context, subject, null, ctx.now()), row = workspaceApproval(ctx, required.approvalId)!, action = { type: "approval.decide" as const, approval: row.id, digest: row.digest, decision: "approve" as const, constraints: subject.constraints }
       const before = canonicalJson([ctx.sql.exec("SELECT * FROM approvals").toArray(), ctx.sql.exec("SELECT * FROM protected_use_grants").toArray(), ctx.sql.exec("SELECT * FROM consent_lineage").toArray()]), open = vi.spyOn(ctx, "openField"), send = vi.spyOn(globalThis, "fetch")
@@ -100,7 +100,7 @@ describe("all-applicable-project runtime approval", () => {
       }
       expect(canonicalJson([ctx.sql.exec("SELECT * FROM approvals").toArray(), ctx.sql.exec("SELECT * FROM protected_use_grants").toArray(), ctx.sql.exec("SELECT * FROM consent_lineage").toArray()])).toBe(before)
       expect(open).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled(); open.mockRestore(); send.mockRestore()
-      ctx.sql.exec("UPDATE project_shares SET value=? WHERE id='shr_direct'", canonicalJson({ id: "shr_direct", project: "prj_a", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: true, expiresAt: null }))
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=? WHERE id='shr_direct'", canonicalJson({ id: "shr_direct", project: "prj_a", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: true, expiresAt: null }))
       const view = callProject(ctx, projectState(ctx), "member", "approvals.decide", { id: row.id, decision: "approve" }, action) as import("@mehen/protocol").ApprovalViewProjection
       expect(view.view).toBe("detail")
       if (view.view === "detail") {
@@ -118,6 +118,7 @@ describe("all-applicable-project runtime approval", () => {
 
 import type { ApprovalGroupRow, ApprovalViewProjection } from "@mehen/protocol"
 import { batchAsk, batchActionFor, decideBatch, groupView, outcomes, projectBCredential, runAsk } from "./approvals-batch-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 // Review together (design 3.3): what each row of a group may do in a batch,
 // and one passkey deciding a list, each entry on its own.
 describe("a review group's rows", () => {
@@ -260,7 +261,7 @@ describe("deciding a batch", () => {
       expect(expected).toEqual({ [fourEyes.id]: "own_page", [plain.id]: "denied" })
       expect(outcomes(decideBatch(ctx, "kim", denyAll([fourEyes, plain])))).toEqual(expected)
       // Kim's share ends with the clock, not a write: she may still deny her machine's run but no longer read it.
-      ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.expiresAt',?) WHERE id='shr_kim'", new Date(ctx.now() - 1000).toISOString())
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.expiresAt',?) WHERE id='shr_kim'", new Date(ctx.now() - 1000).toISOString())
       expect(view(run.id)).toBe("stop")
       expect(stopRow(run).batch).toBe("own-page")
       expect(outcomes(decideBatch(ctx, "kim", denyAll([run])))).toEqual({ [run.id]: ticked(run) })
@@ -298,7 +299,7 @@ describe("deciding a batch", () => {
       const fourEyes = batchAsk(ctx, { slug: "key-project", context: { project: "prj_a", env: "prod" }, body: "four-eyes" })
       ctx.sql.exec("UPDATE environments SET four_eyes=1 WHERE project='prj_a' AND name='prod'")
       expect(outcomes(decideBatch(ctx, "owner", [{ id: fourEyes.id, decision: "approve" }]))).toEqual({ [fourEyes.id]: "stale" })
-      ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','edit') WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','edit') WHERE id='shr_kim'")
       expect(outcomes(decideBatch(ctx, "kim", [{ id: rights.id, decision: "approve" }]))).toEqual({ [rights.id]: "stale" })
       expect([fourEyes, rights].map((r) => workspaceApproval(ctx, r.id)!.status)).toEqual(["pending", "pending"])
       expect(ctx.sql.exec("SELECT COUNT(*) AS n FROM protected_use_grants").toArray()).toEqual([{ n: 0 }])

@@ -15,6 +15,7 @@ import { applyMigrations } from "../src/vault/tenant-vault.ts"
 import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
 import { OPEN_ISSUE, UNREVIEWED, postureAction, postureRow, relayAs, seedGithub, setPosture } from "./postures-test-support.ts"
 import { decideBatch } from "./approvals-batch-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const DAY = 86_400_000
 const at = (ctx: VaultContext, ms: number): VaultContext => Object.assign(Object.create(ctx) as VaultContext, { now: () => ms })
@@ -104,7 +105,7 @@ describe("setting how careful a credential is", () => {
       const action = await postureAction(ctx, "admin", "github-work", { level: "routine", machines: null }, 0)
       // The admin is demoted and the hosts change after the action is checked and before it is applied.
       const storage = Object.assign(Object.create(ctx.storage) as DurableObjectStorage, { transactionSync: <T>(fn: () => T): T => {
-        ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_admin'")
+        fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_admin'")
         ctx.sql.exec("UPDATE items SET binding=? WHERE slug='github-work'", JSON.stringify({ hosts: ["api.example.com"] }))
         return ctx.storage.transactionSync(fn)
       } })

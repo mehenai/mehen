@@ -7,6 +7,7 @@ import type { AccessState } from "../src/vault/access.ts"
 import { installIdentity, memberRows, newMember, registerAccessStateProvider, registerOffboardingHook, registerAccessChangeHook, registerExposureProvider, setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import { workspaceAccessState } from "./workspace-fixtures.ts"
 import { freshTenant } from "./helpers.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 // Test-only seed. No production operation imports or exposes this function.
 export function seedAccessStateForTests(ctx: VaultContext, state: AccessState): void {
@@ -18,13 +19,13 @@ export function seedAccessStateForTests(ctx: VaultContext, state: AccessState): 
     const fixture = JSON.parse(saved?.value ?? "{}") as AccessState
     return { [name]: fixture[name] }
   })
-  ctx.sql.exec("DELETE FROM members")
-  for (const m of state.members) { newMember(ctx, m.account, m.name, m.standing.effectiveRole, m.status); ctx.sql.exec("UPDATE members SET id=?,pending_role=? WHERE account=?", m.id, m.standing.pendingRole, m.account) }
+  fixtureSql(ctx).exec("DELETE FROM members")
+  for (const m of state.members) { newMember(ctx, m.account, m.name, m.standing.effectiveRole, m.status); fixtureSql(ctx).exec("UPDATE members SET id=?,pending_role=? WHERE account=?", m.id, m.standing.pendingRole, m.account) }
   for (const t of state.teams) {
     ctx.sql.exec("INSERT INTO teams VALUES (?,?,?,?,?)", t.id, t.id.replaceAll("_", "-"), t.name, "mem_owner", ctx.now())
-    for (const m of t.members) ctx.sql.exec("INSERT INTO team_members(team,member) VALUES (?,?)", t.id, m)
+    for (const m of t.members) fixtureSql(ctx).exec("INSERT INTO team_members(team,member) VALUES (?,?)", t.id, m)
   }
-  for (const s of state.shares) ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", s.id, s.project, s.subject.kind, s.subject.kind === "member" ? s.subject.member : s.subject.team, canonicalJson(s))
+  for (const s of state.shares) fixtureSql(ctx).exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", s.id, s.project, s.subject.kind, s.subject.kind === "member" ? s.subject.member : s.subject.team, canonicalJson(s))
   for (const d of state.devices) ctx.sql.exec("INSERT INTO devices(id,name,backend,jwk,thumbprint,scope,created_at,owner_kind,owner_id) VALUES (?,?,?,'{}',?,?,?,?,?)", d.id, d.id, "software", d.id, canonicalJson(d.scope), ctx.now(), d.owner.kind, d.owner.id)
   setSetting(ctx, "access_rev", state.accessRev)
 }

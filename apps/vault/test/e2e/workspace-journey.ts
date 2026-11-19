@@ -15,6 +15,7 @@ import { resetWorkspaceDatabase } from "../workspace-fixtures.ts"
 import { ORIGIN } from "../helpers.ts"
 import { newDeviceKey, publicJwk } from "../devices.ts"
 import { assertion, registration, softwarePasskey, type SoftwarePasskey } from "./passkeys.ts"
+import { fixtureSql } from "../fixture-sql.ts"
 
 let network: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>
 beforeEach(() => { network = vi.spyOn(globalThis, "fetch").mockImplementation(async () => { throw new Error("Unexpected real network call in a workspace journey") }) })
@@ -111,7 +112,7 @@ export async function journey() {
     return workspace
   }
   async function sql<T extends Record<string, SqlStorageValue>>(workspace: WorkspaceRef, query: string, ...values: SqlStorageValue[]): Promise<T[]> {
-    return runInDurableObject(env.TENANT_VAULT.getByName(workspace.id), instance => instance.context.sql.exec<T>(query, ...values).toArray())
+    return runInDurableObject(env.TENANT_VAULT.getByName(workspace.id), instance => fixtureSql(instance.context).exec<T>(query, ...values).toArray())
   }
   async function snapshot(workspace: WorkspaceRef) {
     return runInDurableObject(env.TENANT_VAULT.getByName(workspace.id), instance => {

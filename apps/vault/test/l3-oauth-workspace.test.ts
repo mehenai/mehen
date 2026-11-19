@@ -5,6 +5,7 @@ import { checkedCredential, prepareCredential, storeCredential } from "../src/va
 import { createWorkspaceConnect, startWorkspaceConnect, finishWorkspaceConnect, workspaceAccessToken, workspaceOAuthOps } from "../src/vault/areas/oauth-workspace.ts"
 import { setUpstreamFetch } from "../src/relay/upstream.ts"
 import { credentialInput, credentialsFixture, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 afterEach(() => setUpstreamFetch(null))
 
 async function client(ctx: VaultContext, home: Parameters<typeof credentialInput>[1] = { kind: "workspace" }) {
@@ -40,9 +41,9 @@ describe("workspace OAuth final authority and dependencies", () => {
     await inAccess(f.tenant, async (ctx) => {
       const s = await started(ctx), open = vi.spyOn(ctx, "openField"), sends = upstream()
       await expect(startWorkspaceConnect(ctx, s.p, { connect: s.c.connect, state: s.state }, s.i)).rejects.toMatchObject({ code: "forbidden", message: "This needs a passkey confirmation of the exact action." })
-      ctx.sql.exec("UPDATE items SET home_kind='member',home_id='mem_kim' WHERE slug='google-client'")
+      fixtureSql(ctx).exec("UPDATE items SET home_kind='member',home_id='mem_kim' WHERE slug='google-client'")
       expect(() => createWorkspaceConnect(ctx, s.p, { provider: "google-gmail", client: "google-client", slug: "other-gmail", home: "workspace" }, s.i)).toThrowError('No credential called "google-client".')
-      ctx.sql.exec("UPDATE items SET home_kind='project',home_id='prj_a' WHERE slug='google-client'")
+      fixtureSql(ctx).exec("UPDATE items SET home_kind='project',home_id='prj_a' WHERE slug='google-client'")
       expect(() => createWorkspaceConnect(ctx, s.p, { provider: "google-gmail", client: "google-client", slug: "other-gmail", home: "private" }, s.i)).toThrowError("No usable OAuth client.")
       expect(open).not.toHaveBeenCalled()
       expect(sends()).toBe(0)
@@ -56,11 +57,11 @@ describe("workspace OAuth final authority and dependencies", () => {
         const s = await started(ctx)
         const sends = upstream(() => {
           if (race === "deleted-client")
-            ctx.sql.exec("DELETE FROM items WHERE slug='google-client'")
+            fixtureSql(ctx).exec("DELETE FROM items WHERE slug='google-client'")
           if (race === "cancelled")
             ctx.sql.exec("UPDATE workspace_credential_requests SET status='cancelled' WHERE id=?", s.c.connect)
           if (race === "removed")
-            ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_owner'")
+            fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_owner'")
         })
         const i = memberInvocation(ctx)
         if (i.auth.kind !== "account")
@@ -95,7 +96,7 @@ describe("workspace OAuth final authority and dependencies", () => {
       if (!item)
         throw new Error("stored")
       expect(ctx.sql.exec("SELECT * FROM credential_dependencies WHERE connection=?", item.id).toArray()).toHaveLength(1)
-      ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_owner'")
+      fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_owner'")
       const open = vi.spyOn(ctx, "openField"), sends = upstream()
       await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth", message: "Reconnect this credential." })
       expect(open).not.toHaveBeenCalled()
@@ -174,10 +175,10 @@ for (const lost of ["connector-right", "client-revision", "client-after-exchange
       ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
       const exposuresBefore = JSON.stringify(ctx.sql.exec("SELECT * FROM exposures ORDER BY event,item,version").toArray())
       if (lost === "connector-right")
-        ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_owner'")
+        fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_owner'")
       if (lost === "client-revision")
         ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='google-client'")
-      const open = vi.spyOn(ctx, "openField"), sends = upstream(lost === "client-after-exchange" ? () => { ctx.sql.exec("DELETE FROM items WHERE slug='google-client'"); } : undefined)
+      const open = vi.spyOn(ctx, "openField"), sends = upstream(lost === "client-after-exchange" ? () => { fixtureSql(ctx).exec("DELETE FROM items WHERE slug='google-client'"); } : undefined)
       await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth", message: "Reconnect this credential." })
       if (lost !== "client-after-exchange")
         expect(open).not.toHaveBeenCalled()
@@ -230,7 +231,7 @@ it("a connector that loses create rights on a rehomed connection cannot maintain
     const original = checkedCredential(ctx, "gmail-test")!
     const action = { type: "item.rehome" as const, item: original.id, before: original.home, after: { kind: "workspace" as const }, dependencyRevision: original.dependencyRevision }
     workspaceItemOps["items.rehome"].handler(ctx, s.p, { slug: original.slug, home: action.after }, memberInvocation(ctx, "owner", action))
-    ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_owner'")
+    fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_owner'")
     const item = checkedCredential(ctx, "gmail-test")!, open = vi.spyOn(ctx, "openField"), sends = upstream()
     await expect(workspaceAccessToken(ctx, item)).rejects.toMatchObject({ code: "needs_reauth", message: "Reconnect this credential." })
     expect(open).not.toHaveBeenCalled()
@@ -305,8 +306,8 @@ it("maintains an existing protected-client grant under a still-authorised member
           environment.references = [{ variable: "CLIENT", field: "client_secret", item: clientItem.id, home: clientItem.home, revision: 1 }]
     registerAccessStateProvider("projects", () => ({ projects: state.projects }))
     const share = { id: "shr_connector", project: "prj_a", subject: { kind: "member", member: "mem_owner" }, level: "edit", protected: false, expiresAt: null }
-    ctx.sql.exec("INSERT INTO project_shares VALUES(?,'prj_a','member','mem_owner',?)", share.id, JSON.stringify(share))
-    ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_owner'")
+    fixtureSql(ctx).exec("INSERT INTO project_shares VALUES(?,'prj_a','member','mem_owner',?)", share.id, JSON.stringify(share))
+    fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_owner'")
     const item = checkedCredential(ctx, "gmail-test")!
     ctx.sql.exec("UPDATE workspace_oauth_connections SET expires_at=? WHERE item=?", ctx.now() - 1, item.id)
     expect(await workspaceAccessToken(ctx, item)).toBe("test-access")
@@ -339,7 +340,7 @@ for(const phase of ["probe","seal"] as const)it(`refuses a client changed during
   let changed=false
   const wrapped={...ctx,async sealField(ref:Parameters<typeof ctx.sealField>[0],plain:Parameters<typeof ctx.sealField>[1]){
    const sealed=await ctx.sealField(ref,plain)
-   if(phase === "seal"&&ref.type === "item-secret"&&!changed){changed=true;ctx.sql.exec("UPDATE items SET home_kind='project',home_id='prj_b' WHERE slug='google-client'")}
+   if(phase === "seal"&&ref.type === "item-secret"&&!changed){changed=true;fixtureSql(ctx).exec("UPDATE items SET home_kind='project',home_id='prj_b' WHERE slug='google-client'")}
    return sealed
   }}
   await expect(finishWorkspaceConnect(wrapped,s.p,finishInput(s),s.i)).rejects.toMatchObject({code:phase === "probe"?"conflict":"not_found",message:phase === "probe"?"The credential changed; review and try again.":"No usable OAuth client."})
