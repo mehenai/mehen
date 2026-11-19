@@ -46,7 +46,7 @@ export function credentialPending(ctx: VaultContext, principal: AccessPrincipal,
   const paused = connectionsPausedByClient(ctx)
   if (principal.kind === "member" && paused.size > 0) {
     const pausedSlugs = new Set([...paused.keys()].flatMap((id) => rows(ctx.sql.exec<{ slug: string }>("SELECT slug FROM items WHERE id=?", id)).map((r) => r.slug)))
-    for (const r of result.filter((r) => r.view === "detail" && r.detail.kind === "connect" && pausedSlugs.has(r.detail.item)))
+    for (const r of result.filter((r) => r.view === "detail" && r.detail.kind === "connect" && r.detail.item !== null && pausedSlugs.has(r.detail.item)))
       result.splice(result.indexOf(r), 1)
   }
   if (principal.kind === "device" || guest)
