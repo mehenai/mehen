@@ -1,0 +1,11 @@
+{
+  "name": "@mehen/brand",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./fonts/*": "./fonts/*",
+    "./marks/*": "./marks/*",
+    "./tokens/*": "./tokens/*"
+  },
+  "files": ["fonts", "marks", "tokens"]
+}

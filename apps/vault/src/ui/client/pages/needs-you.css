@@ -1,0 +1,107 @@
+/* Needs you: the account inbox, the one-workspace filter and the home's
+   card share one row (inbox-row.ts) on the shared .row.needs; this sheet
+   adds only the inbox's own parts: the check value, the workspace line,
+   rows kept from an earlier read, the groups and the status line. */
+
+.needs-list {
+  display: grid;
+  gap: var(--s4);
+}
+
+.needs-list:empty {
+  display: none;
+}
+
+.needs-group .notice + .rows,
+[data-region="home-needs"] .notice + .rows:not(:empty) {
+  margin-top: 12px;
+}
+
+.needs-group .rows:empty {
+  display: none;
+}
+
+.needs-group .card-head .slug {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+.needs-group .card-head h2 a {
+  color: inherit;
+}
+
+.needs-status {
+  margin-top: 0;
+}
+
+.inbox-row .row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.row-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 13px;
+  color: var(--ink-muted);
+  min-width: 0;
+}
+
+.row-check .fp-words {
+  margin: 0;
+  gap: 6px;
+}
+
+.row-check .fp-word {
+  height: 28px;
+  padding: 0 10px 0 8px;
+  font-size: 13px;
+}
+
+.row-fp {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-family: var(--mono);
+}
+
+.row-fp-hidden {
+  color: var(--ink-faint);
+}
+
+.row-where {
+  font-size: 12px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.inbox-row .row-side {
+  flex-wrap: wrap;
+}
+
+/* Rows of a workspace this read could not reach: the last good ones,
+   greyed, until it answers again. */
+.inbox-row.stale {
+  opacity: 0.55;
+}
+
+.inbox-row.stale::before {
+  background: var(--line-strong);
+}
+
+.home-stats .stat {
+  text-decoration: none;
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+}
+
+.stat-note {
+  color: var(--ink-faint);
+}

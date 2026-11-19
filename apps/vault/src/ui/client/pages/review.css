@@ -1,0 +1,64 @@
+/* Review together (pages/workspace-review.ts): a group's asks in their
+   sections, each row with its tick, code, request line and marks. Tokens
+   and the shared classes (.decision, .tick, .kv, .request-line, .pill,
+   .bar) come from app.css; this adds only the rows and the settled grey. */
+
+.review-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.review-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.review-row > * {
+  min-width: 0;
+  margin: 0;
+}
+
+.review-row:first-child {
+  border-top: 0;
+}
+
+.review-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.review-row-head .request-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.review-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.review-marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-request summary {
+  cursor: pointer;
+}
+
+.review-request .request-body {
+  max-height: 16rem;
+  overflow: auto;
+}
+
+.review-row.settled {
+  opacity: 0.6;
+}

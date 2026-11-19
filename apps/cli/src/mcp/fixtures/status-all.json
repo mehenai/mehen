@@ -1,0 +1,84 @@
+{
+  "home": "/Users/agent/.config/mehen",
+  "allowed": ["acme", "personal"],
+  "workspaces": [
+    {
+      "state": "active",
+      "slot": "/Users/agent/.config/mehen/workspaces/app.mehen.dev/tn_Fx3Lq8Wm2Rk7Zp1Vb5Nc",
+      "origin": "https://app.mehen.dev",
+      "workspace": { "id": "tn_Fx3Lq8Wm2Rk7Zp1Vb5Nc", "slug": "acme", "name": "Acme" },
+      "device": "dev_Q4m8Zr2Lx7Vb1Nc5Kd9Pa",
+      "backend": "secure-enclave",
+      "owner": { "kind": "member", "member": "mem_3Hq8Lm2Vx9Tb4Rc", "name": "Sam Owner" },
+      "fingerprint": "ZLSQ 8ZY0 FNHK WLS5",
+      "check": {
+        "ok": true,
+        "status": {
+          "vault": "https://app.mehen.dev",
+          "tenant": "tn_Fx3Lq8Wm2Rk7Zp1Vb5Nc",
+          "workspace": { "id": "tn_Fx3Lq8Wm2Rk7Zp1Vb5Nc", "slug": "acme", "name": "Acme" },
+          "owner": { "kind": "member", "member": "mem_3Hq8Lm2Vx9Tb4Rc", "name": "Sam Owner" },
+          "device": "dev_Q4m8Zr2Lx7Vb1Nc5Kd9Pa",
+          "name": "build-mac",
+          "backend": "secure-enclave",
+          "fingerprint": "ZLSQ 8ZY0 FNHK WLS5",
+          "fingerprintFrom": "enrolment",
+          "session": "pi-4f2a",
+          "frozen": false,
+          "scope": { "tags": [], "projects": [], "maxEnvironment": "unprotected", "modes": ["relay", "placeholder"], "privateCredentials": false },
+          "pending": 0,
+          "policyState": null,
+          "slot": "/Users/agent/.config/mehen/workspaces/app.mehen.dev/tn_Fx3Lq8Wm2Rk7Zp1Vb5Nc"
+        }
+      }
+    },
+    {
+      "state": "pending",
+      "slot": "/Users/agent/.config/mehen/pending/app.mehen.dev/personal",
+      "origin": "https://app.mehen.dev",
+      "intent": { "workspace": "personal", "team": null },
+      "enrolment": "enr_8Rk2Wm5Qz1Lp7Tx3Vb6Nc",
+      "backend": "secure-enclave",
+      "fingerprint": "VAKJ EE64 T10M D37B",
+      "startedAt": "2026-10-28T13:05:00.000Z",
+      "expiresAt": "2026-10-28T13:20:00.000Z",
+      "hardExpiresAt": "2026-10-29T13:05:00.000Z",
+      "renewals": 0,
+      "claimed": false,
+      "legacy": false,
+      "ask": {
+        "kind": "enrol",
+        "id": "enr_8Rk2Wm5Qz1Lp7Tx3Vb6Nc",
+        "url": "https://app.mehen.dev/w/personal/e/ABCD2345",
+        "title": "Approve this machine",
+        "what": "Approve build-mac (Secure Enclave key) and choose what it may use",
+        "check": { "label": "fingerprint", "value": "VAKJ EE64 T10M D37B" },
+        "expiresAt": "2026-10-28T13:20:00.000Z",
+        "account": null,
+        "requestedBy": { "device": "build-mac", "session": "pi-4f2a" },
+        "wait": "mehen wait enr_8Rk2Wm5Qz1Lp7Tx3Vb6Nc",
+        "intent": { "workspace": "personal", "team": null },
+        "claimed": false,
+        "context": { "origin": "https://app.mehen.dev", "workspace": null, "device": null }
+      }
+    }
+  ],
+  "selected": "/Users/agent/.config/mehen/workspaces/app.mehen.dev/tn_Fx3Lq8Wm2Rk7Zp1Vb5Nc",
+  "next": null,
+  "cli": {
+    "version": "0.3.0",
+    "commit": "1a2b3c4",
+    "build": "release",
+    "path": "/Users/agent/.local/bin/mehen",
+    "autoUpdate": "on",
+    "mcpHandover": { "handover": "off", "reason": "mcpHandover is false in settings.json" },
+    "installed": null,
+    "previous": null,
+    "highestSeen": null,
+    "holdBelow": null,
+    "pending": null,
+    "check": null,
+    "vault": {},
+    "lastUpdate": null
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@mehen/local",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@mehen/protocol": "workspace:*",
+    "@mehen/vault": "workspace:*"
+  },
+  "devDependencies": {
+    "@simplewebauthn/server": "14.0.3"
+  }
+}

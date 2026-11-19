@@ -1,0 +1,8 @@
+public/fonts/
+public/favicon.svg
+public/install
+# The agent guides live on the docs site (apps/docs); the build deletes any copy here.
+public/setup.md
+public/skill.md
+public/llms.txt
+public/setup/

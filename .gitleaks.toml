@@ -1,0 +1,70 @@
+# gitleaks configuration: the default rules, and the files whose matches are
+# deliberate. Each entry names its files exactly, so a real key added anywhere
+# else, or a new test file, is still found. Add a file here only with a reason.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The adopt tests feed the scanner made-up keys (SENTINEL values, counting strings, truncated PEM blocks) to prove it finds and classifies them"
+paths = [
+  '''^apps/cli/src/adopt/apply\.test\.ts$''',
+  '''^apps/cli/src/adopt/classify\.test\.ts$''',
+  '''^apps/cli/src/adopt/plan\.test\.ts$''',
+  '''^apps/cli/src/adopt/scan\.test\.ts$''',
+  '''^apps/cli/src/adopt/submit\.test\.ts$''',
+]
+
+[[allowlists]]
+description = "The command hook tests prove that keys typed into commands are caught; every key in them is made up"
+paths = ['''^apps/cli/src/hook/hook\.test\.ts$''']
+
+[[allowlists]]
+description = "Made-up values the output scrubbing and backup tests check never leave the machine"
+paths = [
+  '''^apps/cli/src/run/output\.test\.ts$''',
+  '''^apps/cli/src/testing/backup-fixtures\.ts$''',
+]
+
+[[allowlists]]
+description = "Authenticator AAGUIDs: public identifiers of passkey providers, not secrets"
+paths = ['''^apps/vault/src/directory/passkey-admin\.ts$''']
+
+[[allowlists]]
+description = "UI gallery fixtures: passkey, ask and enrolment ids, and an age public recipient"
+paths = [
+  '''^apps/vault/scripts/interact/shell\.ts$''',
+  '''^apps/vault/src/ui/account-gallery\.ts$''',
+  '''^apps/vault/src/ui/settings-gallery\.ts$''',
+  '''^apps/vault/src/ui/inbox-row\.test\.ts$''',
+]
+
+[[allowlists]]
+description = "The operator console shows a key pair the browser just made; the match is the variable that holds it, not a key"
+paths = ['''^apps/vault/src/ui/client/pages/console\.ts$''']
+
+[[allowlists]]
+description = "Relay, card and policy tests send made-up credentials through the vault, and the platform key test builds a PEM from a key it makes"
+paths = [
+  '''^apps/vault/src/ui/client/platform-key-logic\.test\.ts$''',
+  '''^apps/vault/test/h1-paths\.test\.ts$''',
+  '''^apps/vault/test/h10-review4\.test\.ts$''',
+  '''^apps/vault/test/h4-approvals-templates\.test\.ts$''',
+  '''^apps/vault/test/h7-cards\.test\.ts$''',
+  '''^apps/vault/test/l3-relay\.test\.ts$''',
+  '''^apps/vault/test/l6-client\.test\.ts$''',
+  '''^apps/vault/test/policy-area-grants\.test\.ts$''',
+  '''^apps/vault/test/policy-fixtures\.ts$''',
+  '''^apps/vault/test/policy-rules\.test\.ts$''',
+]
+
+[[allowlists]]
+description = "Published test vectors: RFC 7748 X25519 keys for the sealed box, the RFC 6238 TOTP secret"
+paths = [
+  '''^apps/vault/test/push-sealed-box\.test\.ts$''',
+  '''^packages/protocol/src/totp\.test\.ts$''',
+]
+
+[[allowlists]]
+description = "Managed workspace test support: a platform key id (pky_), a public identifier, not a key"
+paths = ['''^apps/vault/test/managed-support\.ts$''']

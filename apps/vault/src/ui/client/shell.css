@@ -1,0 +1,469 @@
+/* The workspace shell: the switcher, the identity line (name, then slug and
+   origin), the account pages' top bar and a stale tab. Papyrus and Midnight
+   tokens only; nothing here changes the theme. */
+
+.identity-proof {
+  color: var(--ink-muted);
+}
+
+.identity-proof code,
+.switcher-slug,
+.list .slug {
+  font-family: var(--mono);
+  font-size: 0.86em;
+}
+
+.identity-origin {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+}
+
+/* A <details> menu: opens with no script. */
+.switcher {
+  position: relative;
+  min-width: 0;
+}
+
+/* align-items and color are set here because app.css styles every details
+   summary centred and in the accent: in a centred column the name sized
+   to its text, ran out of the summary and never ellipsised. */
+.switcher summary {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  gap: 0;
+  color: var(--ink);
+  min-height: var(--hit);
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+
+.switcher summary::-webkit-details-marker {
+  display: none;
+}
+
+.switcher summary > * {
+  max-width: 100%;
+}
+
+.switcher summary:hover {
+  border-color: var(--line-strong);
+}
+
+.switcher summary .switcher-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.switcher summary .switcher-slug {
+  color: var(--ink-muted);
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.switcher-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  width: max(100%, 280px);
+  max-width: calc(100vw - 32px);
+  padding: 10px;
+  background: var(--overlay);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+}
+
+.switcher-origin {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.switcher-list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+
+.switcher-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(var(--side-max));
+  align-items: start;
+  gap: 2px 8px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+a.switcher-row:hover {
+  background: var(--hover);
+  text-decoration: none;
+}
+
+.switcher-row[aria-current] {
+  background: var(--accent-faint);
+}
+
+.switcher-row .switcher-slug {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.switcher-row .switcher-role {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.switcher-link {
+  display: block;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.top .switcher {
+  flex: 0 1 auto;
+  max-width: 50%;
+}
+
+/* In the top bar the switcher sits at the right: its menu opens leftwards. */
+.top .switcher-menu {
+  left: auto;
+  right: 0;
+}
+
+.rail .switcher {
+  margin: 0 0 4px;
+}
+
+/* The rail's foot lists this workspace's other pages already. */
+.rail .switcher-page {
+  display: none;
+}
+
+/* From 900 px the switcher sits at the left of the top bar, before its
+   pages: its menu opens rightwards, and the wordmark gives the pages its
+   room until the rail takes over (it stays the link's name for a screen
+   reader). */
+@media (min-width: 900px) {
+  .top .switcher-menu {
+    left: 0;
+    right: auto;
+  }
+
+  .top:has(> .switcher) .brand-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+.list.memberships a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.list.memberships .muted .title {
+  color: var(--ink-muted);
+}
+
+.shell-warn {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  margin-bottom: 16px;
+}
+
+.account-top .brand {
+  flex: none;
+}
+
+/* Scrolls sideways on a phone rather than widening the page. */
+.account-top .account-nav {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* Pushed right while they fit; an auto margin collapses when they do
+   not, so the first link is never cut off out of reach of the scroll. */
+.account-top .account-nav > :first-child {
+  margin-left: auto;
+}
+
+/* On a phone the coil alone leads, so the account's links fit beside it. */
+@media (max-width: 599px) {
+  .account-top .brand-text {
+    display: none;
+  }
+
+  /* The menu spans the top bar rather than hang from the switcher's right
+     edge, which would push it past the window's left edge. */
+  .top .switcher {
+    position: static;
+  }
+
+  .top .switcher-menu {
+    left: 16px;
+    right: 16px;
+    width: auto;
+  }
+
+  /* And in a workspace's top bar, so the switcher has the room: the
+     wordmark stays the link's name for a screen reader. */
+  .top:has(> .switcher) .brand-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+.focus-identity {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* Another tab signed out or in as someone else: nothing here acts. */
+.tab-stale main form,
+.tab-stale main button {
+  opacity: 0.55;
+}
+
+/* ---------------------------------------------------------------- Needs you count */
+
+/* The account-wide count beside Needs you: hidden until the poll has one.
+   In the rail app.css sizes it; here the top bar, the account bar and the
+   phone's tab. */
+.top-nav .count,
+.account-nav .count,
+.tabs .count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--primary);
+  color: var(--primary-ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.count[hidden] {
+  display: none;
+}
+
+.tabs a {
+  position: relative;
+}
+
+.tabs .count {
+  position: absolute;
+  top: 2px;
+  left: calc(50% + 6px);
+  margin: 0;
+}
+
+/* On a small phone the account bar keeps its pages and drops Docs, which
+   every page's own links reach. */
+@media (max-width: 479px) {
+  .account-nav .docs-link {
+    display: none;
+  }
+
+  .account-nav .top-link {
+    font-size: 14px;
+    padding: 0 2px;
+  }
+
+  .account-nav .label-long {
+    display: none;
+  }
+}
+
+@media (min-width: 480px) {
+  .account-nav .label-short {
+    display: none;
+  }
+}
+
+.account-nav .top-link[aria-current="page"] {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* ---------------------------------------------------------------- More sheet */
+
+/* The phone's fifth tab: a <details> whose summary looks like a tab and
+   whose panel sits above the tab bar. */
+.more-sheet {
+  min-width: 0;
+}
+
+.tabs .more-sheet > summary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  min-height: 48px;
+  padding: 6px 0;
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 500;
+  min-width: 0;
+}
+
+.tabs .more-sheet > summary .i {
+  width: 22px;
+  height: 22px;
+}
+
+.tabs .more-sheet > summary span {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tabs .more-sheet > summary[aria-current="page"],
+.tabs .more-sheet[open] > summary {
+  color: var(--accent);
+}
+
+.more-panel {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(66px + env(safe-area-inset-bottom));
+  max-height: calc(100dvh - 140px);
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--overlay);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+}
+
+.more-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tabs .more-list a,
+.tabs .more-list button {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: var(--hit);
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.tabs .more-list a span,
+.tabs .more-list button span {
+  min-width: 0;
+  max-width: none;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.tabs .more-list a:hover,
+.tabs .more-list button:hover {
+  background: var(--hover);
+  text-decoration: none;
+}
+
+.tabs .more-list a[aria-current="page"] {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.tabs .more-list .i {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------- People and Teams */
+
+.segments {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  max-width: 100%;
+}
+
+.segments a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  color: var(--ink-muted);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.segments a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}

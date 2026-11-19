@@ -1,0 +1,11 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
+    "types": ["bun"],
+    "resolveJsonModule": true
+  },
+  // The CLI's own sources come in through generate.ts, with the declaration
+  // that lets them import their markdown as text.
+  "include": ["./**/*.ts", "../../cli/src/text-modules.d.ts"]
+}

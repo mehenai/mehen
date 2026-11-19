@@ -1,0 +1,230 @@
+/* Connect a service (V-19): the two policy lines on a card, the custom
+   card's copy box, the start sheet's forms and the machine list that
+   follows the tags. The catalogue grid, the cards, the chips and the sheet
+   itself come from app.css. Imported at the top of app.css; every selector
+   is scoped to this page's own classes. */
+
+.service .service-body p {
+  margin: 0;
+}
+
+.service .service-body p + p {
+  margin-top: 2px;
+}
+
+.service .service-body b {
+  color: var(--ink-muted);
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.service .service-body .copybox {
+  margin-top: 8px;
+}
+
+/* A connected account that needs the member: the status pill and the
+   account, linked to the item's page, instead of the green tick. */
+.service-foot .connected.needs {
+  flex-wrap: wrap;
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+
+.service-foot .connected.needs:hover span:not(.pill) {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.service-foot .connected .more {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+  font-weight: 500;
+}
+
+/* The custom card runs the width of the grid, so its command fits a line. */
+.catalogue .service.custom {
+  grid-column: 1 / -1;
+}
+
+.service.custom .service-body p {
+  max-width: 70ch;
+}
+
+.service.custom .service-body .copybox {
+  max-width: 70ch;
+}
+
+.service.custom .service-foot .small {
+  color: var(--ink-faint);
+}
+
+/* The sheet holds one form per service; the open one shows. */
+.sheet .start {
+  display: grid;
+  gap: 14px;
+}
+
+.sheet .start .field {
+  gap: 6px;
+}
+
+.sheet .start .eyebrow {
+  margin: 0;
+}
+
+.sheet .start .next-line {
+  margin: 0;
+}
+
+.sheet .start .notice {
+  margin: 0;
+}
+
+.sheet .start .notice .btn {
+  margin-top: 8px;
+}
+
+.sheet .start .sheet-actions .btn.busy {
+  pointer-events: none;
+}
+
+/* A typed name that already exists keeps its tags, account and
+   permissions, so the fields that would set them are hidden. */
+.sheet .start.replacing [data-region="expect"],
+.sheet .start.replacing [data-region="tags"],
+.sheet .start.replacing [data-region="scopes"] {
+  display: none;
+}
+
+/* What a new connection may do: a box per scope, words first. */
+.scope-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.scope-list label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: start;
+  padding: 6px 0;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.scope-list input {
+  grid-row: 1 / span 2;
+  margin: 3px 0 0;
+}
+
+.scope-list .scope-id {
+  font-size: 11px;
+  color: var(--ink-faint);
+  background: none;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+/* What a typed name that already exists would do, said before Continue. */
+.sheet .start .hint.existing {
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.sheet .start .hint.existing .i {
+  width: 15px;
+  height: 15px;
+  vertical-align: -3px;
+  margin-right: 4px;
+}
+
+.sheet .start .hint.existing code {
+  white-space: nowrap;
+}
+
+.sheet .start .hint.existing.taken {
+  color: var(--danger);
+}
+
+/* On the phone the sheet scrolls; the actions stay in reach at its foot. */
+@media (max-width: 899px) {
+  .sheet .start .sheet-actions {
+    position: sticky;
+    bottom: calc(-20px - env(safe-area-inset-bottom));
+    margin: 0 -20px;
+    padding: 10px 20px calc(12px + env(safe-area-inset-bottom));
+    background: var(--overlay);
+    border-top: 1px solid var(--line);
+  }
+}
+
+.sheet-open {
+  overflow: hidden;
+}
+
+/* Which machines the tags let in: each row carries both states, the class
+   picks one, so the browser code never writes a word of its own. */
+.machine-reach {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.machine-reach li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  font-size: 14px;
+}
+
+.machine-reach .machine-text {
+  display: grid;
+  min-width: 0;
+}
+
+.machine-reach .machine-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.machine-reach .machine-sub {
+  color: var(--ink-faint);
+}
+
+.machine-reach .machine-state {
+  margin-left: auto;
+  text-align: right;
+  color: var(--ink-faint);
+}
+
+.machine-reach .machine-state .i {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+
+.machine-reach .when-ok {
+  color: var(--ok);
+  font-weight: 500;
+}
+
+.machine-reach li.ok .when-no,
+.machine-reach li.no .when-ok {
+  display: none;
+}
+
+.machine-reach li.no .machine-name {
+  color: var(--ink-muted);
+}
+
+.machine-reach li.no .tile {
+  opacity: 0.6;
+}

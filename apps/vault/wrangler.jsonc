@@ -1,0 +1,186 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // A template: the operator fills in their own deployment's values before
+  // deploying (docs/OPERATIONS.md, Your deployment's identity). Wrangler takes
+  // the account from CLOUDFLARE_ACCOUNT_ID or the logged-in account, so no
+  // account_id is committed. The test and local environments below work as
+  // they are.
+  "name": "mehen-app",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
+  "build": { "command": "bun scripts/build-ui.ts", "cwd": "." },
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  // The operator's own host name, also VAULT_ORIGIN and RP_ID below.
+  "routes": [{ "pattern": "vault.example.com", "custom_domain": true }],
+  "vars": {
+    "VAULT_ORIGIN": "https://vault.example.com",
+    "CLI_MINIMUM_VERSION": "0.3.0",
+    "CLI_RECOMMENDED_VERSION": "0.4.0",
+    "RP_ID": "vault.example.com",
+    // The operator's own Google OAuth client for the identity gate; empty
+    // hides Google until it and GOOGLE_SIGNIN_CLIENT_SECRET are set.
+    "GOOGLE_SIGNIN_CLIENT_ID": "",
+    // The operator's native apps (TEAMID.bundle.id, comma-separated) that may
+    // use passkeys for this host; empty serves no association file.
+    "APPLE_WEBCREDENTIAL_APPS": "",
+    // The From of the emailed invitation codes (directory/email-proof.ts),
+    // an address in a zone onboarded to Email Sending (docs/OPERATIONS.md).
+    "EMAIL_FROM": "Mehen <no-reply@example.com>",
+    // Every account may create workspaces unless the operator denied it
+    // (directory/workspace-creation.ts); "operator" needs allow-workspaces.
+    // Also the widest the operators' Settings may set it to.
+    "WORKSPACE_CREATION": "accounts",
+    // The widest sign-up the operators' Settings may set
+    // (directory/deployment-settings.ts): invitation only.
+    "SIGNUP_MODE_MAX": "invite",
+    // Feature switches, each "on", "off", or a comma-separated list of
+    // workspace ids to try it in first (docs/OPERATIONS.md).
+    // Standing policy rules (areas/policy-rules-workspace.ts).
+    "POLICY_RULES": "off",
+    // Batch approvals (areas/approvals-workspace.ts approvalBatchesOn).
+    "APPROVAL_BATCHES": "off",
+    // Fill (src/vault/fill-unavailable.ts browserFillOn): off until its
+    // security audit passes.
+    "BROWSER_FILL": "off",
+    // Pushes into other services' secret stores (areas/push-allowance.ts
+    // pushesOn).
+    "PUSH": "off",
+    // How careful a credential is (areas/postures-workspace.ts posturesOn).
+    "POLICY_POSTURES": "off",
+    // One passkey, then 15 minutes without asking again in that browser
+    // session (directory/workspace-stepup.ts stepUpGraceOn): "on" or off.
+    "STEPUP_GRACE": "on",
+    // Mandates (areas/mandates-workspace.ts mandatesOn). APPROVAL_DIAL, the
+    // approval dial, is off while unset and takes the same forms.
+    "MANDATES": "off"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "TENANT_VAULT", "class_name": "WorkspaceVault" }, { "name": "PLATFORM_VAULT", "class_name": "PlatformVault" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TenantVault"] },
+    { "tag": "v2-workspaces-fresh", "new_sqlite_classes": ["WorkspaceVault"] },
+    // Its own tag: Cloudflare refuses to delete a class while the live version still binds it (code 10061).
+    { "tag": "v3-tenant-vault-deleted", "deleted_classes": ["TenantVault"] },
+    // One object per platform: its nonces, limits' counters, activity and audit (platform/platform-vault.ts).
+    { "tag": "v4-platform-vault", "new_sqlite_classes": ["PlatformVault"] }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mehen",
+      // The operator's own database: `wrangler d1 create mehen --jurisdiction eu` prints its id.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // The operator's daily encrypted dumps of every workspace object (docs/OPERATIONS.md, Backup and recovery).
+  "r2_buckets": [{ "binding": "VAULT_BACKUPS", "bucket_name": "mehen-vault-backups", "jurisdiction": "eu" }],
+  // The lander, read for the published CLI release that Mehen-Cli recommends
+  // (src/published-release.ts): a service binding, never the release bucket,
+  // so the vault cannot write a release. Production only.
+  "services": [{ "binding": "RELEASES_WEB", "service": "mehen-web" }],
+  // Cloudflare Email Sending: the six-digit codes that prove an invited
+  // email, to the invitation's own address and only from EMAIL_FROM.
+  "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["no-reply@example.com"] }],
+  "ratelimits": [
+    { "name": "RATE_LIMITER", "namespace_id": "3001", "simple": { "limit": 120, "period": 60 } },
+    { "name": "AUTH_RATE_LIMITER", "namespace_id": "3002", "simple": { "limit": 20, "period": 60 } },
+    // Signed traffic (rate-limits.ts): a generous outer limit per address,
+    // then devices by the workspace and device their proof claims, with a
+    // device proof the workspace refuses charged to RATE_LIMITER by address
+    // afterwards; a platform's own limits are counted by its PlatformVault.
+    { "name": "PLATFORM_IP_RATE_LIMITER", "namespace_id": "3003", "simple": { "limit": 6000, "period": 60 } },
+    { "name": "DEVICE_IP_RATE_LIMITER", "namespace_id": "3004", "simple": { "limit": 6000, "period": 60 } },
+    { "name": "DEVICE_RATE_LIMITER", "namespace_id": "3005", "simple": { "limit": 600, "period": 60 } }
+  ],
+  "triggers": { "crons": ["*/15 * * * *"] },
+  // Invocation logs would carry URLs and headers; the vault writes its own
+  // structured, secret-free logs instead.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } },
+  // Secrets, never in this file: ROOT_KEYS, SEAL_PRIVATE_JWK, BOOTSTRAP_CODE, GOOGLE_SIGNIN_CLIENT_SECRET.
+  "env": {
+    "local": {
+      "name": "mehen-local",
+      "routes": [],
+      "vars": { "VAULT_ORIGIN": "http://localhost:8787", "RP_ID": "localhost", "CLI_MINIMUM_VERSION": "0.2.0", "CLI_RECOMMENDED_VERSION": "0.3.0", "GOOGLE_SIGNIN_CLIENT_ID": "", "WORKSPACE_CREATION": "accounts", "SIGNUP_MODE_MAX": "invite", "EMAIL_FROM": "Mehen <no-reply@mehen.dev>", "POLICY_RULES": "on", "APPROVAL_BATCHES": "on", "BROWSER_FILL": "on", "PUSH": "on", "POLICY_POSTURES": "on", "STEPUP_GRACE": "on", "MANDATES": "on", "APPROVAL_DIAL": "on" },
+      // Simulated by wrangler dev: each email is logged, never sent.
+      "send_email": [{ "name": "EMAIL" }],
+      "durable_objects": { "bindings": [{ "name": "TENANT_VAULT", "class_name": "WorkspaceVault" }, { "name": "PLATFORM_VAULT", "class_name": "PlatformVault" }] },
+      "d1_databases": [
+        { "binding": "DB", "database_name": "mehen-local", "database_id": "local", "migrations_dir": "migrations" }
+      ],
+      "r2_buckets": [{ "binding": "VAULT_BACKUPS", "bucket_name": "mehen-vault-backups-local" }],
+      "ratelimits": [
+        { "name": "RATE_LIMITER", "namespace_id": "3001", "simple": { "limit": 10000, "period": 60 } },
+        { "name": "AUTH_RATE_LIMITER", "namespace_id": "3002", "simple": { "limit": 10000, "period": 60 } },
+        { "name": "PLATFORM_IP_RATE_LIMITER", "namespace_id": "3003", "simple": { "limit": 10000, "period": 60 } },
+        { "name": "DEVICE_IP_RATE_LIMITER", "namespace_id": "3004", "simple": { "limit": 10000, "period": 60 } },
+        { "name": "DEVICE_RATE_LIMITER", "namespace_id": "3005", "simple": { "limit": 10000, "period": 60 } }
+      ]
+    },
+    "test": {
+      "name": "mehen-test",
+      "routes": [],
+      "vars": {
+        "VAULT_ORIGIN": "https://vault.test",
+        "CLI_MINIMUM_VERSION": "0.2.0",
+        "CLI_RECOMMENDED_VERSION": "0.3.0",
+        "RP_ID": "vault.test",
+        "GOOGLE_SIGNIN_CLIENT_ID": "mehen-test.apps.googleusercontent.com",
+        "APPLE_WEBCREDENTIAL_APPS": "TESTTEAM01.com.example.app.test",
+        "EMAIL_FROM": "Mehen <no-reply@mehen.dev>",
+        // Today's rule, as an unset value reads; tests pass "accounts" in their own env.
+        "WORKSPACE_CREATION": "operator",
+        // The widest, so tests can set every sign-up mode.
+        "SIGNUP_MODE_MAX": "open",
+        // Off, as in the template; the tests of standing rules switch them on.
+        "POLICY_RULES": "off",
+        // On, so the tests run batch approvals; a test turns it off in its own env.
+        "APPROVAL_BATCHES": "on",
+        // On, so the tests run fill; a test turns it off in its own env.
+        "BROWSER_FILL": "on",
+        // On, so the tests run pushes; a test turns it off in its own env.
+        "PUSH": "on",
+        // On, so the tests run postures; a test turns it off in its own env.
+        "POLICY_POSTURES": "on",
+        // Off, so every other test asks for its passkey each time; the grace
+        // tests turn it on in their own env.
+        "STEPUP_GRACE": "off",
+        // On, so the tests run mandates; a test turns it off in its own env.
+        "MANDATES": "on",
+        // On, so the tests run the approval dial; a test turns it off in its own env.
+        "APPROVAL_DIAL": "on",
+        // Test-only keys, generated for this repository and worthless elsewhere.
+        "ROOT_KEYS": "{\"1\":\"dGVzdC1yb290LWtleS1ub3QtYS1zZWNyZXQtMzJieXQ\"}",
+        "SEAL_PRIVATE_JWK": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"IFu5oTRAkuJbqGAyU-XhbZTUbMDuWlA_VPjMvHboOiA\",\"y\":\"Kq34ITAoveGw9XtQyZoqkyIEDbgU_4alhSi115VpVDQ\",\"d\":\"54ec9Zobfk7EdlSkw65vyEMdu1lFOvoP5FWX83K6qHA\"}",
+        "BOOTSTRAP_CODE": "test-bootstrap-code"
+      },
+      "durable_objects": { "bindings": [{ "name": "TENANT_VAULT", "class_name": "WorkspaceVault" }, { "name": "PLATFORM_VAULT", "class_name": "PlatformVault" }] },
+      "d1_databases": [
+        { "binding": "DB", "database_name": "mehen-test", "database_id": "test", "migrations_dir": "migrations" }
+      ],
+      "r2_buckets": [{ "binding": "VAULT_BACKUPS", "bucket_name": "mehen-vault-backups-test" }],
+      // Simulated, never sent; the tests that read what was sent bind
+      // test/fake-email.ts in its place.
+      "send_email": [{ "name": "EMAIL" }],
+      "ratelimits": [
+        { "name": "RATE_LIMITER", "namespace_id": "3001", "simple": { "limit": 100000, "period": 60 } },
+        { "name": "AUTH_RATE_LIMITER", "namespace_id": "3002", "simple": { "limit": 100000, "period": 60 } },
+        { "name": "PLATFORM_IP_RATE_LIMITER", "namespace_id": "3003", "simple": { "limit": 100000, "period": 60 } },
+        { "name": "DEVICE_IP_RATE_LIMITER", "namespace_id": "3004", "simple": { "limit": 100000, "period": 60 } },
+        { "name": "DEVICE_RATE_LIMITER", "namespace_id": "3005", "simple": { "limit": 100000, "period": 60 } }
+      ]
+    }
+  }
+}

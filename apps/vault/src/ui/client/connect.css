@@ -1,0 +1,182 @@
+/* The connect page: the head card with the provider tile, the countdown and
+   the step strip; the "first, add the client" card; the step 1 done strip;
+   the account and the scopes as rows. Imported at the top of app.css, so
+   every selector is scoped to the page's own regions. */
+
+[data-region="connect-head"] .item-head {
+  margin-bottom: 0;
+}
+
+[data-region="connect-head"] .item-sub {
+  display: block;
+  line-height: 1.6;
+}
+
+[data-region="connect-head"] .item-sub .when {
+  white-space: nowrap;
+}
+
+[data-region="connect-head"] .item-sub .timer {
+  display: inline-flex;
+  vertical-align: -0.2em;
+}
+
+[data-region="connect-head"] .item-sub code {
+  font-size: 13px;
+}
+
+/* "Reconnect gmail-alex": the name is one chip, smaller than the title,
+   moved whole to the next line rather than split at its hyphen. */
+[data-region="connect-head"] h1 .slug-inline {
+  display: inline-block;
+  max-width: 100%;
+  font-size: 0.7em;
+  vertical-align: 0.1em;
+}
+
+[data-region="connect-head"] .progress {
+  margin-top: 14px;
+}
+
+[data-region="connect-head"] .fold {
+  margin-top: 10px;
+}
+
+[data-region="connect-head"] .fold .reason {
+  margin: 4px 0 12px;
+}
+
+[data-region="connect-head"] .fold .kv {
+  margin-bottom: 10px;
+}
+
+/* A reconnect: the one sentence under the head, and the scopes that go
+   beyond what the connection holds. */
+
+[data-region="connect-reconnect"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+[data-region="connect-reconnect"] .i {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+[data-region="connect-scopes"] .scopes li.wider .scope-words {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+[data-region="connect-scopes"] .scopes li.wider .pill {
+  justify-self: start;
+}
+
+[data-region="connect-scopes"] .danger-text {
+  color: var(--danger);
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+
+/* Waiting on the client intake. */
+
+[data-region="connect-awaiting"] .actions {
+  margin-top: 4px;
+}
+
+/* The step 1 done strip. */
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in oklab, var(--ok) 45%, var(--line));
+  background: var(--ok-soft);
+  color: var(--ok);
+  font-weight: 600;
+  margin: 0;
+}
+
+.strip .i {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+/* The account. */
+
+[data-region="connect-account"] .expect {
+  margin: 0;
+}
+
+/* Who may use it: the tags the passkey signs. */
+
+[data-region="connect-tags"] .lead {
+  margin: 0;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+[data-region="connect-tags"] .small {
+  margin: 6px 0 0;
+}
+
+/* Scopes as rows: the plain words first, the raw scope small beneath. */
+
+[data-region="connect-scopes"] .scopes {
+  margin: 0 0 12px;
+}
+
+[data-region="connect-scopes"] .scopes li {
+  display: grid;
+  gap: 2px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+[data-region="connect-scopes"] .scopes li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+[data-region="connect-scopes"] .scope-words {
+  font-size: 15px;
+}
+
+[data-region="connect-scopes"] .scope-raw {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  justify-self: start;
+}
+
+[data-region="connect-scopes"] .btn {
+  width: 100%;
+  margin-top: 12px;
+}
+
+[data-region="connect-scopes"] .hint {
+  display: block;
+  margin-top: 10px;
+}
+
+@media (min-width: 640px) {
+  [data-region="connect-scopes"] .btn {
+    width: auto;
+  }
+}
+
+[data-region="connect-expired"] .state {
+  width: 100%;
+}
+
+/* Shown in place of the hidden scopes card: keep the card gap. */
+.page > [data-region="connect-expired"]:not([hidden]) {
+  margin-top: var(--s4);
+}

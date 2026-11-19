@@ -1,0 +1,4 @@
+native/mehen-se/build/
+*.bun-build
+src/generated/embedded-helper.ts
+src/generated/local-host.js

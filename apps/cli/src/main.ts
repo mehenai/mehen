@@ -1,0 +1,6 @@
+#!/usr/bin/env bun
+// mehen: the Mehen command line.
+
+import { main } from "./cli.ts"
+
+process.exitCode = await main(process.argv.slice(2), process.env)

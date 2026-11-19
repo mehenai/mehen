@@ -1,0 +1,297 @@
+/* The approval page (V-9): the decision card, its summary lines, the terms
+   fold in the bar, the warned layout, and the whole truth below. Tokens and
+   the shared classes (.decision, .summary, .meta, .tick, .bar) come from
+   app.css; this file only adds what the page needs on top of them. The
+   workspace ask pages (approval, stop, intake, connect, policy, enrolment)
+   share the same decision layout; their few extra parts are at the end. */
+
+.decision .summary {
+  grid-template-columns: minmax(4.6rem, max-content) minmax(0, 1fr);
+}
+
+.decision .summary dd .addr {
+  font-weight: inherit;
+}
+
+.decision .summary dd.big {
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.decision .summary dd.big .pill {
+  font-size: 12px;
+  vertical-align: 0.2em;
+}
+
+.decision .summary dd code {
+  font-size: 0.9em;
+}
+
+/* A title that is the request line itself: mono, smaller, wraps anywhere. */
+.decision h1.raw {
+  font-family: var(--mono);
+  font-feature-settings: "zero";
+  font-variant-ligatures: none;
+  font-size: 17px;
+  font-weight: 600;
+  font-variation-settings: normal;
+  letter-spacing: 0;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+/* The machine's name keeps its own case inside the eyebrow's capitals. */
+.decision .decision-head .eyebrow {
+  display: block;
+}
+
+.decision .eyebrow .asker-name {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.decision .meta {
+  justify-content: space-between;
+}
+
+.decision .asked {
+  margin: 0;
+}
+
+.decision .asked .link {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.decision .meta .terms-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.decision .meta .link {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.decision .tick span {
+  line-height: 1.5;
+}
+
+.decision .tick .code-inline {
+  white-space: nowrap;
+}
+
+/* With a warning the card's line turns red and the halo goes with it. */
+.decision.warned {
+  border-color: color-mix(in oklab, var(--danger) 55%, var(--line));
+  box-shadow: 0 0 0 3px var(--danger-soft), var(--shadow-1);
+}
+
+.card.unreadable .eyebrow {
+  color: var(--danger);
+}
+
+.card.unreadable ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.card.unreadable li + li {
+  margin-top: 6px;
+}
+
+/* The bar: the terms line with Change, the fold with the two selects, and
+   Deny beside Approve. With a warning Deny is the filled danger button and
+   approving is the quiet one. */
+.bar .terms .link {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.bar .terms-form {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.bar .terms-form .field select {
+  min-height: 44px;
+}
+
+/* The open fold makes the bar taller; the page's foot stays clear of it. */
+.has-bar.terms-open .page {
+  padding-bottom: 240px;
+}
+
+.bar.warned .btn.quiet {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+@media (min-width: 900px) {
+  .bar .terms-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 8px;
+    padding-bottom: 0;
+  }
+
+  .bar .terms-form .field {
+    min-width: 11rem;
+  }
+
+  .bar .terms-form .field .label {
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+
+  .has-bar.terms-open .page {
+    padding-bottom: 150px;
+  }
+}
+
+/* The whole truth: the same sections as before, one under the other. */
+.truth-head p {
+  margin: 4px 0 0;
+}
+
+.recipients .count-line {
+  margin-bottom: 6px;
+}
+
+.recipients ul.recipients li code {
+  font-size: 13px;
+}
+
+.request-headers .kv + .kv {
+  margin-top: 8px;
+}
+
+.asker .kv dd .i.inline {
+  color: var(--ink-muted);
+  margin-right: 2px;
+}
+
+.how b {
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+}
+
+/* The state cards the client reveals once the request is decided: one
+   focus-width card, whatever width the open page had. */
+.page > [data-region="approval-approved"],
+.page > [data-region="approval-denied"],
+.page > [data-region="approval-expired"] {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+@media (min-width: 900px) {
+  .page > [data-region="approval-approved"],
+  .page > [data-region="approval-denied"],
+  .page > [data-region="approval-expired"] {
+    max-width: 696px;
+  }
+}
+
+/* ---------------------------------------------------------------- workspace ask pages */
+
+/* The warning card, first on a warned page: the notice's title with its
+   icon, then each warning. */
+.ask-warnings .notice-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--danger);
+}
+
+.ask-warnings ul {
+  margin: 6px 0 0;
+  padding-left: 1.2rem;
+}
+
+.ask-warnings li + li {
+  margin-top: 6px;
+}
+
+/* The one line of context under the title: the workspace once, calm. */
+.decision .ask-context {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.decision .ask-context b {
+  color: var(--ink);
+}
+
+.decision .timer-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.decision .meta > * {
+  min-width: 0;
+}
+
+.decision form:empty {
+  display: none;
+}
+
+/* What happens next, under the card, and the folds below the truth. */
+.ask-next {
+  margin: 0;
+}
+
+.technical summary {
+  padding: 0 4px;
+}
+
+.technical .kv {
+  margin-top: 6px;
+}
+
+.home-fold {
+  margin-top: 0;
+}
+
+.home-fold fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.bar .terms-asked {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.bar .terms-now {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.bar .terms-now .link {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.bar .bar-caption {
+  color: var(--ink-muted);
+}

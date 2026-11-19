@@ -1,0 +1,65 @@
+<!doctype html>
+<!--
+  The social card (apps/web/public/og.jpg), 1200 by 630. scripts/og-card.ts
+  fills in the brand's tokens and the coil mark from packages/brand and
+  renders this page with headless Chrome. Edit the words here, then run
+  `bun scripts/og-card.ts` from apps/web and look at the result.
+-->
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="{{TOKENS}}">
+<style>
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    position: relative;
+    box-sizing: border-box;
+    padding: 72px 84px 64px;
+    color: var(--ink);
+    font-family: var(--serif);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* The warm glow, blurred so the gradient's dithering does not turn into
+     JPEG noise. */
+  body::before {
+    content: "";
+    position: absolute;
+    inset: -8px;
+    z-index: -1;
+    background:
+      radial-gradient(ellipse 760px 560px at 100% 0%, rgba(242, 166, 90, 0.26), rgba(242, 166, 90, 0) 70%),
+      linear-gradient(160deg, var(--bone) 0%, #f8f1e4 100%);
+    filter: blur(3px);
+  }
+  .lockup { display: flex; align-items: center; gap: 16px; --sun: var(--ember); --bg: var(--bone); }
+  .lockup svg { width: 48px; height: 48px; flex: none; }
+  .wordmark { font-variation-settings: "opsz" 48, "SOFT" 100, "WONK" 1; font-weight: 500; font-size: 40px; letter-spacing: -0.03em; line-height: 1; }
+  .category { margin: 14px 0 0 64px; font-family: var(--mono); font-size: 15px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--teal); }
+  h1 {
+    margin: 58px 0 0;
+    font-variation-settings: "opsz" 144, "SOFT" 100, "WONK" 1;
+    font-weight: 500;
+    font-size: 84px;
+    line-height: 0.98;
+    letter-spacing: -0.03em;
+    max-width: 15ch;
+  }
+  p.support {
+    margin: 30px 0 0;
+    max-width: 940px;
+    font-variation-settings: "opsz" 24, "SOFT" 60;
+    font-size: 27px;
+    line-height: 1.32;
+    color: var(--ink-2);
+  }
+  .site { position: absolute; margin: 0; right: 84px; bottom: 56px; font-family: var(--mono); font-size: 18px; letter-spacing: 0.14em; color: var(--teal); }
+</style>
+</head>
+<body>
+  <div class="lockup">{{MARK}}<span class="wordmark">mehen</span></div>
+  <p class="category">Access for agents</p>
+  <h1>Use credentials without reading them.</h1>
+  <p class="support">Relay and placeholder modes keep values off the agent's machine. Explicitly allowed leases deliver values to the child process.</p>
+  <p class="site">MEHEN.DEV</p>
+</body>
+</html>

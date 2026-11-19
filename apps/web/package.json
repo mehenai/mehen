@@ -1,0 +1,17 @@
+{
+  "name": "@mehen/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun run build && bun test src",
+    "build": "bun scripts/build.ts",
+    "dev": "wrangler dev",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "bun run build && bun run typecheck && bun scripts/check.ts && wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261023.1",
+    "wrangler": "4.152.0"
+  }
+}

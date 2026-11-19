@@ -1,0 +1,10 @@
+name: An idea
+description: Something Mehen could do better or should do.
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What you would like, and the problem it solves for you.
+    validations:
+      required: true

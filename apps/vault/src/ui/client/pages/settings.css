@@ -1,0 +1,237 @@
+/* Settings, first run, the command palette and the shortcuts sheet (V-20).
+   The component classes live in app.css; this file holds what those pages
+   add: the invite foot and its one-time link, the appearance chips, the
+   "recognise the real vault" card, the palette's notes and the sheet. */
+
+/* ---------------------------------------------------------------- settings */
+
+.settings-main .card .inline-error {
+  margin: 0;
+}
+
+.settings-main .card > h2 .i {
+  width: 18px;
+  height: 18px;
+  vertical-align: -3px;
+  margin-right: 4px;
+}
+
+.settings-main .list .avatar {
+  flex: none;
+}
+
+.settings-main .card .small.muted {
+  margin: 10px 0 0;
+}
+
+.card-foot.invite {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.card-foot.invite .field.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.card-foot.invite .field.inline select {
+  min-height: 34px;
+  padding: 0 28px 0 10px;
+  font-size: 14px;
+}
+
+.invite-owner-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 10px 0 0;
+  color: var(--warn);
+}
+
+.invite-owner-warning[hidden] {
+  display: none;
+}
+
+.invite-owner-warning .i {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+}
+
+.invite-result {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--accent-faint);
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line));
+}
+
+.invite-result .copybox {
+  margin: 8px 0;
+}
+
+.invite-result .small {
+  margin: 0;
+}
+
+.invite-result .small.muted {
+  margin-top: 6px;
+}
+
+.settings-main .kv.facts dd .copybox {
+  margin: 0 0 6px;
+}
+
+.settings-main .kv.facts dd .small.muted {
+  display: block;
+}
+
+.chips.appearance {
+  margin: 0 0 6px;
+  padding: 0;
+  overflow: visible;
+  flex-wrap: wrap;
+}
+
+/* On the phone the vault facts stack, so the copy box gets the width. */
+@media (max-width: 599px) {
+  .settings-main .kv.facts {
+    grid-template-columns: 1fr;
+    row-gap: 2px;
+  }
+
+  .settings-main .kv.facts dt {
+    margin-top: 10px;
+    font-size: 13px;
+  }
+
+  .settings-main .kv.facts dt:first-child {
+    margin-top: 0;
+  }
+}
+
+.danger-zone.frozen {
+  background: var(--danger-soft);
+  border-color: color-mix(in oklab, var(--danger) 60%, var(--line));
+}
+
+/* ---------------------------------------------------------------- first run */
+
+.teach .card .copybox {
+  margin: 0;
+}
+
+.teach .card .btn {
+  align-self: flex-start;
+}
+
+.recognise .eyebrow {
+  margin-bottom: 6px;
+}
+
+.recognise .small {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.recognise .mark.inline {
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: -0.2em;
+  margin: 0 1px;
+}
+
+/* ---------------------------------------------------------------- palette and sheet */
+
+body.palette-open {
+  overflow: hidden;
+}
+
+.palette-note {
+  margin: 0;
+  padding: 18px 14px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+/* A vault marker inside a result keeps its own look, not the highlight's. */
+.palette-item mark.marker {
+  background: var(--danger-soft);
+  color: var(--danger);
+  text-decoration: none;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  font-weight: 600;
+  padding: 0 0.3em;
+  border-radius: 4px;
+}
+
+.palette-item:focus-visible {
+  outline-offset: -2px;
+}
+
+.palette-list .palette-item .tile.letter {
+  font-size: 13px;
+}
+
+.palette-input input::placeholder {
+  color: var(--ink-faint);
+}
+
+.palette.sheet-keys {
+  padding: 18px 20px 20px;
+  max-width: 560px;
+}
+
+.sheet-keys .sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.sheet-keys .sheet-head h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.sheet-keys h3 {
+  margin: 16px 0 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.sheet-keys .muted.small {
+  margin: 0 0 8px;
+}
+
+.sheet-keys .keys {
+  margin: 0;
+}
+
+.sheet-keys > p.muted.small:last-child {
+  margin: 16px 0 0;
+}
+
+/* Imported before app.css's own rules, so these carry one more class. */
+@media (max-width: 599px) {
+  .palette-scrim[data-region] {
+    padding: 8px 8px 0;
+  }
+
+  .palette .palette-foot {
+    display: none;
+  }
+}

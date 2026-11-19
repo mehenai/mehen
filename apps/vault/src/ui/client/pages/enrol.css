@@ -1,0 +1,176 @@
+/* The enrol page (V-11) and the machine cards: the head card's facts, the
+   check card's input and notes, the scope card's summary lines and fold,
+   the outcome cards' word chips. Tokens and the shared classes (.fp,
+   .fp-words, .fp-glyphs, .fp-input, .fold, .state, .kv) come from app.css;
+   this file only adds what the page needs on top of them. */
+
+/* The open page's cards sit in one wrapper, so it carries the card gap. */
+[data-region="enrol-open"] > * + * {
+  margin-top: var(--s4);
+}
+
+[data-region="enrol-open"] > .enables {
+  margin-top: 10px;
+}
+
+.enrol-head .decision-head h1 {
+  margin: 2px 0 0;
+}
+
+.enrol-head .kv {
+  row-gap: 8px;
+  align-items: baseline;
+}
+
+.enrol-head .kv .pill {
+  vertical-align: 0.15em;
+  margin-left: 2px;
+}
+
+.enrol-head .timer {
+  font-weight: 600;
+}
+
+/* The check card: the question, then the words, the glyphs, the input. */
+.fp .eyebrow {
+  margin-bottom: 4px;
+}
+
+.fp > .small {
+  margin-bottom: 4px;
+}
+
+.fp-input {
+  margin-top: 4px;
+}
+
+.fp-input input {
+  max-width: 260px;
+}
+
+.fp-input input:focus-visible {
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 1px;
+}
+
+.fp-input .hint {
+  display: block;
+  line-height: 1.5;
+}
+
+.fp .note .refused {
+  display: inline;
+}
+
+/* The scope card: four lines, a link beside the ones that can be narrowed,
+   and the fold holding the whole form. */
+.scope-card .kv {
+  row-gap: 8px;
+}
+
+.scope-card .kv dd .link {
+  font-size: 13px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+.scope-card .kv dd .pill {
+  margin-left: 6px;
+  vertical-align: 0.15em;
+}
+
+.scope-card .fold {
+  margin-top: 12px;
+}
+
+.scope-card .fold .stack {
+  padding: 4px 0 8px;
+}
+
+.scope-card .fold .field input[type="text"] {
+  width: 100%;
+}
+
+.enrol-actions {
+  margin-top: 4px;
+}
+
+.enables {
+  margin: 10px 0 0;
+}
+
+/* Outcome cards: the words sit between the lead and the actions. */
+.state .fp-words {
+  margin: 4px 0 6px;
+}
+
+/* Machine cards. */
+.machines .device .item-head {
+  margin-bottom: 12px;
+  align-items: center;
+}
+
+.machines .device .item-head h2 {
+  margin: 0;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.machines .device .item-sub {
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.machines .device .item-head .pill {
+  flex: none;
+  align-self: flex-start;
+}
+
+.machines .device .fp-words {
+  margin: 0 0 14px;
+}
+
+.machines .device .kv {
+  row-gap: 8px;
+}
+
+.machines .device .kv .pill {
+  vertical-align: 0.15em;
+  margin-left: 2px;
+}
+
+.machines .device .scope li {
+  padding: 2px 0;
+  border: 0;
+}
+
+.machines .device .kv dd > .pill {
+  margin: 6px 0 0;
+  display: inline-block;
+}
+
+.machines .device code {
+  font-size: 12px;
+}
+
+.device-actions {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.lead.machines-lead {
+  margin: 0 0 20px;
+}
+
+/* The owner's scope fold on a machine card. */
+.machines .device .fold.edit {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.machines .device .fold.edit + .device-actions {
+  margin-top: 12px;
+}

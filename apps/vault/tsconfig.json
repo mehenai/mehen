@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "scripts/ui-gallery.ts", "scripts/ui-interact.ts", "scripts/interact/*.ts", "scripts/touch-icon.ts", "scripts/vitest-progress.ts"],
+  // Browser code: type-checked by src/ui/client/tsconfig.json with the DOM lib.
+  // The browser-handler tests run that code against server-rendered pages in
+  // the test Worker, so they need the DOM lib and the Workers types at once.
+  // Those conflict (the Workers HTMLRewriter Element and the DOM Element and
+  // ParentNode clash: 70 errors in client code that is otherwise sound), so no
+  // one project can check them and vitest's transform is their only check.
+  "exclude": ["src/ui/client/**", "test/people-handlers.test.ts", "test/people-client.test.ts", "test/workspace-share-handlers.test.ts", "test/workspace-credentials-handlers.test.ts", "test/ask-handlers.test.ts", "test/email-code-handlers.test.ts", "test/oidc-verify-handlers.test.ts", "test/policy-rules-client.test.ts", "test/workspace-adopt-handlers.test.ts", "test/workspace-home-handlers.test.ts", "test/mini-dom.ts"]
+}

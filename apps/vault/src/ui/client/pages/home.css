@@ -1,0 +1,604 @@
+/* Home and the lists (V-16): the frozen card, the needs-you rows, the
+   credentials, projects and audit lists with their toolbar, the item page's
+   facts, can-do lines, machines and Manage card, and the forms that open
+   from Manage. Imported at the top of app.css; every selector is scoped
+   to these pages' own classes. */
+
+/* ---------------------------------------------------------------- home */
+
+.card.frozen {
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--line));
+  background: color-mix(in oklab, var(--danger-soft), var(--surface));
+}
+
+.frozen-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--danger);
+}
+
+.frozen-head h2 {
+  color: var(--danger);
+  margin: 0;
+}
+
+.frozen-head .i {
+  width: 20px;
+  height: 20px;
+}
+
+.card.frozen p {
+  margin: 0 0 10px;
+}
+
+.card.frozen .btn {
+  margin-top: 4px;
+}
+
+.stat-n {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.row-side .pill + .small {
+  margin-top: 2px;
+}
+
+.row .row-sub code,
+.activity .act code,
+.audit-line .act code {
+  font-size: 12px;
+  padding: 0.05em 0.3em;
+}
+
+.row-sub .code-inline {
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.row-side .left .timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.act-danger {
+  color: var(--danger);
+}
+
+.act-ok {
+  color: var(--ok);
+}
+
+.card.brake .btn .i {
+  width: 16px;
+  height: 16px;
+}
+
+.col-side .card .rows.compact .row-sub {
+  font-size: 12px;
+}
+
+@media (max-width: 899px) {
+  .page-head .stats {
+    width: 100%;
+  }
+}
+
+/* ---------------------------------------------------------------- lists */
+
+.toolbar label.search {
+  display: block;
+}
+
+.toolbar label.sort {
+  display: inline-flex;
+}
+
+.toolbar .search input[type="search"] {
+  padding: 0 44px 0 40px;
+}
+
+.toolbar .search input[type="search"]::-webkit-search-decoration {
+  display: none;
+}
+
+/* The exact rules: a coloured rail, the words in ink. */
+.card .rules li.rule {
+  color: var(--ink-muted);
+  border-top: 0;
+  padding: 6px 0 6px 12px;
+}
+
+.credentials,
+.audit-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.credential {
+  border-top: 1px solid var(--line);
+}
+
+.credential:first-child {
+  border-top: 0;
+}
+
+.credential[hidden] {
+  display: none;
+}
+
+.rows.one .row {
+  border-top: 0;
+}
+
+.rows.one .row:first-child {
+  padding-top: 12px;
+}
+
+.rows.one .row:last-child {
+  padding-bottom: 12px;
+}
+
+.credential:first-child .rows.one .row:first-child {
+  padding-top: 4px;
+}
+
+.credential:last-child .rows.one .row:last-child {
+  padding-bottom: 4px;
+}
+
+/* A credential row on the phone: the summary gets the full width, the
+   status and last use go under it, then the strip. From 900 px the strip
+   and the status sit in fixed columns, so every row lines up. */
+@media (max-width: 899px) {
+  .credential .row {
+    grid-template-areas: "tile main" "tile side" "tile data";
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .credential .row-side {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 4px 10px;
+    text-align: left;
+  }
+}
+
+@media (min-width: 900px) {
+  .credential .row-data {
+    width: 120px;
+    justify-content: flex-end;
+  }
+
+  .credential .row-side {
+    width: 150px;
+  }
+}
+
+.chip .i {
+  color: var(--warn);
+}
+
+.chip[aria-pressed="true"] .i {
+  color: inherit;
+}
+
+.audit-entry {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.audit-entry:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.audit-entry[hidden] {
+  display: none;
+}
+
+/* The legacy audit log's time and sentence; the workspace audit page's
+   sentence is .audit-sentence (workspace.css). */
+.audit-entry .audit-line {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr);
+  gap: 10px;
+  font-size: 14px;
+}
+
+.audit-line time {
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  padding-top: 0.2em;
+}
+
+.audit-line .act {
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.audit-line .act b {
+  color: var(--ink);
+}
+
+.audit-line .act b.act-danger,
+.activity .act b.act-danger {
+  color: var(--danger);
+}
+
+.audit-line .act b.act-ok,
+.activity .act b.act-ok {
+  color: var(--ok);
+}
+
+.audit-entry .fold.audit-raw {
+  border-top: 0;
+  margin: 0 0 0 calc(3.4rem + 10px);
+}
+
+.audit-entry .fold.audit-raw summary {
+  min-height: 26px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-faint);
+}
+
+.audit-entry .fold.audit-raw summary .i {
+  width: 14px;
+  height: 14px;
+}
+
+.audit-entry .fold.audit-raw[open] summary {
+  color: var(--ink-muted);
+}
+
+.audit-entry .fold.audit-raw .kv {
+  margin: 4px 0 8px;
+}
+
+.audit-json {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: block;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.audit-head {
+  margin: 0;
+}
+
+.audit-head code {
+  font-size: 12px;
+}
+
+.audit-older {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* One credential's history: which one, and the way back to every entry. */
+.notice.audit-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 16px;
+}
+
+.notice.audit-filter p {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- item page */
+
+.item-sub .pill {
+  margin-right: 2px;
+}
+
+.kv.facts .tag {
+  margin-right: 4px;
+}
+
+.cando-k .pill {
+  white-space: nowrap;
+}
+
+.cando li > span:last-child {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.cando + .fold {
+  margin-top: 4px;
+}
+
+.card.dest:not(.verified) .dest-note {
+  color: var(--ink-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+.card.dest.verified .dest-note {
+  margin: 0;
+}
+
+.fields {
+  margin: 0 0 8px;
+}
+
+.fields li {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.fields .field-facts code {
+  font-size: 12px;
+}
+
+.manage-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.manage-actions .btn {
+  width: 100%;
+}
+
+.manage-actions .more-link {
+  justify-self: start;
+}
+
+.manage-actions .copybox .btn {
+  width: auto;
+}
+
+.manage-actions > p {
+  margin: 0;
+}
+
+#manage > .small {
+  margin: 0 0 10px;
+}
+
+/* The ask that brought the member here, answered where it is explained. */
+.notice.attention {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  margin-bottom: 12px;
+}
+
+.notice.attention p {
+  margin: 0;
+}
+
+.notice.attention .copybox {
+  justify-self: stretch;
+}
+
+/* Back to the list, above a credential's head. */
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.back-link .i {
+  width: 16px;
+  height: 16px;
+}
+
+.back-link:hover {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.col-side .rows.compact .row-sub .tag {
+  margin-right: 0;
+}
+
+.env-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+}
+
+.env .pill .i {
+  width: 12px;
+  height: 12px;
+}
+
+/* Fences are a list of hosts, not where a secret goes: normal weight. */
+.env .hosts.fences code {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.env .vars .withheld {
+  display: block;
+  margin-top: 4px;
+}
+
+/* A form that opens from Manage: a card whose summary is the heading. */
+.card.fold.form-fold {
+  border-top: 1px solid var(--line);
+  margin-top: 0;
+}
+
+.card.fold.form-fold > summary {
+  min-height: 24px;
+  font-family: var(--sans);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.card.fold.form-fold > summary .i {
+  color: var(--accent);
+}
+
+.card.fold.form-fold[open] > summary {
+  margin-bottom: 10px;
+}
+
+.card.fold.form-fold.danger-zone > summary,
+.card.fold.form-fold.danger-zone > summary .i {
+  color: var(--danger);
+}
+
+.card .fold.edit {
+  margin-top: 10px;
+}
+
+.card .fold.edit summary {
+  font-size: 14px;
+}
+
+.card .fold.edit[open] summary {
+  margin-bottom: 8px;
+}
+
+.edit .field,
+.form-fold .field {
+  display: grid;
+  gap: 6px;
+}
+
+.form-fold details.field summary {
+  font-size: 14px;
+  min-height: 32px;
+}
+
+.page-head + .inline-error,
+.page-head + .card.frozen {
+  margin-top: 0;
+}
+
+/* The edit and delete forms come after the side column on the phone, and
+   under the main column from 900 px. */
+.col-forms {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+  min-width: 0;
+}
+
+@media (min-width: 900px) {
+  .page.wide .two-col:has(> .col-forms) {
+    grid-template-rows: auto 1fr;
+  }
+
+  .page.wide .two-col > .col-forms {
+    grid-column: 1;
+  }
+
+  .page.wide .two-col:has(> .col-forms) > .col-side {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+}
+
+/* The project's bound repositories, each with its unbind button. */
+.card.remotes .remote-list {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0;
+  display: grid;
+  gap: 8px;
+}
+
+.card.remotes .remote-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.card.remotes .remote-list code {
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- shell */
+
+.nowrap {
+  white-space: nowrap;
+}
+
+/* The Needs you count on the Home tab and the top bar's Home link. */
+.tabs a {
+  position: relative;
+}
+
+.tabs .count,
+.top-nav .count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--primary);
+  color: var(--primary-ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.tabs .count {
+  position: absolute;
+  top: 2px;
+  left: calc(50% + 6px);
+}
+
+.top-nav .count {
+  margin-left: 6px;
+}
+
+/* The palette closes with esc on a keyboard and with a button on a phone. */
+.palette-input .palette-close {
+  display: none;
+}
+
+.palette-item .pill {
+  flex: none;
+}
+
+@media (max-width: 599px) {
+  .palette-input kbd {
+    display: none;
+  }
+
+  /* On a phone sign-out sits beside the avatar; it lives in Settings instead. */
+  .top-tools .icon-btn[data-action="signout"] {
+    display: none;
+  }
+
+  .palette-input .palette-close {
+    display: inline-flex;
+    margin-right: -10px;
+  }
+}

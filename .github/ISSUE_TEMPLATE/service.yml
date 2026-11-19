@@ -1,0 +1,17 @@
+name: Add a service
+description: Ask for a template for a service Mehen does not know yet, or offer one.
+body:
+  - type: input
+    id: service
+    attributes:
+      label: Service
+      description: Its name and the page where people make an API key.
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: Its API
+      description: The hosts the key is sent to, the header it goes in, and links to the provider's documentation for each. The guide is https://docs.mehen.dev/guides/add-a-service.
+    validations:
+      required: true

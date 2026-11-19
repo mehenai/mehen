@@ -1,0 +1,28 @@
+name: Something is wrong
+description: Mehen did something it should not, or did not do something it should.
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran or opened, what you expected, and what you saw. Never paste a key, a token or a recovery code.
+    validations:
+      required: true
+  - type: textarea
+    id: version
+    attributes:
+      label: Version and platform
+      description: The output of `mehen version --json`, your operating system, and the agent you use (Claude Code, Codex, Cursor, pi and so on).
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - A local vault (mehen serve or mehen up)
+        - A vault on another machine I run
+        - Mehen Cloud
+        - The command line or MCP server only
+    validations:
+      required: true

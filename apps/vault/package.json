@@ -1,0 +1,29 @@
+{
+  "name": "@mehen/vault",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev -e local",
+    "build:ui": "bun scripts/build-ui.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@mehen/protocol": "workspace:*",
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@simplewebauthn/browser": "14.0.0",
+    "@simplewebauthn/server": "14.0.3",
+    "age-encryption": "0.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.11",
+    "@cloudflare/workers-types": "5.20261023.1",
+    "@mehen/client": "workspace:*",
+    "vitest": "5.0.5",
+    "wrangler": "4.152.0"
+  }
+}

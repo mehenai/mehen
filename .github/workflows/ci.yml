@@ -1,0 +1,114 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+# A newer push to a pull request's branch, or to main, makes the older run
+# of the same branch pointless, so it is cancelled.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    # GitHub-hosted runners unless the repository variable CI_RUNS_ON is set:
+    # a deployment's own CI may set it to a JSON list of runner labels, such
+    # as ["self-hosted","linux","x64"], for both this job and ui-gallery.
+    runs-on: ${{ vars.CI_RUNS_ON && fromJSON(vars.CI_RUNS_ON) || 'ubuntu-latest' }}
+    # About 15 minutes alone; jobs sharing a runner take it past 20.
+    timeout-minutes: 40
+    steps:
+      # The CLI refuses a config directory below a world-writable ancestor, and
+      # Linux's /tmp is one; macOS gives each user a private TMPDIR. Tests make
+      # their config directories with tmpdir(), so point it at the runner's own.
+      - run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test packages/protocol packages/client apps/cli
+      # The vault engine on Bun, end to end with the real CLI (apps/local),
+      # with the UI a release carries.
+      - run: bun run --cwd apps/vault build:ui
+      - run: bun run --cwd apps/local test
+      # A full worker pool starves a small or shared runner and end-to-end
+      # tests pass their 20 s timeout, so the pool is capped at three.
+      # The step takes 8 to 16 minutes. tools/ci/vitest-guard.ts ends a run
+      # that has finished but does not exit, green only if every file passed,
+      # and one where no test finishes for 5 minutes; the step's own limit
+      # ends anything else well before the job's.
+      - timeout-minutes: 25
+        run: bun tools/ci/vitest-guard.ts -- bun run --cwd apps/vault test --maxWorkers=3 --reporter=default --reporter=./scripts/vitest-progress.ts
+      - run: bun test tools
+      - run: bun run --cwd apps/web check
+      # The docs site: generate, build, typecheck, the docs lint, its tests and a dry-run deploy.
+      - run: bun run --cwd apps/docs check
+      - name: No dashes in the em or en family
+        run: "! grep -rnP '[\\x{2013}\\x{2014}\\x{2015}\\x{2E3A}]' --include='*.ts' --include='*.md' --include='*.json' --include='*.jsonc' --include='*.toml' --include='*.html' --include='*.css' --include='*.js' --include='*.svg' --exclude-dir=node_modules . "
+  # The UI gallery's layout check, on the runner CI_RUNS_ON names (or
+  # ubuntu-latest): every page state at
+  # 360, 390, 768, 1024 and 1280 px in light and dark, measured without
+  # screenshots, against apps/vault/scripts/ui-layout-baseline.json. It
+  # fails on a new finding and on a baseline entry that no longer occurs.
+  ui-gallery:
+    runs-on: ${{ vars.CI_RUNS_ON && fromJSON(vars.CI_RUNS_ON) || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      # Chrome's profile and its own temporary files go under tmpdir(). The
+      # runner empties its temp folder after every job, cancelled ones too,
+      # so a cancelled run leaves nothing behind in the runner's /tmp.
+      - run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Find Chrome
+        id: chrome
+        run: |
+          for c in google-chrome google-chrome-stable chromium chromium-browser; do
+            if p="$(command -v "$c")"; then
+              echo "Using $p"
+              echo "path=$p" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "::error::No Chrome or Chromium on this runner (looked for google-chrome, google-chrome-stable, chromium, chromium-browser); the UI gallery check needs one"
+          exit 1
+      - run: bun run --cwd apps/vault build:ui
+      - run: bun apps/vault/scripts/contrast.ts
+      - name: Gallery layout check
+        run: bun apps/vault/scripts/ui-gallery.ts "$RUNNER_TEMP/ui-gallery" --measure-only --chrome "${{ steps.chrome.outputs.path }}"
+      - name: Interaction check
+        run: bun apps/vault/scripts/ui-interact.ts --chrome "${{ steps.chrome.outputs.path }}"
+      - name: Keep the layout findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-gallery-layout
+          path: ${{ runner.temp }}/ui-gallery/layout.json
+          if-no-files-found: ignore
+  # Every file in the tree against gitleaks' rules and .gitleaks.toml, whose
+  # entries name the files with deliberate fake keys and say why. The CLI
+  # rather than gitleaks-action, which needs a licence for an organisation's
+  # repository; the archive is checked against the release's checksum.
+  secret-scan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install gitleaks
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan the tree
+        run: '"$RUNNER_TEMP/gitleaks" dir . --config .gitleaks.toml --redact --no-banner'

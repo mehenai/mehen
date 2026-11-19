@@ -1,0 +1,16 @@
+{
+  "name": "Mehen",
+  "category": "Access for agents.",
+  "promise": "Use credentials without reading them.",
+  "sections": [
+    { "id": "start", "title": "Start here", "index": "/start" },
+    { "id": "concepts", "title": "Concepts", "index": "/concepts" },
+    { "id": "guides", "title": "Guides", "index": "/guides" },
+    { "id": "reference", "title": "Reference", "index": "/reference" },
+    { "id": "security", "title": "Security", "index": "/security" },
+    { "id": "changelog", "title": "Changelog", "index": "/changelog" }
+  ],
+  "allowedHosts": ["mehen.dev", "app.mehen.dev", "docs.mehen.dev", "github.com"],
+  "appOrigin": "https://app.mehen.dev",
+  "siteOrigin": "https://docs.mehen.dev"
+}

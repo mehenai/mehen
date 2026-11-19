@@ -1,0 +1,32 @@
+/* Mehen brand tokens: papyrus (light). The app at app.mehen.dev. */
+
+@font-face { font-family: "Fraunces"; src: url(../fonts/Fraunces-normal-100-900.woff2) format("woff2"); font-weight: 100 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Inter"; src: url(../fonts/Inter-normal-100-900.woff2) format("woff2"); font-weight: 100 900; font-display: block; }
+@font-face { font-family: "JetBrains Mono"; src: url(../fonts/JetBrainsMono-normal-100-800.woff2) format("woff2"); font-weight: 100 800; font-display: block; }
+
+:root {
+  --cream: #f3ead8;
+  --cream-deep: #e9dcc2;
+  --bone: #fbf7ee;
+  --ink: #1c1915;
+  --ink-2: #4b443b;
+  --mute: #8b8172;
+  --line: rgba(28, 25, 21, 0.12);
+  --apricot: #f2a65a;
+  --ember: #d4502b;
+  --teal: #1f6f73;
+  --teal-deep: #164f54;
+  --gold: #d9a741;
+  --midnight: #0f1626;
+  --midnight-2: #18223a;
+  --lapis: #2a4b8f;
+  --faience: #6ccfc6;
+  --bg: var(--cream);
+  --sun: var(--ember);
+  --serif: "Fraunces", Georgia, serif;
+  --sans: "Inter", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius: 16px;
+  --wrap: 1180px;
+  --shadow: 0 1px 2px rgba(28, 25, 21, 0.04), 0 14px 36px rgba(90, 60, 20, 0.08);
+}

@@ -1,0 +1,199 @@
+/* The adoption review page (pages/workspace-adopt.ts): one batch's rows,
+   grouped by repository and folder, each with its tick, home and facts.
+   Tokens and the shared classes (.decision, .tick, .kv, .hosts, .fields,
+   .dest-warning, .bar) come from app.css; this adds only the rows, the
+   filters and the custom destination's danger edge. */
+
+.adopt-rows,
+.adopt-sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.adopt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.adopt-row > * {
+  min-width: 0;
+}
+
+.adopt-row:first-child {
+  border-top: 0;
+}
+
+.adopt-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.adopt-row-head > * {
+  min-width: 0;
+}
+
+.adopt-row-head .tick {
+  min-height: 0;
+  overflow-wrap: anywhere;
+}
+
+.adopt-problem {
+  margin: 0;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.adopt-custom {
+  padding-left: 10px;
+  border-left: 3px solid var(--danger);
+}
+
+.adopt-sources li {
+  overflow-wrap: anywhere;
+}
+
+.adopt-tools,
+.adopt-filters,
+.adopt-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 16px;
+}
+
+.adopt-tools > *,
+.adopt-filters > *,
+.adopt-bulk > * {
+  min-width: 0;
+}
+
+.adopt-filters {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.adopt-group h2,
+.adopt-group h3 {
+  overflow-wrap: anywhere;
+}
+
+/* A compare row: what already holds its name, the result per field, what a
+   replace reaches and the choice between the actions. */
+.adopt-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.adopt-conflict > *,
+.adopt-affected > * {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.adopt-affected {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.adopt-refs {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.adopt-refs li {
+  overflow-wrap: anywhere;
+}
+
+.adopt-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.adopt-actions .tick span,
+.adopt-rename {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.adopt-rename input {
+  width: 100%;
+  max-width: 28rem;
+}
+
+.adopt-repoint {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.adopt-repoint .tick span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.adopt-keep {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.adopt-keep p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The inventory: one row per name. */
+.inventory-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.inventory-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.inventory-row > *,
+.inventory-entries li {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.inventory-entries {
+  margin: 0;
+  padding-left: 18px;
+}

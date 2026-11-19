@@ -1,0 +1,41 @@
+// The client as a host vendors it: its source and the protocol modules
+// that go with it, listed one by one (include does not expand braces),
+// with the template folder as a wildcard so a new template is vendored
+// without an edit here, under a consumer's strict settings (Globex uses
+// exactOptionalPropertyTypes and the Workers types, without the DOM lib).
+// The Workers types are the vault's copy; the client itself depends on none.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "lib": ["ES2022"],
+    "typeRoots": ["../../apps/vault/node_modules/@cloudflare"],
+    "types": ["workers-types"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "../protocol/src/api.ts",
+    "../protocol/src/binding.ts",
+    "../protocol/src/body-match.ts",
+    "../protocol/src/bytes.ts",
+    "../protocol/src/canonical-json.ts",
+    "../protocol/src/custom-provider.ts",
+    "../protocol/src/fill.ts",
+    "../protocol/src/fingerprint.ts",
+    "../protocol/src/fingerprint-words.ts",
+    "../protocol/src/headers.ts",
+    "../protocol/src/kinds.ts",
+    "../protocol/src/mandate-terms.ts",
+    "../protocol/src/platform.ts",
+    "../protocol/src/policy-mode.ts",
+    "../protocol/src/proof.ts",
+    "../protocol/src/push.ts",
+    "../protocol/src/seal.ts",
+    "../protocol/src/step-up-proof.ts",
+    "../protocol/src/templates.ts",
+    "../protocol/src/templates/*.ts",
+    "../protocol/src/workload.ts",
+    "../protocol/src/workspace.ts"
+  ],
+  "exclude": ["../protocol/src/templates/*.test.ts"]
+}

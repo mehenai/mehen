@@ -1,0 +1,165 @@
+/* Settings' sign-in sections: rows with their own
+   buttons, the inline rename field, the name field beside Add a passkey,
+   the ten recovery codes and how they print. The component classes live
+   in app.css; every selector here is scoped to these sections. */
+
+/* ---------------------------------------------------------------- rows with actions */
+
+.list.list-actions li > .side {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* On the phone a row's buttons drop under its text, so the text keeps the width. */
+@media (max-width: 599px) {
+  .list.list-actions li:has(> .side) {
+    flex-wrap: wrap;
+  }
+
+  .list.list-actions li:has(> .side) > .main {
+    flex-basis: calc(100% - 52px);
+  }
+
+  .list.list-actions li > .side {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    padding-left: 52px;
+  }
+}
+
+.rename-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.rename-field[hidden] {
+  display: none;
+}
+
+.rename-field input[type="text"] {
+  flex: 1 1 200px;
+  width: auto;
+  min-height: 34px;
+}
+
+#security > .notice,
+#passkeys > .notice,
+#recovery > .notice,
+#sessions > .notice,
+#members > .notice {
+  margin: 0 0 12px;
+}
+
+#security > .notice p,
+#passkeys > .notice p,
+#recovery > .notice p,
+#sessions > .notice p,
+#members > .notice p {
+  margin: 0;
+}
+
+#security > .notice .notice-title,
+#passkeys > .notice .notice-title,
+#recovery > .notice .notice-title,
+#sessions > .notice .notice-title,
+#members > .notice .notice-title {
+  margin-bottom: 4px;
+}
+
+#members h3 {
+  font-size: 15px;
+}
+
+/* ---------------------------------------------------------------- add a passkey */
+
+.card-foot.passkey-add {
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.card-foot.passkey-add .field {
+  flex: 1 1 240px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.card-foot.passkey-add .field input {
+  min-height: 34px;
+}
+
+/* ---------------------------------------------------------------- recovery codes */
+
+.recovery-issued {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--accent-faint);
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line));
+  display: grid;
+  gap: 12px;
+}
+
+.recovery-issued[hidden] {
+  display: none;
+}
+
+.recovery-issued p {
+  margin: 0;
+}
+
+.recovery-issued .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+}
+
+.recovery-codes {
+  margin: 0;
+  padding: 0 0 0 2.4em;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 24px;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.recovery-codes li::marker {
+  color: var(--ink-faint);
+}
+
+@media (max-width: 599px) {
+  .recovery-codes {
+    grid-template-columns: 1fr;
+  }
+}
+
+[data-region="recovery-expired"] > .notice,
+[data-region="recovery-confirmed"] > .notice {
+  margin-top: 12px;
+}
+
+/* Print shows the codes and nothing else of the page. */
+@media print {
+  body.printing-codes * {
+    visibility: hidden;
+  }
+
+  body.printing-codes .recovery-codes,
+  body.printing-codes .recovery-codes * {
+    visibility: visible;
+  }
+
+  body.printing-codes .recovery-codes {
+    position: absolute;
+    top: 0;
+    left: 0;
+    color: #000;
+    font-size: 16px;
+  }
+}

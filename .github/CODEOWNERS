@@ -1,0 +1,9 @@
+# Changes here need a maintainer's review: they decide who may use which key,
+# where it may go and how it is kept.
+*                         @mehenai/maintainers
+/apps/vault/              @mehenai/maintainers
+/apps/local/              @mehenai/maintainers
+/apps/cli/src/relay/      @mehenai/maintainers
+/apps/cli/src/hook/       @mehenai/maintainers
+/packages/protocol/       @mehenai/maintainers
+/.github/                 @mehenai/maintainers

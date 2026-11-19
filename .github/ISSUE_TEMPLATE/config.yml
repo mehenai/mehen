@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/mehenai/mehen/blob/main/SECURITY.md
+    about: Please report vulnerabilities privately by email, never in an issue.
+  - name: Ask for a Mehen Cloud invitation
+    url: https://mehen.dev/#cloud
+    about: Mehen Cloud is invite only for now.

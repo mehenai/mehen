@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // A template: the operator puts their own host names in routes before
+  // deploying (docs/OPERATIONS.md, Your deployment's identity). Wrangler takes
+  // the account from CLOUDFLARE_ACCOUNT_ID or the logged-in account.
+  "name": "mehen-docs",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-20",
+  "build": { "command": "bun run build", "cwd": "." },
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS",
+    // The Worker sees every request: it sets the headers, answers /search,
+    // and serves a page's markdown twin to a client that asks for markdown.
+    "run_worker_first": true,
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "docs.mehen.dev", "custom_domain": true }],
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
+}

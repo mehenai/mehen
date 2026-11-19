@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types", "bun"],
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*.ts"],
+  // The browser scripts are checked with the DOM lib by src/client/tsconfig.json,
+  // and the build scripts, which import the CLI's own sources, by scripts/tsconfig.json.
+  "exclude": ["src/client/**"]
+}

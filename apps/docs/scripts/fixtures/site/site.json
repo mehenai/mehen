@@ -1,0 +1,12 @@
+{
+  "name": "Mehen",
+  "category": "Access for agents.",
+  "promise": "Use credentials without reading them.",
+  "sections": [
+    { "id": "start", "title": "Start here", "index": "/start" },
+    { "id": "guides", "title": "Guides", "index": "/guides" }
+  ],
+  "allowedHosts": ["mehen.dev", "app.mehen.dev", "docs.mehen.dev"],
+  "appOrigin": "https://app.mehen.dev",
+  "siteOrigin": "https://docs.mehen.dev"
+}

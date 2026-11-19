@@ -1,0 +1,156 @@
+/* The intake page: the head card with the service tile, the countdown and
+   the step strip; the guided setup; the paste form with sealed fields; the
+   side column. Imported at the top of app.css, so every selector here is
+   scoped to the page's own regions and wins by specificity, not by order. */
+
+[data-region="intake-head"] .item-head {
+  margin-bottom: 0;
+}
+
+[data-region="intake-head"] .item-sub {
+  display: block;
+  line-height: 1.6;
+}
+
+[data-region="intake-head"] .item-sub .when {
+  white-space: nowrap;
+}
+
+[data-region="intake-head"] .item-sub .timer {
+  display: inline-flex;
+  vertical-align: -0.2em;
+}
+
+[data-region="intake-head"] .item-sub code {
+  font-size: 13px;
+}
+
+[data-region="intake-head"] .progress {
+  margin-top: 14px;
+}
+
+[data-region="intake-head"] .then-note {
+  margin: 8px 0 0;
+}
+
+[data-region="intake-head"] .rotation {
+  margin-top: 12px;
+}
+
+[data-region="intake-head"] .fold {
+  margin-top: 10px;
+}
+
+[data-region="intake-head"] .fold .reason {
+  margin: 4px 0 12px;
+}
+
+[data-region="intake-head"] .fold .kv {
+  margin-bottom: 10px;
+}
+
+/* The guided setup. */
+
+[data-region="intake-setup"] > .small {
+  margin: -4px 0 10px;
+}
+
+[data-region="intake-setup"] .step-body a {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+[data-region="intake-setup"] .step-body .copybox {
+  font-size: 12px;
+}
+
+[data-region="intake-setup"] .step-body .callout {
+  margin-bottom: 0;
+}
+
+/* The paste form. */
+
+[data-region="intake-form"] .field .hint {
+  display: block;
+  line-height: 1.5;
+}
+
+[data-region="intake-form"] .field .hint code {
+  font-size: 12px;
+}
+
+[data-region="intake-form"] .field input,
+[data-region="intake-form"] .field textarea {
+  font-family: var(--mono);
+  font-feature-settings: "zero";
+  font-variant-ligatures: none;
+}
+
+[data-region="intake-form"] .field.sealed input {
+  letter-spacing: 0.08em;
+}
+
+[data-region="intake-form"] form > .btn {
+  justify-self: start;
+  margin-top: 4px;
+}
+
+[data-region="intake-form"] form > .hint {
+  margin-top: -4px;
+}
+
+@media (max-width: 639px) {
+  [data-region="intake-form"] form > .btn {
+    justify-self: stretch;
+  }
+}
+
+/* A value without the shape the hint names: a nudge under the field. */
+
+[data-region="intake-form"] .field .field-warn {
+  font-size: 13px;
+  margin: 2px 0 0;
+}
+
+[data-region="intake-form"] .field .field-warn code {
+  font-size: 12px;
+}
+
+/* In one column, where the secret may go and who may use it come before
+   the form, so they are read before the decision. */
+@media (max-width: 899px) {
+  [data-region="intake-columns"] > .col-side {
+    order: -1;
+  }
+}
+
+/* Who may use it. */
+
+[data-region="intake-tags"] .lead {
+  font-size: 15px;
+  color: var(--ink);
+}
+
+[data-region="intake-tags"] .small {
+  margin-top: 6px;
+}
+
+/* The state cards and their copyable command. */
+
+[data-region="intake-expired"] .state,
+[data-region="intake-done"] .state {
+  width: 100%;
+}
+
+/* Shown in place of a hidden sibling: keep the card gap. */
+.page > [data-region="intake-expired"]:not([hidden]) {
+  margin-top: var(--s4);
+}
+
+.state .or p {
+  margin: 0 0 6px;
+}
+
+.state .or .copybox {
+  font-size: 12px;
+}

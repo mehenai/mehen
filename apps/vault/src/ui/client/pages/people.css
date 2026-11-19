@@ -1,0 +1,119 @@
+/* The people, team, machine and account setup pages: a person's row with
+   its controls underneath, compact inline role pickers, and the hidden
+   labels those pickers carry for screen readers. Tokens and the shared
+   classes (.card, .kv, .pill, .fold, .copybox) come from app.css. */
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.list.people .person,
+.list.invites .invite {
+  display: block;
+  padding: var(--s3) 0;
+}
+
+.list.people .person + .person,
+.list.invites .invite + .invite {
+  border-top: 1px solid var(--line);
+}
+
+.person-head,
+.invite-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.member-actions,
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.member-actions select,
+.inline-form select {
+  width: auto;
+}
+
+.confirm-panel {
+  flex-basis: 100%;
+  margin-top: 8px;
+}
+
+/* A project to share: on a phone the project, its level and
+   the protected tick each take a line, since the level's longest choice
+   would leave the project's name a few letters wide; from 640 px they sit
+   in one row, the name taking what the other two leave. */
+.share-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-row select {
+  width: auto;
+  max-width: 100%;
+}
+
+@media (min-width: 640px) {
+  .share-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    justify-items: stretch;
+  }
+}
+
+/* A person's changes, folded under Manage. */
+.fold.manage {
+  margin-top: 8px;
+}
+
+.fold.manage > p {
+  margin: 8px 0 0;
+}
+
+.team + .team,
+[data-region="proposal"] + section {
+  margin-top: var(--s4);
+}
+
+/* The machine page's danger zone and the Connect an agent boxes. */
+.danger-zone .actions {
+  justify-content: flex-start;
+}
+
+.connect-box + .connect-box,
+.connect-box + p {
+  margin-top: 14px;
+}
+
+[data-region="agent-prompt"] .connect-box + p,
+[data-region="agent-prompt"] p + p {
+  margin-top: 10px;
+}
+
+.two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s4);
+}
+
+/* As many columns as fit a whole code (19 characters). Each number sits
+   outside its code, so the column gap leaves the next column's numbers room. */
+ol.codes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19ch, 1fr));
+  gap: 6px 3em;
+  padding-left: 2.4em;
+}

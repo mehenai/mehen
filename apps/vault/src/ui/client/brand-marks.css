@@ -1,0 +1,27 @@
+/* The colours of the brand marks added with the catalogue templates
+   (icons.ts BRAND_ICONS). Each is the brand's own hex where it reads on
+   both schemes; a black mark turns light in the dark scheme, and a pale
+   one darkens in the light scheme, as the first marks do in app.css. */
+
+.brand-snyk { color: light-dark(#4c4a73, #a9a6d8); }
+.brand-posthog { color: light-dark(#000000, #f0f0f0); }
+.brand-sentry { color: light-dark(#362d59, #b4a8e0); }
+.brand-neon { color: light-dark(#1a9e6e, #34d59a); }
+.brand-vercel { color: light-dark(#000000, #f0f0f0); }
+.brand-notion { color: light-dark(#000000, #f0f0f0); }
+.brand-gitbook { color: light-dark(#3a6b78, #bbdde5); }
+.brand-betterstack { color: light-dark(#000000, #f0f0f0); }
+.brand-elevenlabs { color: light-dark(#000000, #f0f0f0); }
+.brand-brave { color: #fb542b; }
+.brand-ollama { color: light-dark(#000000, #f0f0f0); }
+.brand-hetzner { color: #d50c2d; }
+.brand-npm { color: #cb3837; }
+.brand-hubspot { color: #ff7a59; }
+.brand-googlegemini { color: #8e75b2; }
+.brand-mistralai { color: #fa520f; }
+.brand-openrouter { color: light-dark(#64748b, #94a3b8); }
+.brand-resend { color: light-dark(#000000, #f0f0f0); }
+.brand-scaleway { color: light-dark(#4f0599, #b48cf2); }
+.brand-semrush { color: #ff642d; }
+.brand-intercom { color: light-dark(#1f8a80, #6afdef); }
+.brand-loops { color: #fc5200; }
