@@ -66,6 +66,20 @@ describe("graphqlMayMutate", () => {
     for (const [what, body] of cases) expect(graphqlMayMutate(body), what).toBe(true)
   })
 
+  it("accepts only a strict single-query envelope: a multiplexed _json batch, any other key or several operations count as a mutation", () => {
+    const query = "{ currentUser { username } }"
+    const cases: [string, Uint8Array][] = [
+      ["a _json batch beside a harmless query", json({ query, _json: [{ query: "mutation { createIssue(input: {}) { errors } }" }] })],
+      ["an empty _json batch", json({ query, _json: [] })],
+      ["persisted-query extensions", json({ query, extensions: { persistedQuery: { sha256Hash: "x" } } })],
+      ["any other key", json({ query, mehen: 1 })],
+      ["two query operations", json({ query: "query A { a } query B { b }" })],
+      ["variables that are not an object", json({ query, variables: [1] })],
+    ]
+    for (const [what, body] of cases) expect(graphqlMayMutate(body), what).toBe(true)
+    expect(graphqlMayMutate(json({ query, variables: {}, operationName: null }))).toBe(false)
+  })
+
   it("is what bodyMatches runs for graphql-mutation, which also flags any query string", () => {
     expect(bodyMatches("graphql-mutation", json({ query: "{ viewer { login } }" }), "")).toBe(false)
     expect(bodyMatches("graphql-mutation", null, "")).toBe(true)

@@ -62,7 +62,7 @@ describe("pagerduty", () => {
 describe("pagerduty review fixes", () => {
   it("lets the named reads through and holds every other read", () => {
     expectAll([
-      ["GET", `${API}/incidents/P1/log_entries`, "allow"],
+      ["GET", `${API}/incidents/P1/notes`, "allow"],
       ["GET", `${API}/schedules/S1`, "allow"],
       ["GET", `${API}/services`, "approve"],
       ["GET", `${API}/mehen-unlisted`, "approve"],
@@ -91,5 +91,41 @@ describe("pagerduty review fixes", () => {
       ["POST", `${API}/event_orchestrations/E1/integrations`, "deny"],
       ["POST", `${API}/automation_actions/runners`, "deny"],
     ])
+  })
+})
+
+describe("pagerduty second review fixes", () => {
+  it("holds log entries, which return a channel's service_key with include[]=channels, whatever the item's policy says", () => {
+    for (const path of [
+      "/log_entries?include[]=channels",
+      "/log_entries/L1?include[]=channels",
+      "/incidents/P1/log_entries?include[]=channels",
+      "/log_entries",
+      "/incidents/P1/log_entries",
+    ]) {
+      expect({ path, policy: decide("GET", `${API}${path}`) }).toEqual({ path, policy: "approve" })
+      expect({ path, relay: underBroadAllow(pagerduty, "GET", `${API}${path}`) }).toEqual({ path, relay: "approve" })
+    }
+  })
+
+  it("holds services, which return integration keys with include[]=integrations, whatever the item's policy says", () => {
+    for (const path of [
+      "/services",
+      "/services?include[]=integrations",
+      "/services/S1",
+      "/services/S1?include[]=integrations",
+    ]) {
+      expect({ path, policy: decide("GET", `${API}${path}`) }).toEqual({ path, policy: "approve" })
+      expect({ path, relay: underBroadAllow(pagerduty, "GET", `${API}${path}`) }).toEqual({ path, relay: "approve" })
+    }
+  })
+
+  it("refuses creating an event orchestration, which mints an integration with a routing key", () => {
+    for (const path of [
+      "/event_orchestrations",
+    ]) {
+      expect({ path, policy: decide("POST", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(pagerduty, "POST", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
   })
 })

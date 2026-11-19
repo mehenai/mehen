@@ -93,3 +93,67 @@ describe("jira review fixes", () => {
     ])
   })
 })
+
+describe("jira second review fixes", () => {
+  it("refuses updating a project, which can set its permission and issue security schemes", () => {
+    for (const path of [
+      "/api/3/project/ACME",
+      "/api/3/project/10000",
+    ]) {
+      expect({ path, policy: decide("PUT", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "PUT", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+  })
+
+  it("refuses creating and updating filters, which take share and edit permissions, and the default share scope", () => {
+    for (const path of [
+      "/api/3/filter",
+    ]) {
+      expect({ path, policy: decide("POST", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "POST", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+    for (const path of [
+      "/api/3/filter/10000",
+      "/api/3/filter/defaultShareScope",
+    ]) {
+      expect({ path, policy: decide("PUT", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "PUT", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+  })
+
+  it("refuses the asynchronous project deletion", () => {
+    for (const path of [
+      "/api/3/project/ACME/delete",
+    ]) {
+      expect({ path, policy: decide("POST", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "POST", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+  })
+
+  it("refuses creating, changing and deleting global project roles", () => {
+    for (const path of [
+      "/api/3/role",
+    ]) {
+      expect({ path, policy: decide("POST", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "POST", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+    for (const path of [
+      "/api/3/role/10002",
+    ]) {
+      expect({ path, policy: decide("PUT", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "PUT", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+    for (const path of [
+      "/api/3/role/10002",
+    ]) {
+      expect({ path, policy: decide("DELETE", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "DELETE", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+    for (const path of [
+      "/api/3/project/ACME/role/10002",
+    ]) {
+      expect({ path, policy: decide("POST", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "POST", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+  })
+})

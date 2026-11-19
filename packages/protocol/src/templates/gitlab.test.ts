@@ -91,7 +91,7 @@ describe("gitlab review fixes", () => {
       ["GET", `${API}/projects/42/repository/files/README.md/raw?ref=main`, "allow"],
       ["GET", `${API}/projects/42/issues/7/notes`, "allow"],
       ["GET", `${API}/projects/42/jobs/9/trace`, "allow"],
-      ["GET", `${API}/groups/7/projects`, "allow"],
+      ["GET", `${API}/groups/7/issues`, "allow"],
       ["GET", `${API}/projects/42/pipeline_schedules/3`, "approve"],
       ["GET", `${API}/projects/42/mehen-unlisted`, "approve"],
     ])
@@ -133,5 +133,26 @@ describe("gitlab review fixes", () => {
       ["PUT", `${API}/projects/42`, "deny"],
       ["PUT", `${API}/groups/7`, "deny"],
     ])
+  })
+})
+
+describe("gitlab second review fixes", () => {
+  it("holds project and group reads, which return runners_token, whatever the item's policy says", () => {
+    for (const path of [
+      "/projects",
+      "/projects?simple=true",
+      "/projects/42",
+      "/groups/7",
+      "/groups/7/projects",
+    ]) {
+      expect({ path, policy: decide("GET", `${API}${path}`) }).toEqual({ path, policy: "approve" })
+      expect({ path, relay: underBroadAllow(gitlab, "GET", `${API}${path}`) }).toEqual({ path, relay: "approve" })
+    }
+  })
+
+  it("refuses a _json multiplex batch even beside a harmless top-level query, whatever the item's policy says", () => {
+    const body = { query: "{ currentUser { id } }", _json: [{ query: "mutation { personalAccessTokenCreate(input: {}) { token } }" }] }
+    expect(decide("POST", GRAPHQL, body)).toBe("deny")
+    expect(underBroadAllow(gitlab, "POST", GRAPHQL, body)).toBe("deny")
   })
 })
