@@ -10,7 +10,7 @@ import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path"
 import { loginFiles, sourceType } from "../adopt/sources.ts"
 import { KEY_VARIABLE, type Op, type ShellNode, type Word, literal, parseShell } from "./shell.ts"
-import { OPTION_SPECS, parseOptions } from "./options.ts"
+import { OPTION_SPECS, own, parseOptions } from "./options.ts"
 
 export type Finding = { rule: "secret-file" | "secret-in-command" | "secret-in-write"; reason: string; path?: string }
 
@@ -451,7 +451,7 @@ function setAtom(set: string, k: number): SetAtom {
   if (end !== -1) {
     const name = set.slice(k + 2, end - 2)
     if (set[k + 1] !== ":" && name.length === 1) return { kind: "char", c: name, end: end - 1 }
-    const known = set[k + 1] === ":" ? POSIX_CLASSES[name] : undefined
+    const known = set[k + 1] === ":" ? own(POSIX_CLASSES, name) : undefined
     return known ? { kind: "class", test: (c) => (c.charCodeAt(0) > 0x7f ? null : known.test(c)), end: end - 1 } : { kind: "invalid", end: end - 1 }
   }
   if (set[k] === "\\" && k + 1 < set.length) return { kind: "char", c: set[k + 1] as string, end: k + 1 }
@@ -1061,7 +1061,7 @@ function readsFiles(head: Word | undefined): boolean {
   if (head === undefined) return false
   if (head.dynamic) return true
   const program = basename(head.text)
-  return READERS.has(program) || program in FILE_READERS || SHELLS.has(program) || program === "eval"
+  return READERS.has(program) || Object.hasOwn(FILE_READERS, program) || SHELLS.has(program) || program === "eval"
 }
 
 const FED_HINT = "name the files directly, or feed it from a find of -name, -path and -type tests"
@@ -1123,7 +1123,7 @@ function specialAssignment(words: Word[]): string | null {
 // given, or run a file they are given. env and export count only when
 // they print the environment.
 function isReader(program: string): boolean {
-  return (READERS.has(program) && program !== "env" && program !== "export") || program in FILE_READERS || SHELLS.has(program)
+  return (READERS.has(program) && program !== "env" && program !== "export") || Object.hasOwn(FILE_READERS, program) || SHELLS.has(program)
 }
 
 function refuse(ctx: Context, reason: string): void {
@@ -1643,7 +1643,7 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
     return
   }
   if (program === "grep" || program === "egrep" || program === "fgrep") {
-    const parsed = parseOptions(OPTION_SPECS[program] as NonNullable<(typeof OPTION_SPECS)[string]>, args)
+    const parsed = parseOptions(own(OPTION_SPECS, program) as NonNullable<(typeof OPTION_SPECS)[string]>, args)
     if (parsed.unknown) outside(ctx, `\`${program} ${parsed.unknown}\``)
     for (const file of parsed.files) if (judgeRead(ctx, state, cwds, `\`${program}\``, file, true)) return
     const grep = grepArgs(args)
@@ -1695,7 +1695,7 @@ const INTERPRETER_LONG_VALUE = new Set(["--require", "--import", "--loader", "--
 const OPEN_FILE_READERS = new Set(["bat", "less", "more", "xxd", "source", "."])
 
 function readers(ctx: Context, state: State, cwds: Cwds, name: string, program: string, head: Word, args: Word[]): void {
-  const spec = OPTION_SPECS[program]
+  const spec = own(OPTION_SPECS, program)
   if (spec) {
     const parsed = parseOptions(spec, args)
     if (parsed.unknown) outside(ctx, `\`${program} ${parsed.unknown}\``)
@@ -1709,7 +1709,7 @@ function readers(ctx: Context, state: State, cwds: Cwds, name: string, program: 
     }
     return
   }
-  const interpreter = INTERPRETERS[program]
+  const interpreter = own(INTERPRETERS, program)
   if (interpreter) {
     let i = 0
     let script = true
@@ -1890,7 +1890,7 @@ function anyWordReads(ctx: Context): boolean {
       const text = word.text
       if (ctx.arithmetic && (text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).some((name) => KEY_VARIABLE.test(name))) return true
       const program = basename(text)
-      if (isReader(program) || program in INTERPRETERS || program === "printenv") return true
+      if (isReader(program) || own(INTERPRETERS, program) !== undefined || program === "printenv") return true
       if (PRINTERS.has(program)) {
         if (++printers > PRINTER_CHECKS) return true
         if (environmentRead(words.slice(i), ctx.command) !== null) return true

@@ -29,6 +29,12 @@ export type OptionSpec = {
 
 export type ParsedOptions = { operands: Word[]; files: Word[]; unknown: string | null; programGiven: boolean; target: boolean }
 
+// A record's own entry for a key the command line chose: never one it
+// inherits from Object.prototype (`--constructor`, `toString`).
+export function own<T>(record: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined
+}
+
 function arities(letters: string, arity: Arity): Record<string, Arity> {
   return Object.fromEntries([...letters].map((c) => [c, arity]))
 }
@@ -153,7 +159,7 @@ export function parseOptions(spec: OptionSpec, args: Word[]): ParsedOptions {
     if (text.startsWith("--")) {
       const eq = text.indexOf("=")
       const name = text.slice(2, eq === -1 ? undefined : eq)
-      const arity = spec.long[name]
+      const arity = own(spec.long, name)
       if (arity === undefined) {
         out.unknown ??= `--${name}`
         continue
@@ -176,7 +182,7 @@ export function parseOptions(spec: OptionSpec, args: Word[]): ParsedOptions {
     }
     for (let j = 1; j < text.length; j++) {
       const flag = text[j] as string
-      const arity = spec.short[flag]
+      const arity = own(spec.short, flag)
       if (arity === undefined) {
         out.unknown ??= `-${flag}`
         break

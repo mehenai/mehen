@@ -1092,6 +1092,10 @@ describe("sixth review: reproductions", () => {
     for (const command of ["grep -r --include='.e[[:digit:]]v' x .", "grep -r --include='*.[[:alpha:]]d' x ."]) none("proj", command)
   })
 
+  test("names from the command line are looked up only among a table's own entries, never Object.prototype's", () => {
+    for (const command of ["grep -r --exclude='.e[[:constructor:]]v' x .", "grep -r --include='.e[[:toString:]]v' x .", "cat --constructor .env", "cat --toString .env", "grep --__proto__ x .env", "sort --hasOwnProperty .env"]) expect(refused("proj", command)).toEqual(yes(command))
+  })
+
   test("a range end may be a collating symbol, as fnmatch reads it", () => {
     for (const command of ["grep -r --include='.e[a-[.z.]]v' x .", "grep -r --include='.e[[.a.]-z]v' x .", "grep -r --exclude='.e[[.a.]-m]v' x .", "grep -r --include='.e[[:alpha:]-z]v' x ."]) expect(refused("proj", command)).toEqual(yes(command))
     for (const command of ["grep -r --exclude='.e[[.a.]-z]v' x .", "cat .e[a-]v"]) none("proj", command)
