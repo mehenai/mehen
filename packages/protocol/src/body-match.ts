@@ -4,7 +4,12 @@
 //   - "graphql-mutation" goes on deny and approve rules and matches anything
 //     it cannot prove is a plain query, so the rule still applies;
 //   - "graphql-query" is the only matcher an allow rule may carry, and it
-//     matches only a request it can prove is a single plain query.
+//     matches only a request it can prove is a single plain query;
+//   - the JSON field matchers ("json-remote-mcp", "json-webhook",
+//     "json-media-export") go on
+//     deny and approve rules and match a body that is not one strict JSON
+//     object, or that names a field the matcher lists (JSON_FIELD_MATCHERS),
+//     so an allow on the same route applies only to bodies proved not to.
 // See ruleMatches in binding.ts for how a rule uses them.
 // graphqlMutationRootFields, at the end, is the stricter proof a standing
 // rule (policy-rules.ts) needs: the root fields of exactly one mutation and
@@ -12,7 +17,7 @@
 //
 // No dependencies, so the browser bundle and the CLI can use it.
 
-export const BODY_MATCHERS = ["graphql-mutation", "graphql-query"] as const
+export const BODY_MATCHERS = ["graphql-mutation", "graphql-query", "json-remote-mcp", "json-webhook", "json-media-export"] as const
 
 export type BodyMatcher = (typeof BODY_MATCHERS)[number]
 
@@ -29,7 +34,72 @@ export function bodyMatches(matcher: BodyMatcher, body: Uint8Array | null, searc
       return search !== "" || graphqlMayMutate(body)
     case "graphql-query":
       return search === "" && graphqlIsQuery(body)
+    case "json-remote-mcp":
+    case "json-webhook":
+    case "json-media-export":
+      return jsonNamesField(matcher, body)
   }
+}
+
+// The fields each JSON field matcher looks for, in a body already read as
+// one JSON object. Keys compare without regard to case, since some JSON
+// decoders (Go's encoding/json among them) match a key to a field that way.
+type JsonFieldMatcher = Extract<BodyMatcher, `json-${string}`>
+type JsonObject = Record<string, unknown>
+const JSON_FIELD_DEPTH = 64
+
+const keyIs = (key: string, name: string): boolean => key.toLowerCase() === name
+
+// An object anywhere in the value, at most JSON_FIELD_DEPTH deep, for which
+// the test holds; anything deeper counts as holding it.
+function someObject(value: unknown, test: (object: JsonObject) => boolean, depth = 0): boolean {
+  if (depth > JSON_FIELD_DEPTH) return true
+  if (Array.isArray(value)) return value.some((v) => someObject(v, test, depth + 1))
+  if (typeof value !== "object" || value === null) return false
+  const object = value as JsonObject
+  return test(object) || Object.values(object).some((v) => someObject(v, test, depth + 1))
+}
+
+const JSON_FIELD_MATCHERS: Record<JsonFieldMatcher, (body: JsonObject) => boolean> = {
+  // A remote MCP server the provider would call itself, with whatever the
+  // request hands it: any object, at any depth (a batch nests whole
+  // requests), whose "type" is "mcp" or that has a "server_url".
+  "json-remote-mcp": (body) =>
+    someObject(body, (object) => Object.entries(object).some(([key, value]) => (keyIs(key, "type") && typeof value === "string" && value.toLowerCase() === "mcp") || keyIs(key, "server_url"))),
+  // A URL the provider would send the result to: a top-level "webhook".
+  "json-webhook": (body) => Object.keys(body).some((key) => keyIs(key, "webhook")),
+  // Generated media leaving the provider's private storage, at any depth (a
+  // batch nests whole requests): a "storage_options" that publishes it at a
+  // permanent unauthenticated URL ("public_url" anything but false), or an
+  // "output" that has the provider upload it to a caller's URL
+  // ("upload_url" or "upload_urls", whatever the value). Either key in a
+  // shape this cannot read counts too: a "storage_options" that is not an
+  // object, or an "output" that is not an object and not a string (a
+  // function call's output is a string and names no destination).
+  "json-media-export": (body) =>
+    someObject(body, (object) =>
+      Object.entries(object).some(([key, value]) => {
+        const readable = typeof value === "object" && value !== null && !Array.isArray(value)
+        if (keyIs(key, "storage_options")) return !readable || Object.entries(value as JsonObject).some(([k, v]) => keyIs(k, "public_url") && v !== false)
+        if (keyIs(key, "output")) return typeof value !== "string" && (!readable || Object.keys(value as JsonObject).some((k) => keyIs(k, "upload_url") || keyIs(k, "upload_urls")))
+        return false
+      }),
+    ),
+}
+
+// True unless the body is one strict JSON object (UTF-8, no byte order
+// mark, no repeated key) that names none of the matcher's fields.
+function jsonNamesField(matcher: JsonFieldMatcher, body: Uint8Array | null): boolean {
+  if (body === null || body.length === 0) return true
+  let text: string
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body)
+  } catch {
+    return true
+  }
+  const parsed = parseJsonStrictly(text)
+  if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) return true
+  return JSON_FIELD_MATCHERS[matcher](parsed.value as JsonObject)
 }
 
 // JSON.parse, but a document with a repeated key in any object is refused:

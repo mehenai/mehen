@@ -32,6 +32,7 @@ export const hetznerCloud: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "HCLOUD_TOKEN",
   check: { method: "GET", path: "/v1/locations" },
   fields: { key: { label: "API token" } },
   setup: {

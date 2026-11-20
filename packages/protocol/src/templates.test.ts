@@ -6,6 +6,7 @@ import { describe, expect, it } from "bun:test"
 import { type BindingInput, PolicySchema, type PolicyInput } from "./api.ts"
 import { type Binding, type Policy, type RuleAction, checkBinding, evaluatePolicy, parseDestination, validHostPattern } from "./binding.ts"
 import { resolvePolicyRequest } from "./policy-safety.ts"
+import { blanketReadAllows } from "../test/template-policy.ts"
 import { isReservedHeader } from "./headers.ts"
 import { secretPrefix } from "./placeholder.ts"
 import { ClientSetupStepSchema } from "./platform.ts"
@@ -207,8 +208,11 @@ describe("every template and provider, checked the same way", () => {
           const path = samplePath(pattern)
           for (const method of rule.action === "allow" ? methods.slice(0, 1) : methods) {
             const request = `${s.id}: ${method} ${path}`
+            // An allowed write is sent with an empty JSON object, which a
+            // fail-closed JSON field matcher on the same route lets by.
+            const body = rule.action === "allow" && !READS.includes(method.toUpperCase()) ? {} : undefined
             expect({ request, inBinding: inBinding(s, method, path) }).toEqual({ request, inBinding: true })
-            expect({ request, action: decide(s.policy, method, urlOf(s, path)).action }).toEqual({ request, action: rule.action })
+            expect({ request, action: decide(s.policy, method, urlOf(s, path), body).action }).toEqual({ request, action: rule.action })
           }
         }
       }
@@ -245,6 +249,15 @@ describe("every template and provider, checked the same way", () => {
         expect({ id: t.id, field: name, literal, declared }).toEqual({ id: t.id, field: name, literal, declared: true })
       }
     }
+  })
+
+  it("names a default environment variable only for a credential the relay sends, as an upper-case shell name", () => {
+    for (const t of Object.values(TEMPLATES)) {
+      if (t.defaultEnvVar === undefined) continue
+      expect({ id: t.id, name: t.defaultEnvVar, valid: /^[A-Z][A-Z0-9_]{1,63}$/.test(t.defaultEnvVar) }).toEqual({ id: t.id, name: t.defaultEnvVar, valid: true })
+      expect({ id: t.id, client: t.kind === "oauth-client", injects: t.injection !== null }).toEqual({ id: t.id, client: false, injects: true })
+    }
+    expect([TEMPLATES.openai?.defaultEnvVar, TEMPLATES.anthropic?.defaultEnvVar, TEMPLATES["github-pat"]?.defaultEnvVar, TEMPLATES.stripe?.defaultEnvVar]).toEqual(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "STRIPE_API_KEY"])
   })
 
   it("keeps every placeholder template's prefixes in the placeholder list, so a placeholder has the shape an SDK checks", () => {
@@ -284,6 +297,23 @@ describe("every template policy", () => {
       expect({ id, default: policy.default }).toEqual({ id, default: "approve" })
       for (const method of WRITES) expect({ id, method, action: decide(policy, method, url).action }).toEqual({ id, method, action: "approve" })
     }
+  })
+
+  // Reads by allowlist: these templates' APIs have reads that hand back
+  // tokens, passwords and signing secrets, and the relay lets a base-allowed
+  // read past generic-only holds, so a blanket read allow leaks every one a
+  // template forgets to name.
+  it("allows reads only on named routes in huggingface, replicate, deepseek, xai, supabase, digitalocean, railway, render, upstash and planetscale", () => {
+    for (const id of ["huggingface", "replicate", "deepseek", "xai", "supabase", "digitalocean", "railway", "render", "upstash", "planetscale"]) {
+      const template = getTemplate(id)
+      if (!template) throw new Error(id)
+      expect({ id, blanket: blanketReadAllows(template) }).toEqual({ id, blanket: [] })
+    }
+    expect(blanketReadAllows(getTemplate("openai")!)).toEqual(["reads"])
+  })
+
+  it("names OpenRouter's documented key variable", () => {
+    expect(getTemplate("openrouter")?.defaultEnvVar).toBe("OPENROUTER_API_KEY")
   })
 
   it("no template or provider puts its credential into a reserved header, or a header map", () => {

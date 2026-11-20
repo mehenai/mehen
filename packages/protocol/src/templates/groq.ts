@@ -36,6 +36,7 @@ export const groq: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "GROQ_API_KEY",
   check: { method: "GET", path: "/openai/v1/models" },
   fields: { key: { label: "API key", pattern: "^gsk_" } },
   prefixes: ["gsk_"],

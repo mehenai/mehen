@@ -21,6 +21,7 @@ export const firecrawl: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "FIRECRAWL_API_KEY",
   fields: { key: { label: "API key", pattern: "^fc-" } },
   prefixes: ["fc-"],
 }

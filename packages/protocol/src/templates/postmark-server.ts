@@ -25,5 +25,6 @@ export const postmarkServer: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "POSTMARK_SERVER_TOKEN",
   fields: { key: { label: "Server API token" } },
 }

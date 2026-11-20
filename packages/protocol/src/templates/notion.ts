@@ -29,6 +29,7 @@ export const notion: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "NOTION_TOKEN",
   check: { method: "GET", path: "/v1/users/me", headers: [["Notion-Version", "2022-06-28"]] },
   fields: { key: { label: "Internal integration secret", pattern: "^(ntn_|secret_)" } },
   prefixes: ["ntn_", "secret_"],

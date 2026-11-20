@@ -59,7 +59,7 @@ describe("mehen templates", () => {
     expect(result.code).toBe(EXIT.ok)
     const out = json(result) as {
       categories: { id: string; title: string }[]
-      templates: { id: string; category: string; policySummary: unknown }[]
+      templates: { id: string; category: string; defaultEnvVar: string | null; policySummary: unknown }[]
       oauthProviders: { id: string; category: string; policy: unknown }[]
       redirectUri: string
     }
@@ -69,6 +69,9 @@ describe("mehen templates", () => {
     expect(out.oauthProviders.map((p) => p.id)).toEqual(Object.keys(OAUTH_PROVIDERS))
     expect(out.oauthProviders.find((p) => p.id === "google-gmail")?.category).toBe("mail")
     expect(out.templates[0]?.policySummary).toEqual(templateSummary(TEMPLATES.openai?.policy as never))
+    expect(out.templates.map((t) => t.defaultEnvVar)).toEqual(Object.values(TEMPLATES).map((t) => t.defaultEnvVar ?? null))
+    expect(out.templates.find((t) => t.id === "openai")?.defaultEnvVar).toBe("OPENAI_API_KEY")
+    expect(out.templates.find((t) => t.id === "google-oauth-client")?.defaultEnvVar).toBeNull()
     expect(out.redirectUri).toBe(`${vault.url}/oauth/callback`)
   })
 
@@ -104,9 +107,10 @@ describe("mehen templates", () => {
     expect(result.stdout).toContain("  needs approval:    anything else")
     expect(result.stdout).toContain("  refused:           admin API")
     expect(result.stdout).toContain("  injection:         Authorization: Bearer {key}")
+    expect(result.stdout).toContain("  env variable:      OPENAI_API_KEY")
     expect(result.stdout).not.toContain("redirect URI")
     const asJson = json(await runJv(["templates", "openai", "--json"], env))
-    expect(asJson).toMatchObject({ type: "template", id: "openai", kind: "api-key", policySummary: { allowed: ["reads", "model calls and the data they use"], approve: [], deny: ["admin API"], rest: "approve" } })
+    expect(asJson).toMatchObject({ type: "template", id: "openai", kind: "api-key", defaultEnvVar: "OPENAI_API_KEY", policySummary: { allowed: ["reads", "model calls and the data they use"], approve: [], deny: ["admin API"], rest: "approve" } })
   })
 
   test("an OAuth client template shows the redirect URI and an allow-everything policy reads as anything", async () => {

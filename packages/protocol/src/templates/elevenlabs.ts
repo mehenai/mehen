@@ -50,6 +50,7 @@ export const elevenlabs: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "ELEVENLABS_API_KEY",
   check: { method: "GET", path: "/v1/user" },
   fields: { key: { label: "API key" } },
 }

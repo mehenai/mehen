@@ -32,6 +32,9 @@ const REST: Record<PolicyInput["default"], PolicySummary["rest"]> = { allow: "al
 const BODY_WORDS: Record<NonNullable<PolicyRule["body"]>, string> = {
   "graphql-query": "GraphQL queries only",
   "graphql-mutation": "GraphQL that may change something",
+  "json-remote-mcp": "requests that name a remote MCP server, or cannot be read",
+  "json-webhook": "requests that name a webhook, or cannot be read",
+  "json-media-export": "requests that publish their output or upload it to a URL they name, or cannot be read",
 }
 
 // What a rule matches, in words: "DELETE on /v1/items/*, /v1/items",
