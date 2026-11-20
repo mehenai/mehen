@@ -121,7 +121,7 @@ describe("workspace project and credential pages through real dispatch", () => {
     // Rehome into the project, then delete, each through its preparation.
     const to: CredentialHome = { kind: "project", project: f.platform.id }
     // The page binds the stable id and dependency revision it showed.
-    const shown = await body<{ id: string; version: number; configRevision: number; dependencyRevision: number }>(await f.request(`/api/w/${WS}/items/shared-key`, f.alex))
+    const shown = await body<{ id: string; kind: string; version: number; configRevision: number; dependencyRevision: number }>(await f.request(`/api/w/${WS}/items/shared-key`, f.alex))
     const rehome = itemRehomeAction(shown, { kind: "workspace" }, to)
     const moved = await body<{ home: CredentialHome }>(await uiSigned(f, f.alex, f.work, { path: "/items/shared-key/action", body: { action: "rehome", home: to } }, (a) => sameAction(rehome, a), { path: "/items/shared-key/rehome", body: { home: to } }))
     expect(moved.home).toEqual(to)
@@ -147,7 +147,7 @@ describe("workspace project and credential pages through real dispatch", () => {
     expect((await page(f, `/w/${WS}/items/kept-key`, f.alex)).text).not.toContain('data-region="previous"')
     const rotation = rotationStart("kept-key", { kind: "workspace" })
     await fillIntake(f, f.alex, (await body<{ intake: string }>(await f.request(`/api/w/${WS}${rotation.path}`, f.alex, rotation.body), 201)).intake, { kind: "workspace" })
-    const shown = await body<{ id: string; version: number; configRevision: number; dependencyRevision: number; previous: { version: number } | null }>(await f.request(`/api/w/${WS}/items/kept-key`, f.alex))
+    const shown = await body<{ id: string; kind: string; version: number; configRevision: number; dependencyRevision: number; previous: { version: number } | null }>(await f.request(`/api/w/${WS}/items/kept-key`, f.alex))
     expect(shown).toMatchObject({ version: 2, previous: { version: 1 } })
     const itemPage = await page(f, `/w/${WS}/items/kept-key`, f.alex)
     expect(itemPage.text).toMatch(/Previous value kept until <time[^>]*>[^<]+<\/time>, replaced by Alex on <time[^>]*>[^<]+<\/time>, fields: <code>key<\/code>\./)
@@ -173,7 +173,7 @@ describe("workspace project and credential pages through real dispatch", () => {
     const itemPage = await page(f, `/w/${WS}/items/web-key`, f.alex)
     expect(itemPage.text).toContain('data-region="in-web-pages"')
     expect(itemPage.text).toContain('data-action="save-web-pages"')
-    const shown = await body<{ id: string; version: number; configRevision: number; ceiling: string; browser?: unknown }>(await f.request(`/api/w/${WS}/items/web-key`, f.alex))
+    const shown = await body<{ id: string; kind: string; version: number; configRevision: number; ceiling: string; browser?: unknown }>(await f.request(`/api/w/${WS}/items/web-key`, f.alex))
     expect(shown.browser).toBeUndefined()
     const change = webPagesChange({ ceiling: shown.ceiling, signinOrigins: [], typeInto: [] }, { ceiling: shown.ceiling, signinOrigins: [], typeInto: ["https://dash.example.net"] })
     expect(change).toEqual({ browser: { signinOrigins: [], typeInto: ["https://dash.example.net"] } })

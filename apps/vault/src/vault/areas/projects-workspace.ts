@@ -87,7 +87,7 @@ export function approvedUseSnapshot(ctx: VaultContext, state: AccessState, princ
 
 // noAsk: where no approved grant matches and a new ask would be opened, the
 // refusal to throw instead (the approval dial's Let it work); nothing is asked.
-export function prepareApprovedUse(ctx: VaultContext, state: AccessState, caller: { principal: AccessPrincipal; workspace: WorkspaceRef; presentation: import("../services.ts").ApprovalPresentation; mode?: ApprovedUseMode; batch: ApprovalAskBatch; noAsk?: () => VaultError }, item: CheckedCredential, context: { project: string; env: string } | null, subject: import("@mehen/protocol/api").ApprovalSubject, approvalId: string | null, now: number): { kind: "approved" | "required"; snapshot: ProtectedSnapshot; approvalId: string; deciders: string[] } {
+export function prepareApprovedUse(ctx: VaultContext, state: AccessState, caller: { principal: AccessPrincipal; workspace: WorkspaceRef; presentation: import("../services.ts").ApprovalPresentation; mode?: ApprovedUseMode; batch: ApprovalAskBatch; session?: string | null; noAsk?: () => VaultError }, item: CheckedCredential, context: { project: string; env: string } | null, subject: import("@mehen/protocol/api").ApprovalSubject, approvalId: string | null, now: number): { kind: "approved" | "required"; snapshot: ProtectedSnapshot; approvalId: string; deciders: string[] } {
   const { snapshot, ask } = approvedUseSnapshot(ctx, state, caller.principal, item, context, now, caller.mode)
   snapshot.requestDigest = digestOf({ subject, presentation: caller.presentation })
   if (!ask) throw new VaultError("bad_request", "This credential needs an approval subject.")
@@ -102,7 +102,7 @@ export function prepareApprovedUse(ctx: VaultContext, state: AccessState, caller
     const checked = approvedUseSnapshot(ctx, live, caller.principal, item, context, ctx.now(), caller.mode)
     checked.snapshot.requestDigest = snapshot.requestDigest
     if (canonicalJson(checked.snapshot) !== canonicalJson(snapshot)) throw new VaultError("conflict", "Access changed; ask for a new approval.")
-    return requestWorkspaceApproval(ctx, live, ask, caller.workspace, subject, caller.presentation, snapshot, ctx.now(), caller.batch)
+    return requestWorkspaceApproval(ctx, live, ask, caller.workspace, subject, caller.presentation, snapshot, ctx.now(), caller.batch, caller.session ?? null)
   })
   const device = state.devices.find((d) => d.id === ask.device)
   const guest = device?.owner.kind === "member" && state.members.some((m) => m.id === device.owner.id && m.standing.effectiveRole === "guest")

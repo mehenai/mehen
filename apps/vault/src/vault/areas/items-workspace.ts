@@ -1,15 +1,15 @@
 // Credential storage and evaluator adapters. Prepared ciphertext is never
 // authority: callers commit it only inside their final synchronous transaction.
 import { z } from "zod"
-import { CredentialHomeSchema, KINDS, isItemKind, modeAllowed, NAME_UNAVAILABLE, canonicalJson, nameRateRefusal, type CredentialHome, type ItemPreviousVersion, type ItemUseContext, type WorkspaceItemDescription, type PrivateEvent, type CredentialCreationContext, type PushRecordView } from "@mehen/protocol"
-import { Slug, KindSchema, Tag } from "@mehen/protocol/api"
+import { CredentialHomeSchema, KINDS, isItemKind, modeAllowed, settingsPinnedVersion, NAME_UNAVAILABLE, canonicalJson, nameRateRefusal, type CredentialHome, type ItemPreviousVersion, type ItemUseContext, type WorkspaceItemDescription, type PrivateEvent, type CredentialCreationContext, type PushRecordView } from "@mehen/protocol"
+import { Slug, KindSchema, Tag, type ItemConnection } from "@mehen/protocol/api"
 import { VaultError } from "../../http.ts"
 import type { AccessAction, AccessPrincipal, AccessState, AccessTarget } from "../access.ts"
 import { can } from "../access.ts"
 import { blob, one, rows, randomId, type VaultContext, type Area } from "../core.ts"
 import {onCredentialRemoved} from "./projects-workspace.ts"
 import { closeProposalsNaming } from "./mandates-workspace.ts"
-import { compatibleClientHome } from "./oauth-workspace.ts"
+import { compatibleClientHome, endClientConnects, forgetClientRejection, isClientRejectedReason } from "./oauth-workspace.ts"
 import { auditPrivateEvent } from "../audit.ts"
 import { FILL_MANAGED_REFUSAL, refuseBrowserChangeUnlessOn, refuseFillUnlessOn } from "../fill-unavailable.ts"
 import { managedPolicyView } from "../managed-platform.ts"
@@ -220,6 +220,13 @@ export function storeCredential(ctx: VaultContext, prepared: PreparedCredential,
   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'active',1,0,?,?,?,?,?,?,0)
   ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,provider=excluded.provider,account=excluded.account,account_verified=excluded.account_verified,tags=excluded.tags,ceiling=excluded.ceiling,binding=excluded.binding,policy=excluded.policy,injection=excluded.injection,public_fields=excluded.public_fields,status='active',version=items.version+1,config_rev=items.config_rev+?,description=excluded.description,updated_at=excluded.updated_at,rotated_at=excluded.rotated_at`, id, input.slug, input.kind, input.provider, input.account, input.accountVerified ? 1 : 0, JSON.stringify(input.tags), input.ceiling, JSON.stringify(input.binding), JSON.stringify(input.policy), input.injection ? JSON.stringify(input.injection) : null, JSON.stringify(input.publicFields), input.description, expected?.createdAt ?? now, now, expected ? now : null, input.home.kind, input.home.kind === "member" ? input.home.member : input.home.kind === "project" ? input.home.project : null, configChange ? 1 : 0)
   storeSecrets(ctx, id, prepared.secrets)
+  // A replaced value clears why it was flagged (a rejected OAuth client's
+  // secret, a member who left), as a single-tenant replace does.
+  if (expected && action === "item.rotate") {
+    ctx.sql.exec("UPDATE items SET review_reason=NULL,review_at=NULL WHERE id=?", id)
+    forgetClientRejection(ctx, id)
+    endClientConnects(ctx, id, "replaced")
+  }
   const stored = checkedCredential(ctx, input.slug) as CheckedCredential
   credentialAudit(ctx, principal, stored, action, action === "oauth.refresh" ? "maintained" : "allowed", {}, null, session)
   const member = principal.kind === "member" ? principal.memberId : credentialAccessState(ctx).devices.find((d) => d.id === principal.deviceId)?.owner
@@ -245,7 +252,24 @@ export function credentialAudit(ctx: VaultContext, principal: AccessPrincipal, i
 // under, computed now (managed-platform.ts).
 // describeItem never sets a posture; the describe op adds the one its
 // reader may know.
-export function describeCredential(ctx: VaultContext, item: CheckedCredential): WorkspaceItemDescription { const { posture: _none, ...described } = describeItem(ctx, managedPolicyView(ctx, item)); return { ...described, home: item.home }; }
+// A connection's OAuth client is named only to the reader passed (by
+// describe and the connect and intake statuses), and only when that reader
+// may see the client.
+export function describeCredential(ctx: VaultContext, item: CheckedCredential, reader?: ConnectionReader): WorkspaceItemDescription { const { posture: _none, ...described } = describeItem(ctx, managedPolicyView(ctx, item)); return { ...described, home: item.home, ...connectionOf(ctx, item, reader) }; }
+
+type ConnectionReader = { principal: AccessPrincipal; invocation: WorkspaceInvocationContext }
+
+// ItemDescription.connection: what an OAuth connection may do, from what the
+// provider granted it.
+function connectionOf(ctx: VaultContext, item: CheckedCredential, reader: ConnectionReader | undefined): { connection?: ItemConnection } {
+  if (item.kind !== "oauth-connection") return {}
+  const row = one(ctx.sql.exec<{ payload: string; expires_at: number | null; client_id: string | null; client: string | null }>("SELECT c.payload AS payload,c.expires_at AS expires_at,i.id AS client_id,i.slug AS client FROM workspace_oauth_connections c LEFT JOIN items i ON i.id=c.client WHERE c.item=?", item.id))
+  if (!row) return {}
+  const basis = JSON.parse(row.payload) as { scopes?: string[]; retryAt?: number }
+  const seesClient = reader !== undefined && row.client_id !== null && can(credentialAccessState(ctx, reader.invocation), reader.principal, { type: "item.read" }, { credential: row.client_id }, ctx.now()).allowed
+  // In a managed workspace only the platform reconnects it.
+  return { connection: { scopes: basis.scopes ?? [], expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(), refreshing: basis.retryAt !== undefined && basis.retryAt > ctx.now(), ...(seesClient && row.client !== null ? { client: row.client } : {}), ...(managedSetting(ctx) !== null ? { reconnect: "platform" as const } : {}) } }
+}
 
 // ItemDescription.pushes: where this item was put, in a workspace with
 // pushes on or once it has been pushed; absent otherwise.
@@ -291,8 +315,11 @@ export function credentialDependencies(ctx: VaultContext, item: string) { return
 }>("SELECT * FROM credential_dependencies WHERE client=? OR connection=?", item, item)); }
 
 export function invalidateCredentialDependencies(ctx: VaultContext, item: string): void {
+  // First, so a connect through this client records why it ended.
+  endClientConnects(ctx, item, "removed")
   ctx.sql.exec("UPDATE workspace_credential_requests SET status='cancelled' WHERE client_id=? OR target_id=?", item, item)
   ctx.sql.exec("DELETE FROM workspace_oauth_connections WHERE item=?", item)
+  forgetClientRejection(ctx, item)
   ctx.unschedule("oauth", `workspace-refresh:${item}`)
   for (const edge of credentialDependencies(ctx, item)) {
     if (edge.client === item) {
@@ -316,6 +343,8 @@ export function rehomeCredentialDependencies(ctx: VaultContext, item: CheckedCre
     if (!clientHome || !connectionHome || !compatibleClientHome(clientHome, connectionHome))
       throw new VaultError("conflict", "This home is incompatible with a credential dependency.")
   }
+  // First, so a connect through this client records why it ended.
+  endClientConnects(ctx, item.id, "moved")
   ctx.sql.exec("UPDATE workspace_credential_requests SET status='cancelled' WHERE client_id=? OR target_id=?", item.id, item.id)
   for (const edge of edges) {
     const connection = one(ctx.sql.exec<{
@@ -429,7 +458,7 @@ export const workspaceItemOps = {
       }
       refuseBrowserChangeUnlessOn(ctx, req.change?.browser)
       refuseFillChangeIfManaged(ctx, req.change ?? {})
-      const digest = await stepUpDigest({ change: req.change ?? {}, version: item.version, configRevision: item.configRev })
+      const digest = await stepUpDigest({ change: req.change ?? {}, version: settingsPinnedVersion(item.kind, item.version), configRevision: item.configRev })
       assertCredentialCurrent(ctx, item)
       assertItemRight(ctx, invocation, { type: "credential.update" }, { credential: item.id })
       return { type: "item.update", item: item.id, digest }
@@ -458,7 +487,7 @@ export const workspaceItemOps = {
       // it signs only an action about that credential and no replacement.
       if (p.kind !== "member") {
         const posture = p.kind === "device" ? machinePosture(ctx, p, item) : undefined
-        return { ...describeCredential(ctx, item), ...pushesOf(ctx, item, p, invocation), ...(posture ? { posture } : {}) }
+        return { ...describeCredential(ctx, item, { principal: p, invocation }), ...pushesOf(ctx, item, p, invocation), ...(posture ? { posture } : {}) }
       }
       // Its OAuth client or connections, as far as this person may see them;
       // others are only counted as present, never named.
@@ -474,7 +503,7 @@ export const workspaceItemOps = {
       // The pages a human added for fill, once there are any: a person's only.
       const browser = item.browser !== null ? { browser: item.browser } : {}
       const posture = personPosture(ctx, p, item, invocation)
-      return { ...describeCredential(ctx, item), ...pushesOf(ctx, item, p, invocation), ...browser, previous: previousVersion(ctx, item.id), pushable: itemPushable(ctx, item.id), id: item.id, configRevision: item.configRev, dependencyRevision: item.dependencyRevision, dependencies, hiddenDependencies, ...(posture ? { posture } : {}) }
+      return { ...describeCredential(ctx, item, { principal: p, invocation }), ...pushesOf(ctx, item, p, invocation), ...browser, previous: previousVersion(ctx, item.id), pushable: itemPushable(ctx, item.id), id: item.id, configRevision: item.configRev, dependencyRevision: item.dependencyRevision, dependencies, hiddenDependencies, ...(posture ? { posture } : {}) }
     } },
   // Restoring swaps: the kept fields become current (a new version), and the
   // fields they replace become the kept set, so a restore can be undone.
@@ -513,6 +542,12 @@ export const workspaceItemOps = {
           ctx.sql.exec("INSERT INTO item_secrets (item, name, root_version, wrapped_dek, ciphertext, length, prefix, fingerprint, fp_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", live.id, k.name, k.root_version, k.wrapped_dek, k.ciphertext, k.length, k.prefix, fresh ?? k.fingerprint, fresh === undefined ? k.fp_version : ctx.rootVersion)
         }
         ctx.sql.exec("UPDATE items SET status='active', version=version+1, config_rev=config_rev+1, updated_at=?, rotated_at=? WHERE id=?", now, now, live.id)
+        // A restore replaces the secret too, so it clears a rejected OAuth
+        // client's reason, as a rotation does.
+        if (live.review !== null && isClientRejectedReason(live.review.reason))
+          ctx.sql.exec("UPDATE items SET review_reason=NULL,review_at=NULL WHERE id=?", live.id)
+        forgetClientRejection(ctx, live.id)
+        endClientConnects(ctx, live.id, "replaced")
         // Whoever had the restored value has the new version: a member who
         // leaves still flags it for review (offboardCredentials), and one who
         // has already left flags it now, as their removal would have.
@@ -537,7 +572,7 @@ export const workspaceItemOps = {
       }
       refuseBrowserChangeUnlessOn(ctx, change.browser)
       refuseFillChangeIfManaged(ctx, change)
-      const digest = await stepUpDigest({ change, version: before.version, configRevision: before.configRev })
+      const digest = await stepUpDigest({ change, version: settingsPinnedVersion(before.kind, before.version), configRevision: before.configRev })
       return ctx.storage.transactionSync(() => {
         const live = assertCredentialCurrent(ctx, before)
         const decision = assertItemRight(ctx, invocation, { type: "credential.update" }, { credential: live.id })

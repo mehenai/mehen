@@ -13,6 +13,7 @@ import {
   type IntakeCreated,
   type IntakeStatus,
   type ItemDescription,
+  type ItemConnection,
   type ItemDescriptionPosture,
   type ItemList,
   type ItemSummary,
@@ -25,13 +26,14 @@ import {
 import type { PolicyProposalStatus, PolicyRuleProposalStatus } from "@mehen/protocol/policy-mode"
 import { type PushDestination, type PushProvider, type PushRecordView, type PushResult, parsePushDestination, pushDestinationWords } from "@mehen/protocol/push"
 import { type AdoptionStatus, AdoptionStatusSchema } from "@mehen/protocol/adopt"
+import type { CredentialHome } from "@mehen/protocol/workspace"
 import { type Bytes, base64UrlEncode } from "@mehen/protocol/bytes"
 import { KINDS, isItemKind, isSlug } from "@mehen/protocol/kinds"
 import { OAUTH_PROVIDERS, type OAuthProviderTemplate, getOAuthProvider, getTemplate } from "@mehen/protocol/templates"
 import type { z } from "zod"
 import { relativeExpiry } from "./ask.ts"
 import { CliError, usageError } from "./errors.ts"
-import { type VaultApi, VaultApiError } from "./vault-api.ts"
+import { type VaultApi, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 
 export function zodMessage(error: z.ZodError): string {
   return error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message)).join("; ")
@@ -99,7 +101,17 @@ function pickDescription(item: ItemDescription): ItemDescription {
     ...(item.policyFloor !== undefined ? { policyFloor: item.policyFloor } : {}),
     ...(item.posture !== undefined ? { posture: pickPosture(item.posture) } : {}),
     ...(item.pushes !== undefined ? { pushes: item.pushes.map(pickPushRecord) } : {}),
+    ...(item.connection !== undefined ? { connection: pickConnection(item.connection) } : {}),
+    ...(item.home !== undefined ? { home: pickHome(item.home) } : {}),
   }
+}
+
+function pickConnection(connection: ItemConnection): ItemConnection {
+  return { scopes: [...connection.scopes], expiresAt: connection.expiresAt, refreshing: connection.refreshing, ...(connection.client !== undefined ? { client: connection.client } : {}), ...(connection.reconnect === "platform" ? { reconnect: "platform" as const } : {}) }
+}
+
+function pickHome(home: CredentialHome): CredentialHome {
+  return home.kind === "member" ? { kind: "member", member: home.member } : home.kind === "project" ? { kind: "project", project: home.project } : { kind: "workspace" }
 }
 
 // How careful the credential is, as the vault tells this machine: the level,
@@ -698,6 +710,10 @@ export type WaitOptions = {
   signal?: AbortSignal
 }
 
+// A long poll that fails after being held this long was dropped, not
+// refused: the vault answered the connection and then lost it.
+const DROPPED_POLL_MS = 1_000
+
 // The first poll answers at once (so the link's expiry and a settled state
 // show without delay); later ones long-poll. An enrolment status route does
 // not long-poll, so those are spaced by intervalMs.
@@ -721,6 +737,9 @@ export async function waitFor(api: VaultApi, id: string, options: WaitOptions): 
     } catch (error) {
       cancel?.throwIfAborted()
       if (pollTimeout?.aborted) break
+      // A held poll whose connection dropped (an idle timeout at a server or
+      // proxy): poll again, with a proof of its own, never the spent one.
+      if (longPoll && error instanceof VaultNetworkError && Date.now() - started >= DROPPED_POLL_MS && Date.now() < deadline) continue
       throw error
     }
     const result = settle(target.kind, id, value, options.ledger)
@@ -835,6 +854,113 @@ export type UpstreamHead = {
   statusText: string
   item: string | null // Mehen-Item: which item, and which account, acted
   headers: Record<string, string>
+}
+
+// A WWW-Authenticate header's challenges (RFC 7235): each a scheme, then
+// a token68 (with its "=" padding) or auth-params whose values are a token
+// or a quoted string. Text inside a quoted value is never read as a scheme
+// or a parameter.
+type Challenge = { scheme: string; params: Map<string, string> }
+const AUTH_TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+function challengesOf(header: string): Challenge[] {
+  const scheme = new RegExp(`^${AUTH_TOKEN}`), param = new RegExp(`^(${AUTH_TOKEN})\\s*=\\s*`)
+  // name=value, a value being a quoted string or a token: "YIIF==" is not one.
+  const paramWithValue = new RegExp(`^${AUTH_TOKEN}\\s*=\\s*(?:"|${AUTH_TOKEN})`)
+  const token68 = /^[A-Za-z0-9\-._~+/]+=*(?=\s*(,|$))/
+  const challenges: Challenge[] = []
+  let rest = header
+  const skip = (re: RegExp) => { rest = rest.replace(re, "") }
+  while (true) {
+    skip(/^[\s,]+/)
+    const name = scheme.exec(rest)?.[0]
+    if (!name) break
+    rest = rest.slice(name.length)
+    const challenge: Challenge = { scheme: name.toLowerCase(), params: new Map() }
+    challenges.push(challenge)
+    skip(/^\s*/)
+    // A token68 stands alone; anything else that follows the scheme is params.
+    const opaque = token68.exec(rest)?.[0]
+    if (opaque !== undefined && !paramWithValue.test(rest)) {
+      rest = rest.slice(opaque.length)
+      continue
+    }
+    for (let m = paramWithValue.test(rest) ? param.exec(rest) : null; m !== null; m = param.exec(rest)) {
+      rest = rest.slice(m[0].length)
+      let value = ""
+      if (rest.startsWith('"')) {
+        let i = 1
+        for (; i < rest.length && rest[i] !== '"'; i++) value += rest[i] === "\\" && i + 1 < rest.length ? rest[++i] : rest[i]
+        rest = rest.slice(i + 1)
+      } else {
+        value = scheme.exec(rest)?.[0] ?? ""
+        rest = rest.slice(value.length)
+      }
+      challenge.params.set(m[1]!.toLowerCase(), value)
+      // A comma before another name=value continues this challenge; before
+      // anything else, the next challenge begins.
+      skip(/^\s*/)
+      if (!rest.startsWith(",") || !paramWithValue.test(rest.replace(/^[\s,]+/, ""))) break
+      skip(/^[\s,]+/)
+    }
+  }
+  return challenges
+}
+
+// The scopes an upstream's 403 says it needs (RFC 6750: a Bearer challenge
+// whose error is exactly insufficient_scope, whichever Bearer challenge
+// that is), or null when none says the token's scope was too narrow.
+export function insufficientScope(head: Pick<UpstreamHead, "status" | "headers">): string[] | null {
+  if (head.status !== 403) return null
+  const narrow = challengesOf(head.headers["www-authenticate"] ?? "").find((c) => c.scheme === "bearer" && c.params.get("error") === "insufficient_scope")
+  if (narrow === undefined) return null
+  return (narrow.params.get("scope") ?? "").split(/\s+/).filter(Boolean)
+}
+
+// The route an agent takes when the upstream refused the credential itself:
+// a 401 (revoked or expired), or a 403 saying the scope is too narrow. A key
+// is replaced by a rotation; a connection is reconnected, with the scopes
+// the upstream named (a reconnect keeps the ones it holds).
+// Each names the credential's home (and a connection its OAuth client), as
+// a rotation or reconnect must ask for the one it has. A connection only
+// its platform reconnects (a managed workspace's, or a custom provider's),
+// or whose OAuth client the reader may not see, gets no command.
+export function credentialRejectedHint(head: Pick<UpstreamHead, "status" | "headers">, item: Pick<ItemDescription, "slug" | "kind" | "provider" | "home" | "connection"> | null): string | null {
+  if (item === null) return null
+  const scopes = insufficientScope(head)
+  if (head.status !== 401 && scopes === null) return null
+  const slug = shellWord(item.slug), why = "'<why>'"
+  const home = item.home === undefined ? "" : ` ${homeWords(item.home.kind === "member" ? { home: "private" } : item.home.kind === "project" ? { home: "project", project: item.home.project } : { home: "workspace" }).map(shellWord).join(" ")}`
+  if (item.kind === "oauth-connection") {
+    // A managed workspace's connection, or one made with a custom provider
+    // (which mehen connect cannot name), only its platform reconnects.
+    if (item.connection?.reconnect === "platform" || item.provider === null) {
+      if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. The platform reconnects this account; mehen show ${slug} lists the scopes it holds.`
+      return `The service rejected ${item.slug}'s sign-in. The platform reconnects this account.`
+    }
+    // Without its OAuth client, mehen connect would use the provider's
+    // default client rather than the connection's own: the page reconnects it.
+    if (item.connection?.client === undefined) {
+      if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. Ask a human to reconnect it with more from its page in the vault; mehen show ${slug} lists the scopes it holds.`
+      return `The service rejected ${item.slug}'s sign-in. If it was revoked, ask a human to reconnect it from its page in the vault.`
+    }
+    const connect = `mehen connect ${shellWord(item.provider)} --client ${shellWord(item.connection.client)} --name ${slug}`
+    if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. Ask a human to reconnect it with more: ${connect}${scopes.length ? ` --scopes ${shellWord(scopes.join(","))}` : " --scopes <scope>"} --reason ${why}${home}; mehen show ${slug} lists the scopes it holds.`
+    return `The service rejected ${item.slug}'s sign-in. If it was revoked, ask a human to reconnect it: ${connect} --reason ${why}${home}.`
+  }
+  if (scopes !== null) return `The service said ${item.slug} lacks a permission it needs. Ask a human for a credential that has it; replacing ${item.slug}'s value keeps its name: mehen request ${shellWord(item.kind)} --name ${slug} --reason ${why}${home}.`
+  return `The service rejected ${item.slug}. If its value was revoked or expired, ask a human to replace it: mehen request ${shellWord(item.kind)} --name ${slug}${item.provider ? ` --provider ${shellWord(item.provider)}` : ""} --reason ${why}${home}.`
+}
+
+// credentialRejectedHint for a relayed response, reading the item only when
+// the upstream refused it; never for a run, which names no one item.
+export async function rejectedHint(api: VaultApi, head: UpstreamHead, item: string | null, signal?: AbortSignal): Promise<string | null> {
+  if (item === null || (head.status !== 401 && insufficientScope(head) === null)) return null
+  try {
+    const described = pickDescription(await api.request<ItemDescription>("GET", `/v1/items/${encodeURIComponent(item)}`, undefined, signal ? { signal } : {}))
+    return credentialRejectedHint(head, described)
+  } catch {
+    return null
+  }
 }
 
 export function upstreamHead(response: Response): UpstreamHead {

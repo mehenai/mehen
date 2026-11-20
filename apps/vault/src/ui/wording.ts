@@ -444,7 +444,7 @@ export const RULE_COSIGN_WORDS = "A manager of this credential's home must co-si
 export const RULE_PANEL_TITLE = "From now on, without asking you"
 export const RULE_PANEL_LABELS = { credential: "Credential", request: "Request", path: "Path", who: "Who", ttl: "How long", stillAsks: "Still asks", endsSooner: "Ends sooner", context: "Context" } as const
 export const RULE_STILL_ASKS_WORDS = "Anything else on this credential, and any request that sends, pays, shares or deletes"
-export const RULE_ENDS_SOONER_WORDS = "if access changes or this credential is edited"
+export const RULE_ENDS_SOONER_WORDS = "if access changes or this credential is replaced, reconnected or edited"
 export const RULE_ACTING_AS_WORDS = "acting as"
 export const RULE_GRAPHQL_WORDS = { lead: "GraphQL mutation", tail: "only" } as const
 export const RULE_QUERY_WORDS = "With the query parameters"
@@ -511,7 +511,7 @@ export const RULE_NOT_NAMED_WORDS = "Approved once. The vault named no rule, so 
 export const AREA_PANEL_TITLE = "Carry on without asking you"
 export const AREA_PANEL_LABELS = { credential: "Credential", who: "Who", context: "Context", areas: "Areas", ttl: "How long", uses: "Up to", stillAsks: "Still asks", endsSooner: "Ends sooner" } as const
 export const AREA_STILL_ASKS_WORDS = "Deletes, secrets, sending, sharing, payments, and anything outside these areas"
-export const AREA_ENDS_SOONER_WORDS = "once it has been used that many times, if access changes or this credential is edited, or when someone stops it"
+export const AREA_ENDS_SOONER_WORDS = "once it has been used that many times, if access changes or this credential is replaced, reconnected or edited, or when someone stops it"
 // The requests a grant may allow, 50 offered first.
 export const AREA_USES_CHOICES = [25, 50, 100, 200] as const
 export function areaUsesWords(uses: number): string {
@@ -942,7 +942,7 @@ export function auditLine(event: AuditEventInput, ctx: AuditActorContext): Audit
     }
     case "rule.end": {
       const reason = str(d, "reason")
-      const why = reason === "expired" ? " because its time ran out" : reason === "revoked" ? "" : reason === "credential-changed" ? " because the credential changed" : reason === "access-changed" ? " because access changed" : reason === "uses-spent" ? " because it was used as many times as it allows" : reason === "replaced" ? " because a newer one replaced it" : ""
+      const why = reason === "expired" ? " because its time ran out" : reason === "revoked" ? "" : reason === "credential-changed" ? " because the credential was replaced, reconnected or edited" : reason === "access-changed" ? " because access changed" : reason === "uses-spent" ? " because it was used as many times as it allows" : reason === "replaced" ? " because a newer one replaced it" : ""
       const what = str(d, "kind") === "area" ? "task grant " : "rule "
       return line([plain(reason === "revoked" ? ` stopped ${what}` : ` ended ${what}`), ...(target !== null ? [code(target)] : [plain("a standing rule")]), ...using(str(d, "item")), plain(why)])
     }
@@ -1349,7 +1349,7 @@ export function ruleEndedWords(reason: RuleEndedReason): string {
     case "expired": return "Its time ran out."
     case "revoked": return "Someone stopped it."
     case "access-changed": return "It ended because access changed."
-    case "credential-changed": return "It ended because the credential was edited."
+    case "credential-changed": return "It ended because the credential was replaced, reconnected or edited."
     case "uses-spent": return "It was used as many times as it allows."
     case "replaced": return "A newer task grant replaced it."
     default: return "It has ended."

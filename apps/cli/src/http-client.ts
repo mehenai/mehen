@@ -12,7 +12,7 @@ import {
 } from "@mehen/protocol/api"
 import { MANDATE_PROPOSAL_REFUSALS, MandateClassSchema, MandateIdSchema, type MandateProposalRefusal } from "@mehen/protocol/mandate-terms"
 import { POLICY_AREA_REFUSALS, POLICY_RULE_REFUSALS, type PolicyAreaRefusal, type PolicyRuleRefusal } from "@mehen/protocol/policy-mode"
-import { PROOF_HEADER, type ProofSigner, createProof, parseProof } from "@mehen/protocol/proof"
+import { PROOF_HEADER, type ProofSigner, createProof, fetchSignedOnce, parseProof } from "@mehen/protocol/proof"
 import type { WorkspaceEnrolStatus } from "@mehen/protocol/workspace"
 import { z } from "zod"
 import { readMandateCover } from "./mandate-cover.ts"
@@ -174,7 +174,7 @@ export class HttpVaultApi implements VaultApi {
 
   constructor(options: HttpVaultApiOptions) {
     this.options = options
-    this.fetcher = options.fetch ?? ((request) => fetch(request))
+    this.fetcher = options.fetch ?? fetchSignedOnce
   }
 
   private async send(method: Method, path: string, body: string | null, options?: VaultRequestOptions): Promise<Response> {

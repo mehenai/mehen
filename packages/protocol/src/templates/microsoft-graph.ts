@@ -45,7 +45,9 @@ export const microsoftGraph: OAuthProviderTemplate = {
   identity: { from: "id_token", subject: "oid", tenant: "tid", label: "preferred_username" },
   upstream: { baseUrl: "https://graph.microsoft.com/v1.0", binding: { hosts: ["graph.microsoft.com"], paths: ["/v1.0/**", "/beta/**"] }, injection: ACCESS_TOKEN_BEARER },
   // Refresh tokens are replaced on use but the old one keeps working.
-  refresh: { mode: "refresh_token", rotation: "lenient", marginSeconds: 300, terminalErrors: ["invalid_grant"], clientErrors: ["invalid_client", "unauthorized_client"] },
+  // interaction_required, consent_required and login_required: a person
+  // must sign in again (multi-factor, conditional access, new consent).
+  refresh: { mode: "refresh_token", rotation: "lenient", marginSeconds: 300, terminalErrors: ["invalid_grant", "interaction_required", "consent_required", "login_required"], clientErrors: ["invalid_client", "unauthorized_client"] },
   lifetimes: { accessTokenSeconds: 3600, refreshTokenIdleSeconds: 90 * 86_400 },
   defaultPolicy: { default: "approve", rules: [ALLOW_READS] },
   sensitiveEndpoints: [

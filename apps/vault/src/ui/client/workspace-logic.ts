@@ -10,6 +10,7 @@ import type { ApiError, ApprovalSubject, ApprovalView } from "@mehen/protocol/ap
 import { parseDestination } from "@mehen/protocol/binding"
 import { type ItemBrowser, fillOrigin } from "@mehen/protocol/fill"
 import { canonicalJson } from "@mehen/protocol/canonical-json"
+import { settingsPinnedVersion } from "@mehen/protocol/kinds"
 import type { ApprovalBatchState, CredentialHome, EnvironmentState, ProjectLevel, ShareSubject, WorkspaceApprovalBinding, WorkspaceRef, WorkspaceStepUpAction } from "@mehen/protocol/workspace"
 import { type PolicyRememberRule, type PolicyRuleProposalStage, type PolicyRuleProposalView, type PolicyRuleTerms, PolicyRuleTermsSchema, RULE_DURATIONS, type RuleDuration } from "@mehen/protocol/policy-mode"
 import { AREA_GRANT_DURATIONS, type PolicyAreaEffective, type PolicyAreaGrantTerms, PolicyAreaGrantTermsSchema, type PolicyAreaProposalView, type PolicyRememberArea } from "@mehen/protocol/policy-mode"
@@ -151,7 +152,7 @@ export function identityRefusal(shown: WorkspaceRef, now: WorkspaceRef): ApiErro
 // The credential as its page showed it: the stable id and revisions the
 // vault's person-facing description carries. An action about any other
 // credential, a replacement under the same name included, is refused.
-export type ShownItem = { id: string; version: number; configRevision: number; dependencyRevision: number }
+export type ShownItem = { id: string; kind: string; version: number; configRevision: number; dependencyRevision: number }
 
 export function itemDeleteAction(shown: Pick<ShownItem, "id">): WorkspaceStepUpAction {
   return { type: "item.delete", item: shown.id }
@@ -188,22 +189,24 @@ export function webPageOrigin(typed: string): string | null {
   return fillOrigin(typed.trim())
 }
 
-// item.update signs the change with the version and configuration shown.
-export async function itemUpdateAction(shown: Pick<ShownItem, "id" | "version" | "configRevision">, change: unknown): Promise<WorkspaceStepUpAction> {
-  return { type: "item.update", item: shown.id, digest: await digestOf({ change, version: shown.version, configRevision: shown.configRevision }) }
+// item.update signs the change with the version (settingsPinnedVersion) and
+// configuration shown.
+export async function itemUpdateAction(shown: Pick<ShownItem, "id" | "kind" | "version" | "configRevision">, change: unknown): Promise<WorkspaceStepUpAction> {
+  return { type: "item.update", item: shown.id, digest: await digestOf({ change, version: settingsPinnedVersion(shown.kind, shown.version), configRevision: shown.configRevision }) }
 }
 
 // The credential read again before a restore: the one shown, unchanged,
 // still keeping the previous version shown.
 export function itemRestoreRefusal(shown: ShownItem, previous: number, now: Partial<ShownItem> & { previous?: { version: number } | null }): ApiError | null {
-  return itemChangedRefusal(shown, now) ?? (now.previous?.version === previous ? null : CHANGED_SINCE_SHOWN)
+  return itemChangedRefusal(shown, now) ?? (now.version === shown.version && now.previous?.version === previous ? null : CHANGED_SINCE_SHOWN)
 }
 
 // The credential read again before signing: refused once it is not the
-// one shown, or has changed since.
+// one shown, or has changed since (for an OAuth connection, a token renewal
+// is not a change: settingsPinnedVersion).
 export function itemChangedRefusal(shown: ShownItem, now: Partial<ShownItem>): ApiError | null {
   if (now.id !== shown.id) return { error: "conflict", message: "This name now belongs to a different credential than the one this page showed.", next: { say: "Nothing was signed. Reload the page to see the credential that has this name now." } }
-  if (now.version !== shown.version || now.configRevision !== shown.configRevision || now.dependencyRevision !== shown.dependencyRevision) return CHANGED_SINCE_SHOWN
+  if (now.version === undefined || settingsPinnedVersion(shown.kind, now.version) !== settingsPinnedVersion(shown.kind, shown.version) || now.configRevision !== shown.configRevision || now.dependencyRevision !== shown.dependencyRevision) return CHANGED_SINCE_SHOWN
   return null
 }
 

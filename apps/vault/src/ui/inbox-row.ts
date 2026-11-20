@@ -75,7 +75,7 @@ function askTile(ask: PendingAsk): Html {
 
 function askWho(ask: PendingAsk): Html {
   const by = ask.requestedBy
-  if (by === null) return html`The vault`
+  if (by === null) return ask.reason !== undefined ? html`The vault: ${cardText(ask.reason)}` : html`The vault`
   if ("member" in by) return html`${by.self ? "You" : "Another member"}`
   return html`An agent on ${cardText(by.deviceName)}${sessionWords(by.session)}`
 }
