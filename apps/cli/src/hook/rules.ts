@@ -1437,8 +1437,36 @@ function shellRun(ctx: Context, state: State, node: CommandNode, program: string
 // -r walks and the files it reads. `producer` is the command piped into it
 // at this level; `conditional` says it may not run (inside if, while,
 // until, for or case).
+// The words a command's words make once the shell has expanded their
+// braces, which it does before anything else: `grep -f.{e..e}nv` is
+// `grep -f.env`, and `{-f,-x}.env` is two options. A brace the guard will
+// not expand is kept as written, and refused where it is judged; past
+// GREP_WALK_ENTRIES words in all, the command is refused.
+function expandBraces(ctx: Context, words: Word[]): Word[] | null {
+  const out: Word[] = []
+  for (const word of words) {
+    if (!word.brace || word.dynamic || word.process) {
+      out.push(word)
+      continue
+    }
+    const braces = braceExpand(word.pattern)
+    if ("refuse" in braces) {
+      out.push(word)
+      continue
+    }
+    for (const pattern of braces.words) out.push({ text: unescapePattern(pattern), dynamic: false, glob: word.glob && hasGlob(pattern), brace: false, pattern, vars: word.vars })
+    if (out.length > GREP_WALK_ENTRIES) {
+      refuse(ctx, `can't tell what this runs: its braces make more than ${GREP_WALK_ENTRIES} words; name the files directly`)
+      return null
+    }
+  }
+  return out
+}
+
 function command(ctx: Context, state: State, node: CommandNode, producer: CommandNode | null = null, conditional = false): void {
-  let words = node.words
+  const expanded = expandBraces(ctx, node.words)
+  if (expanded === null) return
+  let words = expanded
   while (words.length && !(words[0] as Word).dynamic && RESERVED.has((words[0] as Word).text)) words = words.slice(1)
   const apart = node.op === "|" || node.next === "|" || conditional
   const unwrapped = unwrap(words, state.cwds, ctx)

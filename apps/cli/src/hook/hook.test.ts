@@ -1087,6 +1087,11 @@ describe("sixth review: reproductions", () => {
     for (const command of ["cat README.[m]d", "cat [!.]*"]) none("proj", command)
   })
 
+  test("braces are expanded before options are read, as the shell does", () => {
+    for (const command of ["grep -f.{e..e}nv README.md", "grep --file=.{e..e}nv README.md", "grep -f.{e,n}nv README.md", "grep x {-f,-x}.env README.md", "sort --files0-from=.{e..e}nv"]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["echo {1..3}", "git add {a,b}.md", "cat {README,a}.md"]) none("proj", command)
+  })
+
   test("a glob with many stars is matched in linear time", async () => {
     await Bun.write(`${home.path}/proj/${"a".repeat(64)}`, "x")
     const stars = `*${"a*".repeat(16)}b`
