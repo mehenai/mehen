@@ -240,7 +240,12 @@ class Parser {
       this.skipBlanks()
       const raw = this.i
       const delimiter = this.word(nodes)
-      this.heredocs.push({ delimiter: delimiter.text, strip, quoted: /['"\\]/.test(s.slice(raw, this.i)) })
+      const written = s.slice(raw, this.i)
+      // A delimiter in $'...' or $"..." quoting, or one only the shell knows,
+      // may end the body somewhere the guard does not see, and with it
+      // everything after: refused.
+      if (/\$['"]/.test(written) || delimiter.dynamic) nodes.push({ kind: "unknown", why: "a here-document delimiter the guard cannot read", runs: true })
+      this.heredocs.push({ delimiter: delimiter.text, strip, quoted: /['"\\]/.test(written) })
       return true
     }
     const reading = s[this.i] === "<"
