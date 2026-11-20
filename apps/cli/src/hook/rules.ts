@@ -433,7 +433,11 @@ function globMatcher(glob: string, ignoreCase = false): GlobMatcher {
       if (tokens.at(-1)?.kind !== "star") tokens.push({ kind: "star" })
     } else if (ch === "?") tokens.push({ kind: "one", test: () => true })
     else if (ch === "[") {
-      const close = glob.indexOf("]", i + 2)
+      // A ] first in the set, after any ! or ^, is a member, not its end.
+      let first = i + 1
+      if (glob[first] === "!" || glob[first] === "^") first++
+      if (glob[first] === "]") first++
+      const close = glob.indexOf("]", first)
       if (close === -1) tokens.push(literal("["))
       else {
         tokens.push({ kind: "one", test: globClass(glob.slice(i + 1, close), ignoreCase) })

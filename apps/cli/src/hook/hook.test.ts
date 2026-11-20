@@ -1082,6 +1082,11 @@ describe("sixth review: reproductions", () => {
     none("proj", "(( n = n + 1 ))")
   })
 
+  test("a ] first in a bracket set, after ! or ^, is a member, in globs, grep --include and find -name", () => {
+    for (const command of ["cat .e[!]]v", "cat .e[^]]v", "cat .e[]n]v", "grep -r --include='.e[!]]v' x .", "find . -name '.e[!]]v' -exec cat {} +"]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["cat README.[m]d", "cat [!.]*"]) none("proj", command)
+  })
+
   test("a glob with many stars is matched in linear time", async () => {
     await Bun.write(`${home.path}/proj/${"a".repeat(64)}`, "x")
     const stars = `*${"a*".repeat(16)}b`
