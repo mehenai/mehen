@@ -296,8 +296,8 @@ describe("mehen mcp tools", () => {
     const report = after.structuredContent as { machine: { check: string; status: string }[]; origins: { checks: { check: string; status: string }[] }[]; session: { check: string; status: string }; workspaces: { checks: { check: string; status: string }[] }[] }
     const checks = [...report.machine, ...report.origins.flatMap((o) => o.checks), report.session, ...report.workspaces.flatMap((w) => w.checks)]
     expect(checks.length).toBeGreaterThan(5)
-    // A run from source installs nothing: its on_path and update rows are skipped.
-    expect(checks.filter((c) => c.status !== "ok").map(({ check, status }) => ({ check, status }))).toEqual([{ check: "on_path", status: "skipped" }, { check: "update", status: "skipped" }])
+    // A run from source installs nothing: its on_path, update and guard rows are skipped.
+    expect(checks.filter((c) => c.status !== "ok").map(({ check, status }) => ({ check, status }))).toEqual([{ check: "on_path", status: "skipped" }, { check: "update", status: "skipped" }, { check: "guard", status: "skipped" }])
     expect(report.machine.filter((c) => c.check === "skill").map((c) => c.status)).toEqual(["ok", "ok"])
   })
 

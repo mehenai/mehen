@@ -34,9 +34,11 @@ import { assertKeyScopeAgrees, notEnrolled, sessionLabel } from "../session.ts"
 import { type FoundActive, type FoundCorrupt, type FoundPending, type FoundSlot, type Slot, allowedSlots, assertVaultUrlAgrees, endedNext, selectSlot, workspaceSelector } from "../slots.ts"
 import { type Segment, colourEnabled, segments, styler } from "../tty.ts"
 import { type SkillCopy, skillCopies } from "../setup/skills.ts"
+import { type GuardLevel, guardLevel, vaultDirs } from "../hook/index.ts"
+import { CODEX_TRUST, type GuardAgent, type GuardResult, installGuards } from "../hook/install.ts"
 import { VERSION } from "../version.ts"
 
-export type DoctorCheckName = "home" | "migration" | "vault_url" | "on_path" | "update" | "skill" | "reachable" | "clock" | "session" | "enrolled" | "key" | "identity" | "frozen" | "pending" | "local_vault"
+export type DoctorCheckName = "home" | "migration" | "vault_url" | "on_path" | "update" | "skill" | "guard" | "reachable" | "clock" | "session" | "enrolled" | "key" | "identity" | "frozen" | "pending" | "local_vault"
 export type DoctorStatus = "ok" | "warn" | "fail" | "skipped"
 
 export type DoctorCheck = {
@@ -218,6 +220,38 @@ async function migrationCheck(env: Env): Promise<{ check: DoctorCheck | null; mi
   if (state.state === "journal") return { check: { check: "migration", status: "warn", detail: `The migration of ${root} is unfinished; the next command resumes it.`, next: { command: "mehen workspace list", say: "Run `mehen workspace list` (nothing is sent to a vault) to finish the migration; status and doctor only read." } }, migration, ready: false, journal }
   if (await legacyLayout(root)) return { check: { check: "migration", status: "warn", detail: `${root} is not migrated yet; the next command migrates it.`, next: { command: "mehen workspace list", say: "Run `mehen workspace list` (nothing is sent to a vault) to migrate the config root; status and doctor only read." } }, migration, ready: false, journal }
   return { check: { check: "migration", status: "ok", detail: state.layout === 2 ? `${root} uses the workspaces layout.` : existsSync(root) ? `${root} holds nothing to migrate.` : `${root} does not exist yet; the first \`mehen enrol\` creates it.` }, migration, ready: true, journal }
+}
+
+const GUARD_NAMES: Record<GuardAgent, string> = { "claude-code": "Claude Code", pi: "pi", cursor: "Cursor", codex: "Codex" }
+
+// One row per agent set up here that can run the guard hooks: what a dry
+// run of `mehen guard install` would change says whether mehen's hooks are
+// in place, current, or missing. Agents that are not set up get no row.
+export function guardRows(results: GuardResult[], level: GuardLevel): DoctorCheck[] {
+  const install = { command: "mehen guard install --json", say: "Run `mehen guard install --json` to put mehen's guard hooks in, then restart the agent." }
+  const rows = results.filter((r) => !r.absent).map((r): DoctorCheck => {
+    const name = GUARD_NAMES[r.agent]
+    if (r.status === "unchanged") {
+      const trust = r.agent === "codex" ? ` Codex runs them once they are trusted in /hooks.` : ""
+      if (level === "off") return { check: "guard", status: "warn", detail: `${name}: mehen's hooks are in ${r.file}, but the guard is off, so they say nothing.${trust}`, next: { command: "mehen guard block", say: "Run `mehen guard block` to have the hooks block reading key files and pasting keys again." } }
+      return { check: "guard", status: "ok", detail: `${name}: guard on (${level}) in ${r.file}.${trust}` }
+    }
+    if (r.status === "added") return { check: "guard", status: "warn", detail: `${name}: no guard hooks in ${r.file}.`, next: install }
+    if (r.status === "updated") return { check: "guard", status: "warn", detail: `${name}: mehen's guard hooks in ${r.file} differ from what this mehen would write (another path to mehen, or an earlier release).`, next: r.agent === "codex" ? { ...install, say: `${install.say} ${CODEX_TRUST}` } : install }
+    return { check: "guard", status: "warn", detail: `${name}: ${r.reason ?? "the guard hooks could not be checked."}` }
+  })
+  if (rows.length) return rows
+  return [{ check: "guard", status: "ok", detail: "No agent that runs the guard hooks (Claude Code, pi, Cursor, Codex) is set up here." }]
+}
+
+async function guardChecks(env: Env, root: string | null, binary: string | null): Promise<DoctorCheck[]> {
+  if (binary === null) return [skipped("guard", "mehen runs from source; the guard hooks name an installed mehen.")]
+  try {
+    const results = await installGuards({ home: resolve(env.HOME || homedir()), binary, vaultDirs: vaultDirs(env), ...(root ? { ownedFile: join(root, "guard-installed.json") } : {}), codexHome: env.CODEX_HOME || undefined, remove: false, dryRun: true })
+    return guardRows(results, guardLevel(env))
+  } catch (error) {
+    return [{ check: "guard", status: "warn", detail: `The guard hooks could not be checked: ${error instanceof Error ? error.message : String(error)}` }]
+  }
 }
 
 // One row per skill folder (~/.claude and ~/.agents): mehen's copy current
@@ -480,6 +514,7 @@ export async function doctorAll(env: Env, options: DoctorAllOptions = {}): Promi
     machine.push(updateDoctorCheck(cli, holder, install.files.lock, Date.now(), { state: install.files.state, stateError, lockError, guard: lockError === null && (await lockGuardPresent(install)) }))
   }
   machine.push(...(await skillCopies(resolve(env.HOME || homedir()), env.PATH ?? "")).map(skillCheck))
+  machine.push(...(await guardChecks(env, root, self)))
   const local = root !== null && ready ? await localVaultCheck(root, fetcher, options.keyring ?? keyringHost(env)) : null
   if (local) machine.push(local)
 

@@ -108,7 +108,7 @@ With `mehen up`, the vault runs on the same machine as your agents, as your own 
 
 - **Keys in the model's context, transcripts, logs, shell history and `.env` files.** The agent asks the vault to make the call (relay) or gets a placeholder (`mehen run`), and never handles the value.
 - **An agent sending a key to a host it is not bound to.** The vault refuses it before anything is sent, as on Cloud, whatever the agent was told.
-- **An agent reading a key file, or pasting a key into a command or a file**, by accident or because a page or a file told it to: the [guard hooks](../guides/guard.md) block it in Claude Code and pi.
+- **An agent reading a key file, or pasting a key into a command or a file**, by accident or because a page or a file told it to: the [guard hooks](../guides/guard.md) block it in Claude Code, pi, Cursor and Codex, with the gaps each agent's hooks leave listed in [What each agent enforces](../guides/guard.md#what-each-agent-enforces).
 - **Other machines, and web pages.** The vault listens on the loopback address only and answers only requests addressed to `localhost` or `127.0.0.1` on its port, so another machine cannot reach it and a page that points a name of its own at it is refused.
 - **Other user accounts on this machine.** The vault refuses to start unless its data folder is yours and closed to everyone else (mode 700), with no folder above it that another user can write, so no other account can read or replace its files. Another account can reach the port, and like anyone needs a passkey or an enrolled machine's key to do anything there. While the vault has no account, a one-time code in a file only you can read lets the first person sign up; it is gone once your account exists.
 

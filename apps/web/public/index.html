@@ -143,7 +143,7 @@
       <li class="card step">
         <span class="num">04</span>
         <h3>Your agents</h3>
-        <p>The MCP server and skill go into Claude Code, Codex, Cursor, pi, Gemini CLI, OpenCode, VS Code and Claude Desktop, and the guard hooks into Claude Code and pi.</p>
+        <p>The MCP server and skill go into Claude Code, Codex, Cursor, pi, Gemini CLI, OpenCode, VS Code and Claude Desktop, and the guard hooks into Claude Code, pi, Cursor and Codex.</p>
       </li>
     </ol>
     <p class="after-steps">Then <code>mehen adopt scan</code> finds the keys already in your <code>.env</code> files and CLI logins, and brings them in with one passkey. <a href="https://docs.mehen.dev/start">Run Mehen on your machine</a>.</p>
@@ -231,7 +231,7 @@ STRIPE_SECRET_KEY=<span class="ph">sk_live_jvph0123456789abcdefghijklmn</span></
     <header class="section-head">
       <p class="eyebrow">The guard hooks</p>
       <h2>Agents read files. The guard checks first.</h2>
-      <p class="lede"><code>mehen up</code> installs guard hooks in Claude Code and pi that stop an agent reading <code>.env</code> files, key files and CLI logins, or pasting a key into a command or a file, and tell it what to use instead. They answer on the machine in milliseconds, with no network. <code>mehen guard warn</code> only warns; <code>mehen guard off</code> turns them off.</p>
+      <p class="lede"><code>mehen up</code> installs guard hooks in Claude Code, pi, Cursor and Codex that stop an agent reading <code>.env</code> files, key files and CLI logins, or pasting a key into a command or a file, and tell it what to use instead. They answer on the machine in milliseconds, with no network. <code>mehen guard warn</code> only warns; <code>mehen guard off</code> turns them off.</p>
     </header>
     <div class="code-grid">
       <figure class="term">

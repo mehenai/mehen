@@ -13,11 +13,14 @@ import { join } from "node:path"
 import { defaultDataDir } from "../../../local/src/config.ts"
 import type { Command } from "../command.ts"
 import { usageError } from "../errors.ts"
-import { ensureSafeRoot, resolveHome } from "../home.ts"
+import { LOCKS_DIR, assertSafeRoot, ensureSafeRoot, resolveHome } from "../home.ts"
+import { withSlotLocks } from "../slot-lock.ts"
 import { printJson, printLine } from "../output.ts"
 import { selfExecutable } from "../install-state.ts"
-import { installClaudeGuard, installPiGuard } from "./install.ts"
-import { type Finding, commandFindings, secretFile, secretInText } from "./rules.ts"
+import { codexAnswer } from "./codex.ts"
+import { cursorAnswer, cursorFailure } from "./cursor.ts"
+import { type GuardResult, installGuards } from "./install.ts"
+import { type Finding, commandFindings, secretFile, secretInText, toolPath } from "./rules.ts"
 
 export const GUARD_LEVELS = ["block", "warn", "off"] as const
 export type GuardLevel = (typeof GUARD_LEVELS)[number]
@@ -74,7 +77,7 @@ export function judge(call: ToolCall, level: GuardLevel, env: Env): Verdict {
   const dirs = vaultDirs(env)
   const findings: Finding[] = []
   if (call.tool === "read" && call.path) {
-    const why = secretFile(call.path, call.cwd, home, dirs)
+    const why = secretFile(toolPath(call.path, home), call.cwd, home, dirs)
     if (why) findings.push({ rule: "secret-file", reason: `reading ${call.path} would show you its contents: ${why}`, path: call.path })
   }
   if (call.tool === "shell" && call.command) findings.push(...commandFindings(call.command, call.cwd, home, dirs))
@@ -141,35 +144,80 @@ export function neutralAnswer(input: NeutralInput, env: Env): Verdict {
   return judge({ tool, path: str(input.path), content: str(input.content), command: str(input.command), cwd: str(input.cwd) ?? process.cwd() }, guardLevel(env), env)
 }
 
-export const HARNESSES = ["claude-code", "check"] as const
+export const HARNESSES = ["claude-code", "cursor", "codex", "check"] as const
+type Harness = (typeof HARNESSES)[number]
+
+// Cursor and Codex let a tool call through when a hook fails, unless it
+// answers a denial (Cursor) or exits 2 with the reason on stderr (Codex):
+// so whatever goes wrong here, those two are told to block.
+const BLOCK = EXIT.usage
+
+async function readInput(): Promise<Record<string, unknown>> {
+  let input: unknown
+  try {
+    input = JSON.parse(await Bun.stdin.text())
+  } catch {
+    throw usageError("mehen hook reads one JSON object on stdin.", "mehen hook --help")
+  }
+  if (typeof input !== "object" || input === null || Array.isArray(input)) throw usageError("mehen hook reads one JSON object on stdin.", "mehen hook --help")
+  return input as Record<string, unknown>
+}
+
+function answerFor(harness: Harness, input: Record<string, unknown>, env: Env): unknown {
+  switch (harness) {
+    case "check":
+      return neutralAnswer(input, env)
+    case "claude-code":
+      return claudeAnswer(input as ClaudeInput, env)
+    case "cursor":
+      return cursorAnswer(input, env)
+    case "codex":
+      return codexAnswer(input, env)
+  }
+}
 
 export const hookCommand: Command = {
-  summary: "the guard an agent harness runs before each tool call: reads its hook JSON on stdin, answers deny, warn or nothing (mehen hook claude-code|check)",
-  spec: { usage: "mehen hook <claude-code|check>", flags: {}, positionals: { min: 1, max: 1 } },
-  examples: [["hook", "claude-code"], ["hook", "check"]],
+  summary: "the guard an agent harness runs before each tool call: reads its hook JSON on stdin, answers deny, warn or nothing (mehen hook claude-code|cursor|codex|check)",
+  spec: { usage: "mehen hook <claude-code|cursor|codex|check>", flags: {}, positionals: { min: 1, max: 1 } },
+  examples: [["hook", "claude-code"], ["hook", "cursor"], ["hook", "codex"], ["hook", "check"]],
   notes: [
     "claude-code answers PreToolUse with permissionDecision deny and a systemMessage card, and SessionStart with a short note on using the vault.",
+    "cursor answers beforeShellExecution, beforeReadFile and preToolUse (Write) with { permission, user_message, agent_message }, and sessionStart with additional_context; it answers a denial when it cannot check the call.",
+    "codex answers PreToolUse (Bash, apply_patch) and SessionStart in Claude Code's shape; when it cannot check the call it exits 2 with the reason on stderr, which Codex reads as a block.",
     "check takes { tool: read|write|shell, path?, content?, command?, cwd } and prints { decision, reason, card, findings }, for any other harness.",
     "The level is MEHEN_GUARD, else guard.json in the mehen home, else block; warn shows the card without blocking, off says nothing.",
   ],
   async run({ args, env }) {
-    const harness = args.positionals[0]
-    if (harness !== "claude-code" && harness !== "check") throw usageError(`mehen hook knows ${HARNESSES.join(" and ")}, not ${JSON.stringify(harness)}.`, "mehen hook --help")
-    let input: unknown
-    try {
-      input = JSON.parse(await Bun.stdin.text())
-    } catch {
-      throw usageError("mehen hook reads one JSON object on stdin.", "mehen hook --help")
-    }
-    if (typeof input !== "object" || input === null) throw usageError("mehen hook reads one JSON object on stdin.", "mehen hook --help")
-    if (harness === "check") {
-      process.stdout.write(`${JSON.stringify(neutralAnswer(input as NeutralInput, env))}\n`)
+    const wanted = args.positionals[0]
+    if (!(HARNESSES as readonly unknown[]).includes(wanted)) throw usageError(`mehen hook knows ${HARNESSES.join(", ")}, not ${JSON.stringify(wanted)}.`, "mehen hook --help")
+    const harness = wanted as Harness
+    if (harness === "claude-code" || harness === "check") {
+      const answer = answerFor(harness, await readInput(), env)
+      if (answer !== null) process.stdout.write(`${JSON.stringify(answer)}\n`)
       return EXIT.ok
     }
-    const answer = claudeAnswer(input as ClaudeInput, env)
-    if (answer) process.stdout.write(`${JSON.stringify(answer)}\n`)
+    let answer: unknown
+    try {
+      answer = answerFor(harness, await readInput(), env)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (harness === "cursor") {
+        process.stdout.write(`${JSON.stringify(cursorFailure(message))}\n`)
+        return EXIT.ok
+      }
+      process.stderr.write(`The Mehen guard could not check this call (${message}); run \`mehen doctor\` to see why.\n`)
+      return BLOCK
+    }
+    if (answer !== null) process.stdout.write(`${JSON.stringify(answer)}\n`)
     return EXIT.ok
   },
+}
+
+const RESTART: Record<GuardResult["agent"], string> = {
+  "claude-code": "restart Claude Code to pick it up",
+  pi: "restart pi (or /reload) to pick it up",
+  cursor: "Cursor reloads hooks.json by itself; restart it if the hooks do not show in its Hooks settings",
+  codex: "restart Codex to pick it up",
 }
 
 export const guardCommand: Command = {
@@ -177,7 +225,7 @@ export const guardCommand: Command = {
   spec: { usage: "mehen guard [install|remove|block|warn|off] [--dry-run]", flags: { "dry-run": { type: "boolean" } }, positionals: { min: 0, max: 1 } },
   examples: [["guard"], ["guard", "install", "--json"], ["guard", "warn"], ["guard", "remove", "--dry-run"]],
   notes: [
-    "install adds mehen's PreToolUse and SessionStart hooks to ~/.claude/settings.json (and, when Claude Code's sandbox is on, keeps the agent's shell out of the vault's data folder) and a guard extension to ~/.pi/agent/extensions. remove takes out only what mehen wrote.",
+    "install adds mehen's PreToolUse and SessionStart hooks to ~/.claude/settings.json (and, when Claude Code's sandbox is on, keeps the agent's shell out of the vault's data folder), a guard extension to ~/.pi/agent/extensions, mehen's hooks to ~/.cursor/hooks.json, and its PreToolUse and SessionStart hooks to ~/.codex/hooks.json ($CODEX_HOME when set), which Codex runs once you trust them in /hooks. remove takes out only what mehen wrote.",
     "The level is kept in guard.json in the mehen home; MEHEN_GUARD overrides it for one process.",
   ],
   async run({ args, json, env }) {
@@ -187,14 +235,25 @@ export const guardCommand: Command = {
       if (binary === null) throw usageError("The guard hooks name the installed mehen, and this one runs from source. Install mehen with `curl -fsSL https://mehen.dev/install | sh`, then run `mehen guard install`.", "mehen guard --help")
       const options = { home: env.HOME || homedir(), binary, remove: wanted === "remove", dryRun: args.bool("dry-run") }
       const { root } = resolveHome(env)
-      ensureSafeRoot(root)
-      const results = [await installClaudeGuard({ ...options, vaultDirs: vaultDirs(env), ownedFile: join(root, "guard-installed.json") }), await installPiGuard(options)]
-      if (json) printJson({ agents: results, ...(options.dryRun ? { dryRun: true } : {}) })
+      const run = () => installGuards({ ...options, vaultDirs: vaultDirs(env), ownedFile: join(root, "guard-installed.json"), codexHome: env.CODEX_HOME || undefined })
+      // A dry run only reads: the home is checked, never created, and no
+      // lock is taken. A real one takes the guard lock, so two never read
+      // the same file and both write it.
+      let results: GuardResult[]
+      if (options.dryRun) {
+        assertSafeRoot(root)
+        results = await run()
+      } else {
+        ensureSafeRoot(root)
+        results = await withSlotLocks([join(root, LOCKS_DIR, "guard.lock")], run)
+      }
+      if (json) printJson({ agents: results, level: guardLevel(env), ...(options.dryRun ? { dryRun: true } : {}) })
       else for (const result of results) {
         printLine(`${result.agent.padEnd(16)} guard ${result.status}${result.reason ? `: ${result.reason}` : ""}`)
         if (result.sandbox === "protected") printLine("                 the sandbox keeps the agent's shell out of the vault's data folder")
         if (result.sandbox === "off" && wanted === "install") printLine("                 turn Claude Code's sandbox on (/sandbox) and run `mehen guard install` again to keep the agent's shell out of the vault's files too")
-        if (result.status === "added" || result.status === "updated" || result.status === "removed") printLine(`                 restart ${result.agent === "pi" ? "pi (or /reload)" : "Claude Code"} to pick it up`)
+        if (result.status === "added" || result.status === "updated" || result.status === "removed") printLine(`                 ${RESTART[result.agent]}`)
+        if (result.next) printLine(`                 ${result.next}`)
       }
       return EXIT.ok
     }

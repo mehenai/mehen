@@ -36,6 +36,8 @@ mehen setup --remove --json
 
 It undoes only what `mehen setup` added and still owns: each agent's `mehen` MCP entry, which it puts back as the backup had it (the whole file when nothing else changed), and the Mehen skill once no entry remains. An entry that changed since setup wrote it is left alone with its `reason`; read each agent's `mcp`, `skill` and `reason`, and remove those by hand. Restart or reload each agent afterwards. [Register mehen with each agent](harnesses.md) lists the files.
 
+If the [guard hooks](guard.md) are installed, take them out too with `mehen guard remove --json`, before you delete the binary in step 3. Cursor's guard hooks fail closed: with `mehen` gone and its hooks still in `~/.cursor/hooks.json`, Cursor blocks every shell command, read and write.
+
 ## 3. Delete the files
 
 - **The state:** `~/.config/mehen`, and each `MEHEN_HOME` a second identity used. Each holds its workspaces' slots with the machine's key (a Secure Enclave key is a blob only this Mac's enclave can use), the ledger of asks, the run log and what `mehen adopt` keeps. Setup's record, `setup-state.json`, is always in `~/.config/mehen`, whatever `MEHEN_HOME` is. Apart from files `mehen adopt retire` quarantined, which are your own `.env` files, none holds a credential's value.

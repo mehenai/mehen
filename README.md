@@ -22,7 +22,7 @@ or, with Node.js, `npx @mehenai/cli up` (or `npm create mehen`), which runs the 
 
 Every machine signs its requests with its own device key (in the Secure Enclave on a Mac, or a 0600 file), accepted once by its owner with a passkey. Every use, decision and refusal goes into a hash-linked audit chain.
 
-The guard hooks, `mehen guard install`, add a pre-tool check to Claude Code and pi: reading `.env` files, key files and CLI logins, or putting a key into a command or a file, is blocked with a reason that tells the agent what to use instead. They are a guard rail, not the boundary; the vault's bindings are.
+The guard hooks, `mehen guard install`, add a pre-tool check to Claude Code, pi, Cursor and Codex: reading `.env` files, key files and CLI logins, or putting a key into a command or a file, is blocked with a reason that tells the agent what to use instead. They are a guard rail, not the boundary; the vault's bindings are.
 
 ## Ways to run it
 

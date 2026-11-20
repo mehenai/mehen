@@ -27,7 +27,7 @@ The report lists, per agent, `mcp`, `reason`, `skill`, `skillReason` and `restar
 
 Reload or restart each agent as `restart` says; the `vault_*` tools arrive then. If they are missing after the restart, run `mehen setup --json` again and restart once more.
 
-`mehen up` runs `mehen setup` for you on a machine with a local vault, then `mehen guard install`, which adds the [guard hooks](guard.md) to Claude Code and pi. On any other machine, run `mehen guard install` yourself after setup.
+`mehen up` runs `mehen setup` for you on a machine with a local vault, then `mehen guard install`, which adds the [guard hooks](guard.md) to Claude Code, pi, Cursor and Codex. On any other machine, run `mehen guard install` yourself after setup. Then open `/hooks` in Codex and trust Mehen's two hooks: Codex runs a new or changed hook only once you do.
 
 ## One named agent
 
