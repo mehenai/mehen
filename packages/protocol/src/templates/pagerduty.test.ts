@@ -62,7 +62,7 @@ describe("pagerduty", () => {
 describe("pagerduty review fixes", () => {
   it("lets the named reads through and holds every other read", () => {
     expectAll([
-      ["GET", `${API}/incidents/P1/notes`, "allow"],
+      ["GET", `${API}/incidents/P1/notes`, "approve"],
       ["GET", `${API}/schedules/S1`, "allow"],
       ["GET", `${API}/services`, "approve"],
       ["GET", `${API}/mehen-unlisted`, "approve"],
@@ -143,11 +143,31 @@ describe("pagerduty third review fixes", () => {
     }
   })
 
-  it("still lets an incident's notes, alerts and related incidents through", () => {
+  it("asks for an incident's notes, alerts and related incidents too", () => {
     expectAll([
-      ["GET", `${API}/incidents/P1/notes`, "allow"],
-      ["GET", `${API}/incidents/P1/alerts`, "allow"],
-      ["GET", `${API}/incidents/P1/related_incidents`, "allow"],
+      ["GET", `${API}/incidents/P1/notes`, "approve"],
+      ["GET", `${API}/incidents/P1/alerts`, "approve"],
+      ["GET", `${API}/incidents/P1/related_incidents`, "approve"],
     ])
+  })
+})
+
+describe("pagerduty fourth review fixes", () => {
+  const held = (path: string) => {
+    expect({ path, policy: decide("GET", `${API}${path}`), relay: underBroadAllow(pagerduty, "GET", `${API}${path}`) }).toEqual({ path, policy: "approve", relay: "approve" })
+  }
+
+  it("holds every incident sub-read, alerts with include[]=first_trigger_log_entries among them, whatever the item's policy says", () => {
+    for (const path of ["/incidents/P1/alerts?include[]=first_trigger_log_entries", "/incidents/P1/alerts", "/incidents/P1/alerts/A1", "/incidents/P1/notes", "/incidents/P1/related_incidents"]) held(path)
+  })
+
+  it("holds a user's details, which with include[]=calendar_urls return bearer calendar feed URLs, whatever the item's policy says", () => {
+    for (const path of ["/users/U1?include[]=calendar_urls", "/users/U1", "/users/me"]) held(path)
+  })
+
+  it("still lets the user list, schedules, escalation policies and maintenance windows through, whose include[] expands only references", () => {
+    for (const path of ["/users?include[]=contact_methods", "/schedules/S1", "/escalation_policies?include[]=services", "/maintenance_windows?include[]=services", "/oncalls?include[]=users"]) {
+      expect({ path, policy: decide("GET", `${API}${path}`) }).toEqual({ path, policy: "allow" })
+    }
   })
 })

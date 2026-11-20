@@ -405,3 +405,30 @@ describe("parseFormDataStrictly", () => {
     expect(parseFormDataStrictly(form(metadata), null).ok).toBe(false)
   })
 })
+
+describe("the json-jira-access matcher", () => {
+  const asks = (body: Uint8Array | null) => bodyMatches("json-jira-access", body, "")
+  it("matches a body it cannot read, a repeated key and an array", () => {
+    for (const body of [null, new Uint8Array(), text("x=1"), new Uint8Array([0x7b, 0xff, 0x7d]), text('{"fields":{},"fields":{"security":{}}}'), json([{}]), json(null)]) expect(asks(body)).toBe(true)
+  })
+  it("matches security in fields, update and each issueUpdates element, visibility at any depth, and bulk edits naming security", () => {
+    for (const body of [
+      { fields: { security: { id: "1" } } },
+      { update: { Security: [] } },
+      { issueUpdates: [{ fields: { summary: "a" } }, { fields: { security: null } }] },
+      { a: [{ b: { visibility: null } }] },
+      { selectedActions: ["SECURITY"] },
+      { editedFieldsInput: { singleSelectFields: [{ fieldId: "security" }] } },
+    ]) expect(asks(json(body))).toBe(true)
+  })
+  it("matches an envelope in a shape it does not recognise", () => {
+    for (const body of [{ fields: "x" }, { fields: [1] }, { update: [] }, { issueUpdates: {} }, { issueUpdates: ["x"] }, { selectedActions: "security" }, { selectedActions: [1] }, { editedFieldsInput: [] }, { editedFieldsInput: { x: ["y"] } }, { editedFieldsInput: { x: 1 } }]) {
+      expect(asks(json(body))).toBe(true)
+    }
+  })
+  it("lets ordinary issue writes, field selections and JSON scalars by", () => {
+    for (const body of [{ fields: { summary: "a", project: { key: "A" } } }, { update: { labels: [{ add: "x" }] } }, { body: "a comment" }, { jql: "x", fields: ["summary", "security"] }, { selectedActions: ["priority"], editedFieldsInput: { priority: { priorityId: "1" } } }, "5b10ac8d82e05b22cc7d4ef5"]) {
+      expect(asks(json(body))).toBe(false)
+    }
+  })
+})
