@@ -141,6 +141,22 @@ describe("homes and names", () => {
     expect(homeInput({ kind: "member", member: "mem_m" })).toEqual({ home: "private" })
     expect(credentialStart("openai", "intake", "openai-dev", { kind: "workspace" })).toEqual({ path: "/intakes", body: { provider: "openai", slug: "openai-dev", home: "workspace" } })
     expect(credentialStart("google-gmail", "connect", "gmail-alex", { kind: "project", project: "prj_a" })).toEqual({ path: "/connect", body: { provider: "google-gmail", slug: "gmail-alex", requestClient: true, home: "project", project: "prj_a" } })
+    expect(credentialStart("api-key", "custom-host", "internal-api", { kind: "member", member: "mem_m" }, { host: "API.Example.com", header: "" })).toEqual({
+      path: "/intakes",
+      body: { kind: "api-key", slug: "internal-api", binding: { hosts: ["api.example.com"], schemes: ["https"] }, home: "private" },
+    })
+    expect(credentialStart("api-key", "custom-host", "internal-api", { kind: "workspace" }, { host: "api.example.com", header: "X-API-Key" })).toEqual({
+      path: "/intakes",
+      body: { kind: "api-key", slug: "internal-api", binding: { hosts: ["api.example.com"], schemes: ["https"] }, injection: { in: "header", name: "X-API-Key", format: "{key}" }, home: "workspace" },
+    })
+    expect(credentialStart("database-url", "lease", "app-db", { kind: "project", project: "prj_a" })).toEqual({
+      path: "/intakes",
+      body: { kind: "database-url", slug: "app-db", home: "project", project: "prj_a" },
+    })
+    expect(credentialStart("generic", "lease", "jwt-secret", { kind: "member", member: "mem_m" })).toEqual({
+      path: "/intakes",
+      body: { kind: "generic", slug: "jwt-secret", home: "private" },
+    })
     expect(rotationStart("openai-dev", { kind: "workspace" })).toEqual({ path: "/intakes", body: { slug: "openai-dev", home: "workspace" } })
     expect(rotationStart("gmail-alex", { kind: "member", member: "mem_m" }, "google-gmail")).toEqual({ path: "/connect", body: { provider: "google-gmail", slug: "gmail-alex", home: "private" } })
     expect(createdAskPath("northwind", { intake: "int_1" })).toBe("/w/northwind/i/int_1")

@@ -330,14 +330,24 @@ export function initWorkspaceCredentials(raw: Boot, maybe: ShellState | null): v
   if (form !== null) {
     // The sheet's own notice; the fields keep what was typed so it can be corrected.
     const sheetNotice = must('[data-region="sheet-notice"]', form)
+    const select = must<HTMLSelectElement>('[data-input="provider"]', form)
+    const customRegion = find<HTMLElement>('[data-region="custom-host"]', form)
+    const syncCustom = () => {
+      if (customRegion !== null) customRegion.hidden = select.selectedOptions[0]?.dataset.way !== "custom-host"
+    }
+    select.addEventListener("change", syncCustom)
+    syncCustom()
     const button = must<HTMLButtonElement>('[data-action="add-credential"]', form)
     button.addEventListener("click", () => void withBusy(button, "Starting...", async () => {
-      const select = must<HTMLSelectElement>('[data-input="provider"]', form)
-      const way = select.selectedOptions[0]?.dataset.way === "connect" ? "connect" : "intake"
+      const rawWay = select.selectedOptions[0]?.dataset.way
+      const way = rawWay === "connect" || rawWay === "custom-host" || rawWay === "lease" ? rawWay : "intake"
       const home = homeFromValue(find<HTMLInputElement>('[data-input="home"]:checked', form)?.value ?? "", member)
       const slug = value('[data-input="slug"]', form)
+      const host = value('[data-input="host"]', form)
+      const header = value('[data-input="header"]', form)
       if (home === null || slug === "") return showProblems(["Name the credential and choose where it belongs."], sheetNotice)
-      const start = credentialStart(select.value, way, slug, home)
+      if (way === "custom-host" && host === "") return showProblems(["Enter the destination host this key may be sent to, such as api.example.com."], sheetNotice)
+      const start = credentialStart(select.value, way, slug, home, { host, header })
       try {
         const created = await workspaceApi<{ intake?: string | { intake: string }; connect?: string }>(shell, start.path, start.body)
         const next = createdAskPath(shell.identity.workspace.slug, created)

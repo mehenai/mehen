@@ -87,7 +87,12 @@ function providerOptions(): Html {
   const templates = Object.values(TEMPLATES).sort((a, b) => a.displayName.localeCompare(b.displayName))
   const oauth = Object.values(OAUTH_PROVIDERS).sort((a, b) => a.displayName.localeCompare(b.displayName))
   return html`<optgroup label="Paste a key">${templates.map((t) => html`<option value="${t.id}" data-way="intake">${t.displayName}</option>`)}</optgroup>
-    <optgroup label="Sign in to connect">${oauth.map((p) => html`<option value="${p.id}" data-way="connect">${p.displayName}</option>`)}</optgroup>`
+    <optgroup label="Sign in to connect">${oauth.map((p) => html`<option value="${p.id}" data-way="connect">${p.displayName}</option>`)}</optgroup>
+    <optgroup label="Other">
+      <option value="api-key" data-way="custom-host">Other API (custom host)</option>
+      <option value="database-url" data-way="lease">Database URL (for mehen run)</option>
+      <option value="generic" data-way="lease">Other secret (for mehen run)</option>
+    </optgroup>`
 }
 
 // The add form, in a sheet the page head's button opens. Its checks and the
@@ -101,6 +106,10 @@ function addSheet(data: CredentialsPageData, slugs: ReadonlyMap<string, string>)
       <div class="sheet-head"><h2 id="add-credential-title">Add a credential</h2><button type="button" class="icon-btn" data-action="close-sheet" aria-label="Close">${icon("x")}</button></div>
       <form class="stack" data-form="add-credential" novalidate>
         <label class="field"><span class="label">Service</span><select data-input="provider">${providerOptions()}</select></label>
+        <div class="stack" data-region="custom-host" hidden>
+          <label class="field"><span class="label">Destination host</span><input type="text" data-input="host" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="api.example.com"></label>
+          <label class="field"><span class="label">Header name (optional)</span><input type="text" data-input="header" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Authorization: Bearer (default)"><span class="small muted">Leave blank for Authorization: Bearer, or enter a header such as X-API-Key.</span></label>
+        </div>
         <label class="field"><span class="label">Name</span><input type="text" data-input="slug" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="openai-dev"></label>
         <fieldset class="field" data-region="homes"><legend class="label">Belongs to</legend>${homes.map((h, i) => homeChoice(h, slugs, i === 0))}</fieldset>
         <p class="small muted">You paste the key or sign in on the next page; the vault seals it there and you confirm with your passkey.</p>
