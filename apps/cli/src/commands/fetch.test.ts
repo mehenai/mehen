@@ -3,6 +3,7 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { type ErrorCode, EXIT, EXIT_FOR_ERROR, ITEM_HEADER, MANDATE_HEADER, POSTURE_HEADER, RULE_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
 import { clockText } from "../ask.ts"
+import { OUTCOME_UNKNOWN_SAY } from "../errors.ts"
 import { grantView, ruleView } from "../testing/policy-rules-fixtures.ts"
 import { mandateView } from "../testing/mandate-fixtures.ts"
 import { base64UrlDecode, fromUtf8 } from "@mehen/protocol/bytes"
@@ -111,6 +112,60 @@ describe("mehen fetch", () => {
     expect(failing.stderr).toContain("500")
   })
 
+  test("an unmarked 502 or 504 from a proxy after a write is outcome_unknown with the check-first step and no retry; after a read it stays retryable", async () => {
+    await enrolled()
+    for (const status of [502, 504]) {
+      vault.relay = () => new Response("Gateway", { status })
+      const write = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/x", "-d", "{}", "--json"], env)
+      expect(write.code).toBe(EXIT.transient)
+      expect(json(write)).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+      expect(json(write)).not.toHaveProperty("retryAfter")
+      expect(write.stdout).not.toMatch(/[Rr]etry/)
+      const read = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/x", "--json"], env)
+      expect(json(read)).toMatchObject({ error: "internal", next: { say: expect.stringContaining("Retry once") } })
+    }
+  })
+
+  // A connection that drops once the relay request was sent (an idle
+  // timeout at a server or proxy): the write may have landed, so it is
+  // outcome_unknown and never sent again, by Bun's fetch or by mehen; a
+  // read is never sent twice with one proof either.
+  test("a write whose connection drops after it was sent is outcome_unknown and sent once; no proof is sent twice", async () => {
+    await enrolled()
+    vault.drops.set("POST /v1/relay", 1)
+    const before = vault.seen.length
+    const write = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/x", "-d", "{}", "--json"], env)
+    expect(write.code).toBe(EXIT.transient)
+    expect(json(write)).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+    expect(vault.seen.slice(before).filter((s) => s.path === "/v1/relay")).toHaveLength(1)
+    expect(vault.replays).toEqual([])
+    vault.drops.set("POST /v1/relay", 1)
+    const mid = vault.seen.length
+    const read = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/x", "--json"], env)
+    expect(json(read).error).not.toBe("outcome_unknown")
+    expect(vault.seen.slice(mid).filter((s) => s.path === "/v1/relay")).toHaveLength(1)
+    expect(vault.replays).toEqual([])
+   }, 20_000)
+
+  test("a write whose answer breaks off mid-stream is outcome_unknown, in every output; a read's is not", async () => {
+    await enrolled()
+    vault.relay = () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode(`{"id":`)) },
+        // After the head and the first chunk have gone out.
+        async pull(controller) { await Bun.sleep(100); controller.error(new Error("relay response too large")) },
+      }), { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
+    for (const extra of [["--json"], [], ["--select", "id", "--json"], ["-o", `${dir.path}/out.json`, "--json"]]) {
+      const write = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/x", "-d", "{}", ...extra], env)
+      expect(write.code, extra.join(" ")).toBe(EXIT.transient)
+      const said = `${write.stdout}${write.stderr}`
+      if (extra.includes("--json")) expect(json(write), extra.join(" ")).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+      expect(said, extra.join(" ")).toContain("The answer to the request broke off while mehen read it")
+      expect(said, extra.join(" ")).toContain(OUTCOME_UNKNOWN_SAY)
+    }
+    const read = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/x", "--json"], env)
+    expect(`${read.stdout}${read.stderr}`).not.toContain("outcome_unknown")
+  })
+
   test("a 401 says how to replace the key, on stderr and as --json's hint; other statuses say nothing", async () => {
     await enrolled()
     vault.relay = () => new Response("bad key", { status: 401, headers: { [UPSTREAM_HEADER]: "1" } })
@@ -190,7 +245,9 @@ describe("mehen fetch", () => {
       const result = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/x", "--json"], env)
       expect(result.code).toBe(exit)
       const { ask, ...body } = json(result)
-      expect(body).toEqual({
+      // The vault marks upstream_failed as after forwarding: the write may
+      // have reached the upstream, so it is outcome_unknown.
+      expect(body).toEqual(code === "upstream_failed" ? { error: "outcome_unknown", message: `refused: ${code}`, next: { say: OUTCOME_UNKNOWN_SAY } } : {
         error: code,
         message: `refused: ${code}`,
         next: { url: link, command: "mehen wait apr_1", say: "Ask the human." },
@@ -208,7 +265,7 @@ describe("mehen fetch", () => {
       expect(human.code).toBe(exit)
       expect(human.stdout).toBe("")
       expect(human.stderr).toContain(`mehen: refused: ${code}`)
-      expect(human.stderr).toContain(link)
+      expect(human.stderr).toContain(code === "upstream_failed" ? OUTCOME_UNKNOWN_SAY : link)
       expect(human.stderr).not.toMatch(/\u001b\[/)
       if (ask) {
         expect(human.stderr).toContain("Human needed: ")
@@ -502,6 +559,18 @@ describe("mehen fetch for agents: --output, --select, -i and --max-time", () => 
     expect(asJson).not.toHaveProperty("body")
   })
 
+  test("--select on a write whose body is not JSON gives the body as it came and never says to send it again", async () => {
+    await enrolled()
+    vault.relay = () => new Response("<html>created</html>", { status: 201, headers: { [UPSTREAM_HEADER]: "1" } })
+    const asJson = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/apps", "-d", "{}", "--select", "data", "--json"], env)
+    expect(asJson.code).toBe(EXIT.ok)
+    expect(json(asJson)).toMatchObject({ status: 201, body: "<html>created</html>", selected: null, found: false, note: expect.stringContaining("Do not send it again") })
+    const human = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/apps", "-d", "{}", "--select", "data"], env)
+    expect(human.code).toBe(EXIT.ok)
+    expect(human.stdout).toBe("<html>created</html>")
+    for (const out of [asJson, human]) expect(`${out.stdout}${out.stderr}`).not.toMatch(/run it again|[Rr]etry/)
+  })
+
   test("--select on a body that is not JSON is a usage error that says the request was sent", async () => {
     await enrolled()
     vault.relay = () => new Response("<html>", { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
@@ -538,22 +607,32 @@ describe("mehen fetch for agents: --output, --select, -i and --max-time", () => 
     expect(result.stderr).toContain("  mehen-item: openai-personal (alex@example.com)")
   })
 
-  test("--max-time stops waiting with a network error (exit 7) that says the request may have been sent", async () => {
+  const stalled = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("partial"))
+        },
+      }),
+      { status: 200, headers: { [UPSTREAM_HEADER]: "1" } },
+    )
+
+  test("--max-time on a read stops waiting with a network error (exit 7) that says to send it again", async () => {
     await enrolled()
-    vault.relay = () =>
-      new Response(
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode("partial"))
-          },
-        }),
-        { status: 200, headers: { [UPSTREAM_HEADER]: "1" } },
-      )
+    vault.relay = stalled
     const started = Date.now()
     const result = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/slow", "--max-time", "1", "--json"], env)
     expect(Date.now() - started).toBeLessThan(10_000)
     expect(result.code).toBe(EXIT.transient)
-    expect(json(result)).toMatchObject({ error: "network", next: { say: expect.stringContaining("may still have reached the upstream") } })
+    expect(json(result)).toMatchObject({ error: "network", next: { say: expect.stringContaining("send it again") } })
+  })
+
+  test("--max-time on a write is outcome_unknown (exit 7): check before sending again, never retry blind", async () => {
+    await enrolled()
+    vault.relay = stalled
+    const result = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/slow", "-d", "{}", "--max-time", "1", "--json"], env)
+    expect(result.code).toBe(EXIT.transient)
+    expect(json(result)).toMatchObject({ error: "outcome_unknown", next: { say: expect.stringContaining("Do not send it again until you have checked") } })
   })
 })
 
@@ -721,7 +800,8 @@ describe("mehen fetch when this machine's mandate allowed the request, or a cap 
     expect(json(foreign)).toMatchObject({ mandateCover: { url: page } })
     expect(foreign.stdout).not.toContain("evil.example")
     vault.overrides.set("POST /v1/relay", cover({ state: "none", mandate: null, url: null }))
-    expect((await runJv(send, env)).stderr).toContain('mandate: A mandate could let this machine make requests like this without asking. If this kind of ask keeps coming, propose one: `mehen mandate propose --classes read,send --note "<why>"`.')
+    expect((await runJv(send, env)).stderr).toContain('mandate: A mandate could let this machine make requests like this without asking. If this kind of ask keeps coming, propose one for only this credential and these kinds: `mehen mandate propose --items openai-personal --classes read,send --note "<why>"`.')
+    expect(json(await runJv([...send, "--json"], env))).toMatchObject({ mandateCover: { state: "none", items: ["openai-personal"] } })
     vault.overrides.set("POST /v1/relay", cover({ state: "lapsed" }))
     const unknown = await runJv([...send, "--json"], env)
     expect(json(unknown)).not.toHaveProperty("mandateCover")
@@ -738,5 +818,37 @@ describe("mehen fetch when this machine's mandate allowed the request, or a cap 
       expect(json(result)).not.toHaveProperty("mandate")
       expect(vault.seen.filter((s) => s.path.startsWith("/v1/mandates")).length).toBe(before)
     }
+  })
+})
+
+describe("-o after a write: an output that fails once the answer arrived", () => {
+  const failing = (fail: "truncate" | "write" | "close") => {
+    const error = Object.assign(new Error("no space left on device"), { code: "ENOSPC" })
+    return {
+      truncate: async () => { if (fail === "truncate") throw error },
+      write: async () => { if (fail === "write") throw error; return { bytesWritten: 0 } },
+      close: async () => { if (fail === "close") throw error },
+    } as unknown as import("node:fs/promises").FileHandle
+  }
+  const answer = () => new Response("created", { status: 201 })
+
+  test("says the request was sent, with its status, and not to send it again, for truncate and write", async () => {
+    const { writeBody } = await import("./fetch.ts")
+    for (const fail of ["truncate", "write"] as const) {
+      const error = await writeBody(answer(), { handle: failing(fail), path: "/tmp/out.json" }, "POST", 201).catch((e: unknown) => e) as { code: string; message: string; next: { say: string } }
+      expect(error.code, fail).toBe("failed")
+      expect(error.message, fail).toBe("The request was sent and the upstream answered 201, but mehen could not write its answer to /tmp/out.json: no space left on device.")
+      expect(error.next.say, fail).toContain("Do not send the request again to get the output")
+    }
+  })
+
+  test("a close that fails says the same when nothing else failed, and never replaces the error that did", async () => {
+    const { closeOutput } = await import("./fetch.ts")
+    const alone = await closeOutput({ handle: failing("close"), path: "/tmp/out.json" }, "POST", 201, false).catch((e: unknown) => e) as { code: string; message: string }
+    expect([alone.code, alone.message]).toEqual(["failed", "The request was sent and the upstream answered 201, but mehen could not write its answer to /tmp/out.json: no space left on device."])
+    // With a primary error, cleanup is best effort and stays quiet.
+    expect(await closeOutput({ handle: failing("close"), path: "/tmp/out.json" }, "POST", 201, true)).toBeUndefined()
+    // Before any answer arrived there is nothing to report about the output.
+    expect(await closeOutput({ handle: failing("close"), path: "/tmp/out.json" }, "POST", null, false)).toBeUndefined()
   })
 })

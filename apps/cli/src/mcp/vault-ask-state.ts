@@ -31,6 +31,7 @@ const DONE: Record<Exclude<WaitKind, "enrol">, string> = {
   policy: "The policy change was approved.",
   adoption: "The adoption batch was approved.",
   bundle: "Every request in the bundle was approved.",
+  mandate: "A mandate was signed for this machine.",
 }
 
 // The card's own read of an ask (MCP Apps, visibility ["app"]: never listed

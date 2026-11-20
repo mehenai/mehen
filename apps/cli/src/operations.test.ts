@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { EXIT } from "@mehen/protocol/api"
 import { CliError, exitCodeFor } from "./errors.ts"
+import { RelayOutcomeUnknownError, VaultNetworkError } from "./vault-api.ts"
 import { clockDown, connectCommandText, durationText, fetchContext, missingClientError, parseDurationSeconds, relayRequest, requestCommandText, resolveHome, settle, shellWord, waitTarget, showItem, waitFor, isWaitKind } from "./operations.ts"
 import { OAUTH_PROVIDERS } from "@mehen/protocol/templates"
 
@@ -147,6 +148,25 @@ describe("policy and guarded approval settlement", () => {
     }
     throw new Error("expected terminal refusal")
   }
+
+  // waitFor's redial of a dropped long poll is the CLI's only generic retry
+  // on a network failure. RelayOutcomeUnknownError is a VaultNetworkError
+  // for its callers, but it means a write may have landed: never retried.
+  test("a held poll that drops is polled again; one failing with RelayOutcomeUnknownError never is", async () => {
+    const pending = { proposal: "pol_x", item: "example-key", status: "pending", bindingCode: "CODE", summary: "Narrowed route", expiresAt: "later", outcome: null }
+    for (const [failure, retried] of [[new VaultNetworkError("dropped"), true], [new RelayOutcomeUnknownError("may have landed"), false]] as const) {
+      const paths: string[] = []
+      const api = { async relay(): Promise<Response> { throw new Error("unexpected relay") }, async request<T>(_method: string, path: string): Promise<T> {
+        paths.push(path)
+        if (paths.length === 2) { await Bun.sleep(1_100); throw failure }
+        return (paths.length === 1 ? pending : proposal) as T
+      } }
+      const waited = waitFor(api, "pol_x", { timeoutMs: 10_000, intervalMs: 0 })
+      if (retried) expect(await waited).toMatchObject({ kind: "policy", status: proposal })
+      else await expect(waited).rejects.toBe(failure)
+      expect([failure.name, paths]).toEqual([failure.name, retried ? ["/v1/policy/proposals/pol_x", "/v1/policy/proposals/pol_x?wait=1", "/v1/policy/proposals/pol_x?wait=1"] : ["/v1/policy/proposals/pol_x", "/v1/policy/proposals/pol_x?wait=1"]])
+    }
+  }, 10_000)
 
   test("pol_ resolves the policy status endpoint and preserves the actual narrowed outcome", async () => {
     expect(waitTarget("pol_x")).toEqual({ kind: "policy", path: "/v1/policy/proposals/pol_x", label: "Policy proposal" })
@@ -299,4 +319,15 @@ test("policy operations export the real producer implementations", async () => {
   const operations = await import("./operations.ts")
   const policy = await import("./policy-operations.ts")
   for (const name of ["showPolicy", "previewPolicy", "proposePolicy", "cancelPolicy", "stopPolicy", "convenienceProposal"] as const) expect(operations[name]).toBe(policy[name])
+})
+
+test("a truncated answer keeps its bytes and its truncation when the source refuses to be cancelled", async () => {
+  const { readLimited } = await import("./operations.ts")
+  let pulls = 0
+  const source = new ReadableStream<Uint8Array>({
+    pull(c) { pulls++; c.enqueue(new Uint8Array(8).fill(pulls)) },
+    cancel() { throw new Error("cannot cancel") },
+  })
+  const read = await readLimited(new Response(source), 12, "POST")
+  expect([read.truncated, read.bytes.length]).toEqual([true, 12])
 })

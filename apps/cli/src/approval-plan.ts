@@ -9,13 +9,12 @@ import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { APPROVAL_BUNDLE_MAX, type ApprovalBundleCreated, type NextStep, type RelayRequestInput } from "@mehen/protocol/api"
 import { type Bytes, utf8 } from "@mehen/protocol/bytes"
-import type { MandateCoverHint } from "@mehen/protocol/mandate-terms"
 import { z } from "zod"
 import { type Ask, type AskVault, GROUP_CODE, askUrl, askUrlFor, bundleAsk, isAskId, refusedLinkWarning, requestedBy, withContext } from "./ask.ts"
 import type { Env } from "./config.ts"
 import { CliError, usageError } from "./errors.ts"
 import { addLedgerEntry } from "./ledger.ts"
-import { checkedMandateCover, readMandateCover } from "./mandate-cover.ts"
+import { type MandateCover, checkedMandateCover, readMandateCover } from "./mandate-cover.ts"
 import { decodeBase64 } from "./mcp/vault-fetch.ts"
 import { type HomeSurface, fetchContext, parseHeader, relayRequest, shellWord } from "./operations.ts"
 import { type VaultSession, sessionLabel } from "./session.ts"
@@ -253,7 +252,7 @@ export type PlanResult = {
   error?: { error: string; message: string; next?: NextStep }
   // An ask only: a mandate could let requests like this through, and why
   // this one asked, its link checked against this vault.
-  mandateCover?: MandateCoverHint
+  mandateCover?: MandateCover
   repeat: string | null
   // vault_plan only: the vault_fetch arguments that send it, or null.
   fetch?: PlanFetch | null
@@ -308,7 +307,7 @@ export async function submitPlan(session: VaultSession, plan: ParsedPlan, env: E
       return { ...head, error: { error: result.error?.error ?? "internal", message: result.error?.message ?? "The vault refused this request.", ...(next ? { next } : {}) }, repeat: null, ...(mcp ? { fetch: null } : {}) }
     }
     const approval = result.approval ?? null
-    const cover = result.outcome === "ask" ? readMandateCover(result.mandateCover) : null
+    const cover = result.outcome === "ask" ? readMandateCover(result.mandateCover, entry.item) : null
     const repeat = repeatCommand(entry, plan.context, approval)
     const fetch = mcp ? planFetch(entry, plan.context, approval) : null
     const note = fetch && "why" in fetch ? noFetchNote(fetch.why, repeat, entry, plan.context, approval) : repeat === null ? noRepeatNote(entry, plan.context, approval, options.surface) : null

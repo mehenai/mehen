@@ -739,6 +739,32 @@ describe("relay upstream forwarding", () => {
     })
     await expect(forwardRelay(material, null)).rejects.toMatchObject({ code: "upstream_failed" })
   })
+
+  it("says, for a write whose answer is over the cap, that it was sent and to check first; for a read, to ask for less", async () => {
+    setUpstreamFetch(async () => new Response("x", { headers: { "content-length": String(64 * 1024 * 1024) } }))
+    const read = await forwardRelay(material, null).catch((error: unknown) => error) as VaultError
+    expect([read.code, read.message]).toEqual(["too_large", expect.stringContaining("Ask for less")])
+    const write = await forwardRelay({ ...material, method: "POST" }, null).catch((error: unknown) => error) as VaultError
+    expect(write.code).toBe("too_large")
+    expect(write.message).toContain("The request was sent and may have taken effect: check whether it did before sending it again.")
+    expect(write.message).not.toContain("Ask for less")
+  })
+
+  it("says retry later for a read that failed upstream, and to check first for a write", async () => {
+    setUpstreamFetch(async () => {
+      throw new Error("reset")
+    })
+    const read = await forwardRelay(material, null).catch((error: unknown) => error)
+    expect(read).toBeInstanceOf(VaultError)
+    expect((read as VaultError).message).toContain("retry later")
+    expect((read as VaultError).extra.retryAfter).toBe(5)
+    const write = await forwardRelay({ ...material, method: "POST" }, null).catch((error: unknown) => error)
+    expect(write).toBeInstanceOf(VaultError)
+    expect((write as VaultError).code).toBe("upstream_failed")
+    expect((write as VaultError).message).not.toContain("retry later")
+    expect((write as VaultError).message).toContain("may have reached")
+    expect((write as VaultError).extra.retryAfter).toBeUndefined()
+  })
 })
 
 describe("relay route", () => {

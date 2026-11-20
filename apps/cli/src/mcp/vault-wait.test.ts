@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test"
 import { policyAsk, approvalAsk, askUrlFor } from "../ask.ts"
 import { addLedgerEntry, readLedger } from "../ledger.ts"
+import { mandateCreated } from "../testing/mandate-fixtures.ts"
 import { MockVault } from "../testing/mock-vault.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
 
@@ -136,6 +137,34 @@ test("vault_wait on a push approval returns once the push is done, and a refused
   const refused = await wait("apr_push")
   expect(refused.isError).toBe(true)
   expect(refused.structuredContent).toMatchObject({ error: "provider_refused", providerStatus: 404, push: { state: "failed" } })
+})
+
+test("with two workspaces and none named, vault_wait mdp_ finds the one vault_mandate proposed it in, and vault_pending does not list it", async () => {
+  const home = await tempDir()
+  try {
+    const homeEnv = { HOME: home.path, MEHEN_CONFIG_DIR: "", MEHEN_VAULT_URL: vault.url }
+    const root = `${home.path}/.config/mehen`
+    await vault.enrolSoftware(root, { config: { tenant: "tn_second00000001", workspaceSlug: "second-space", workspaceName: "Second" } })
+    const first = await vault.enrolSoftware(root)
+    const callTool = async (name: string, args: Record<string, unknown>) => {
+      const result = await runJv(["mcp"], homeEnv, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } })}\n`)
+      return (JSON.parse(result.stdout) as { result: WaitOutput }).result
+    }
+    vault.overrides.set("GET /v1/mandates/asked", () => Response.json({ items: ["github-work"], classes: [] }))
+    vault.overrides.set("POST /v1/mandates/proposals", () => Response.json(mandateCreated(vault.url), { status: 201 }))
+    expect((await callTool("vault_mandate", { action: "propose", note: "Nightly triage", workspace: "mock-space" })).isError).toBe(false)
+    expect((await callTool("vault_pending", {})).structuredContent).toMatchObject({ pending: [] })
+    vault.overrides.set("GET /v1/mandates/proposals/mdp_new", () => Response.json({ proposal: "mdp_new", state: "signed", mandate: "mdt_m1", expiresAt: "2026-11-15T09:00:00.000Z" }))
+    const before = vault.seen.length
+    const waited = await callTool("vault_wait", { id: "mdp_new", timeoutSeconds: 0 })
+    expect(waited.isError).toBe(false)
+    expect(waited.structuredContent).toMatchObject({ kind: "mandate", state: "signed", mandate: "mdt_m1" })
+    expect(vault.seen.slice(before).map((s) => s.claims.dev)).toEqual([first])
+    const gone = await callTool("vault_wait", { id: "mdp_new", timeoutSeconds: 0 })
+    expect(gone.structuredContent).toMatchObject({ error: "not_found", next: { say: expect.stringContaining('vault_mandate { "action": "list" }') } })
+  } finally {
+    await home.remove()
+  }
 })
 
 test("vault_wait polls again with a fresh proof when a held poll's connection drops, and returns the answer", async () => {

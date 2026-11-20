@@ -403,6 +403,19 @@ function polledOf(a: Attempt, value: unknown): Polled {
   throw new CliError("internal", `The vault returned an unknown status ${JSON.stringify(v.status)} for enrolment ${a.record.id}.`)
 }
 
+// What the vault says of a pending enrolment now, read without finishing it
+// on this machine; null when it cannot be asked (its key is not here, the
+// vault cannot be reached or refuses).
+export async function pendingEnrolmentStatus(env: Env, slot: string, record: PendingRecord): Promise<Polled["status"] | null> {
+  try {
+    if (!(await sameKeyOnDisk(slot, record.backend, record.jwk))) return null
+    const key = await loadDeviceKey(slot, record.backend, env)
+    return (await pollAttempt({ root: slot, slot, record, key, env, session: null })).status
+  } catch {
+    return null
+  }
+}
+
 export async function pollAttempt(a: Attempt, signal?: AbortSignal): Promise<Polled> {
   return polledOf(a, await attemptApi(a).request<unknown>("GET", `/v1/enrol/${encodeURIComponent(a.record.id)}`, undefined, signal ? { signal } : {}))
 }

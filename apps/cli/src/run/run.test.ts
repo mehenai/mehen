@@ -6,7 +6,7 @@ import { newPlaceholder } from "@mehen/protocol"
 import { VaultApiError, VaultNetworkError } from "../vault-api.ts"
 import { FakeVaultApi, fakeDeps, git, removeDir, runCreated, tempDir, withTimeout, writeManifest } from "./fake-vault-api.ts"
 import { RUN_LOG_FILE, RUN_LOG_MAX_BYTES, cleanRun, readRunLog } from "./run-log.ts"
-import { RUN_USAGE, parseRunArgs, runCommand, runHelp } from "./run.ts"
+import { RUN_USAGE, parseRunArgs, runCommand, runHelp, streamsWrites } from "./run.ts"
 
 let repo: string
 
@@ -276,7 +276,7 @@ describe("mehen run", () => {
     expect(await runCommand(["--env"], fakeDeps(api, repo))).toBe(EXIT.usage)
     const deps = fakeDeps(api, repo)
     expect(await runCommand(["--bogus", "x"], deps)).toBe(EXIT.usage)
-    expect(deps.err.text()).toBe("mehen: Unknown option --bogus for `mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--] <command> [args...]`.\nnext: Check the usage with `mehen run --help`.\n  run:  mehen run --help\n")
+    expect(deps.err.text()).toBe("mehen: Unknown option --bogus for `mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--stream-writes] [--] <command> [args...]`.\nnext: Check the usage with `mehen run --help`.\n  run:  mehen run --help\n")
     expect(api.calls).toHaveLength(0)
   })
 
@@ -340,6 +340,13 @@ describe("mehen run", () => {
     expect(deps.err.text()).toContain("reaches its maximum life")
     expect(deps.err.text()).toContain("mehen: run run_test1 has reached its maximum life; its child processes were stopped.\n")
     expect(api.called("DELETE", "/v1/runs/run_test1")).toBe(true)
+  })
+
+  test("--stream-writes, or MEHEN_RUN_STREAM_WRITES=1, has the local relay stream every write's answer", () => {
+    const args = parseRunArgs(["--stream-writes", "--env", "dev", "--", "node", "app.js"])
+    expect(args).toEqual({ streamWrites: true, env: "dev", command: ["node", "app.js"] })
+    expect(runHelp(["--stream-writes", "--help"])).toBe(RUN_USAGE)
+    expect([streamsWrites(args, {}), streamsWrites({}, { MEHEN_RUN_STREAM_WRITES: "1" }), streamsWrites({}, { MEHEN_RUN_STREAM_WRITES: "0" }), streamsWrites({}, {})]).toEqual([true, true, false, false])
   })
 
   test("--service asks for a service run and the banner says so; a vault without service runs is named with the run's end", async () => {

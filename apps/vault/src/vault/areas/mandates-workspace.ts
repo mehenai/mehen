@@ -7,8 +7,7 @@
 // the terms cover it. Behind MANDATES (mandatesOn); a managed workspace has
 // none.
 
-import { MANDATE_CLASSES, MANDATE_ENDING_NOTICE_MS, MANDATE_LIST_MAX, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_TTL_MS, MANDATE_PROPOSALS_DAY_MAX, MANDATE_PROPOSALS_OPEN_MAX, MANDATE_RATE_LIMIT, MANDATE_RATE_WINDOW_MS, MANDATE_RECEIPT_KEEP_MS, MANDATE_USES_PAGE, MANDATE_ASKED_WINDOW_MS, MANDATE_MAX_ITEMS, mandateScheduleText, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MandateActionRequestSchema, MandateIdSchema, MandateProposalIdSchema, MandateProposeSchema, MandateRevSchema, MandateSignSchema, mandateReceiptsCursor, parseMandateReceiptsCursor, type Binding, type CredentialHome, type MandateCandidateNever, type Share, type MandateChanged, type MandateClass, type MandateCounts, type MandateList, type MandateOpenProposal, type MandateProposalCreated, type MandateProposalView, type MandateProposedTerms, type MandateReceiptsPage, type MandateReceiptView, type MandateState, type MandateTerms, type MandateView, type MandateActionAnswer, type MandateAsked, type MandateProposalRefusal, type MandateCandidates, type MandateCappedAsk, type MandateCoverAsk, type MandateCoverHint, type MandateCoverState, type SessionIdentityCheck, type WorkspaceRole, type WorkspaceStepUpAction } from "@mehen/protocol"
-import { canonicalJson } from "@mehen/protocol/canonical-json"
+import { MANDATE_CLASSES, MANDATE_ENDING_NOTICE_MS, MANDATE_LIST_MAX, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_TTL_MS, MANDATE_PROPOSALS_DAY_MAX, MANDATE_PROPOSALS_OPEN_MAX, MANDATE_RATE_LIMIT, MANDATE_RATE_WINDOW_MS, MANDATE_RECEIPT_KEEP_MS, MANDATE_USES_PAGE, MANDATE_ASKED_WINDOW_MS, MANDATE_MAX_ITEMS, mandateScheduleText, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MandateActionRequestSchema, MandateIdSchema, MandateProposalIdSchema, MandateProposeSchema, MandateRevSchema, MandateSignSchema, mandateReceiptsCursor, parseMandateReceiptsCursor, type Binding, type CredentialHome, type MandateCandidateNever, type Share, type MandateChanged, type MandateClass, type MandateCounts, type MandateList, type MandateOpenProposal, type MandateProposalCreated, type MandateProposalView, type MandateProposedTerms, type MandateReceiptsPage, type MandateReceiptView, type MandateState, type MandateTerms, type MandateView, type MandateActionAnswer, type MandateAsked, type MandateProposalRefusal, type MandateCandidates, type MandateCappedAsk, type MandateCoverAsk, type MandateCoverHint, type MandateCoverState, type SessionIdentityCheck, type WorkspaceRole, type WorkspaceStepUpAction, type MandateProposalStatus } from "@mehen/protocol"
 import { mandateClassesOf, mandateCovers, mandateCredentialNever, mandateDigest, mandateHeadersNameOperation, mandateHostNamed, mandateRequestFacts, mandateScheduleOpen } from "@mehen/protocol/mandates"
 import { policyCatalogueVerdict } from "@mehen/protocol/policy-safety"
 import { z } from "zod"
@@ -381,6 +380,16 @@ function propose(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation
   })
 }
 
+// The state of a machine's own proposal, read-only, for its wait.
+function ownProposalStatus(ctx: VaultContext, p: AccessPrincipal, raw: unknown): MandateProposalStatus {
+  mandatesAvailable(ctx)
+  const principal = machineOnly(p), { id } = parseOpInput(z.strictObject({ id: z.string().max(80) }), raw)
+  const row = MandateProposalIdSchema.safeParse(id).success ? one(ctx.sql.exec<ProposalRow>("SELECT * FROM mandate_proposals WHERE id=?", id)) : null
+  if (!row || row.device !== principal.deviceId) throw new VaultError("not_found", "No such proposal.")
+  return { proposal: row.id, state: proposalState(ctx, row), mandate: row.mandate_id ?? row.closed_by, expiresAt: iso(row.expires_at) }
+}
+const proposalState = (ctx: VaultContext, row: ProposalRow): MandateProposalStatus["state"] => row.mandate_id !== null ? "signed" : row.closed_at !== null || ctx.now() >= row.expires_at ? "expired" : "open"
+
 // A proposal, for its machine's owner: the credentials it names by slug
 // that they may see, as refs the sign page puts in the terms by id.
 function proposalView(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation: WorkspaceInvocationContext): MandateProposalView {
@@ -406,7 +415,7 @@ function proposalView(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invoc
     items: refs ?? "all", hiddenItems: terms.items === "all" || refs === null || ids === null ? 0 : terms.items.length - refs.length, ...unbound,
     ...(row.closed_reason === "unbound" ? { closedReason: "unbound" as const } : {}),
     classes: terms.classes, caps: terms.caps, ttlDays: terms.ttlDays, schedule: terms.schedule, note: terms.note, reason: row.reason,
-    state: row.mandate_id !== null ? "signed" : row.closed_at !== null || now >= row.expires_at ? "expired" : "open", mandate: row.mandate_id ?? row.closed_by,
+    state: proposalState(ctx, row), mandate: row.mandate_id ?? row.closed_by,
     createdAt: iso(row.created_at), expiresAt: iso(row.expires_at),
   }
 }
@@ -1077,6 +1086,7 @@ export const workspaceMandateOps: NonNullable<Area["workspaceOps"]> = {
     return receiptsPage(ctx, accessState(ctx), principal, ownRow(ctx, principal, id).id, before)
   } },
   "mandates.mine_pause": { auth: ["device"], handler: (ctx, p, raw) => machinePause(ctx, p as AccessPrincipal, raw) },
+  "mandates.mine_proposal": { auth: ["device"], handler: (ctx, p, raw) => ownProposalStatus(ctx, p as AccessPrincipal, raw) },
   "mandates.list": { auth: ["account"], handler: (ctx, p, _raw, invocation) => list(ctx, p as AccessPrincipal, invocation) },
   "mandates.show": { auth: ["account"], handler(ctx, p, raw, invocation) {
     mandatesAvailable(ctx)

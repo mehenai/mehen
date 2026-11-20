@@ -111,9 +111,9 @@ export function contextAmbiguous(selector: string, matches: LocalContext[]): Cli
 // Rule 6: several active slots and nothing that selects one.
 export function noneSelected(matches: LocalContext[]): CliError {
   const choices = [...new Set(matches.map((c) => c.config.workspaceSlug ?? c.config.tenant))].map((s) => `--workspace ${s}`).join(", ")
-  return new CliError("context_ambiguous", `This machine is enrolled in ${matches.length} workspaces and nothing selects one: ${matches.map(contextLabel).join("; ")}.`, {
-    command: "mehen workspace list",
-    say: `Name one (${choices}), set MEHEN_WORKSPACE for this shell, or bind the checkout with \`mehen workspace bind\`.`,
+  const names = matches.map((c) => `${workspaceLabel(c.config)} at ${c.config.vault}`).join("; ")
+  return new CliError("context_ambiguous", `This machine is enrolled in ${matches.length} workspaces and nothing selects one: ${names}.`, {
+    say: `Name the workspace with --workspace <slug> (${choices}); for a credential, it is items[].workspace.slug in \`mehen ls --json\`. Or set MEHEN_WORKSPACE for this shell, or bind the checkout with \`mehen workspace bind\`.`,
   })
 }
 
@@ -504,6 +504,12 @@ function waitNotFound(env: Env, id: string): CliError {
     return new CliError("not_found", `No open enrolment ${id} is recorded on this machine for ${vaultUrl}.`, {
       command: "mehen enrol --workspace <slug>",
       say: "Only the machine that started an enrolment can wait on it, and only while its link lasts; run `mehen enrol --workspace <slug>` to start again.",
+    })
+  }
+  if (id.startsWith("mdp_")) {
+    return new CliError("not_found", `${id} is not recorded in any workspace this machine may use.`, {
+      command: "mehen mandate ls --workspace <slug>",
+      say: "Name the workspace it was proposed in with --workspace <slug>; `mehen mandate ls --workspace <slug>` lists that workspace's open mandate proposals.",
     })
   }
   return new CliError("not_found", `${id} is not recorded in any workspace this machine may use.`, {
