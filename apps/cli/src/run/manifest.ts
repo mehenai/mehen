@@ -199,7 +199,7 @@ export function locateManifest(cwd: string, facts: GitFacts = gitFacts(cwd)): Lo
   if (path === null) {
     const where = facts.root === null ? `${cwd} (not in a git repo, so only this directory counts)` : `${cwd} or above it up to the worktree root ${facts.root}`
     throw new CommandError(EXIT.error, `no ${MANIFEST_FILE} in ${where}`, {
-      say: "Run mehen init at the repo root to create the project and write mehen.toml (or mehen init --local for an uncommitted mehen.local.toml).",
+      say: "Run mehen init at the repo root to create the project and write mehen.toml. Pass --local for an uncommitted mehen.local.toml.",
       command: "mehen init",
     })
   }
