@@ -4,9 +4,13 @@ import { BEARER, MODEL_CALLS, NAMED_READS, READS, WRITES } from "./shared.ts"
 // xAI's inference API. The management API is another host with its own
 // key and is not bound. Without a human: the named reads (models, deferred
 // completions, images, videos, batches and voices), and model calls (chat,
-// responses, images, video, speech, tokenising and batches). A model call
-// or batch whose body names a remote MCP server (a tool of type "mcp", or
-// any server_url), or that cannot be read, is pinned to an approval: xAI
+// responses, images, video, speech, tokenising and requests added inline to
+// a batch). Creating a batch and uploading or publishing a file are pinned
+// to an approval: a batch can run requests from an uploaded JSONL file,
+// which the vault never reads, and those can name remote MCP tools too. A
+// model call or inline batch request whose body names a remote MCP server
+// (a tool of type "mcp", or any server_url), or that cannot be read, is
+// pinned to an approval: xAI
 // calls that server itself, with whatever headers and authorization the
 // request names, and its MCP tools do not honour require_approval. Stored
 // responses are pinned to an approval too, since their tools carry those
@@ -46,7 +50,7 @@ export const xai: Template = {
       {
         action: "approve",
         methods: ["POST"],
-        paths: ["/v1/responses", "/v1/chat/completions", "/v1/batches", "/v1/batches/*/requests"],
+        paths: ["/v1/responses", "/v1/chat/completions", "/v1/batches/*/requests"],
         body: "json-remote-mcp",
         note: "names a remote MCP server, which xAI calls itself, or cannot be read",
       },
@@ -66,10 +70,21 @@ export const xai: Template = {
           "/v1/tts",
           "/v1/stt",
           "/v1/tokenize-text",
-          "/v1/batches",
           "/v1/batches/*/requests",
         ],
         note: MODEL_CALLS,
+      },
+      {
+        action: "approve",
+        methods: ["POST"],
+        paths: ["/v1/batches"],
+        note: "creates a batch, which may run requests from an uploaded file the vault never reads, remote MCP tools among them",
+      },
+      {
+        action: "approve",
+        methods: WRITES,
+        paths: ["/v1/files", "/v1/files/**"],
+        note: "uploads a file, which can hold batch requests, or makes a file public",
       },
       { action: "approve", methods: ["POST"], paths: ["/v1/realtime/client_secrets"], note: "mints a realtime client secret" },
       { action: "approve", methods: WRITES, paths: ["/v2/phone-numbers/**"], note: "buys or releases a billed phone number" },
