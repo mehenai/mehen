@@ -542,6 +542,11 @@ describe("narrowed refusals: find feeding a file reader", () => {
     "find . -type f | xargs rm",
     "find . -type f -exec rm {} +",
     "find -L . -name '*.ts' | xargs cat",
+    "find . -path './src/*' -name '*.ts' | xargs cat",
+    "find . -name '*.ts' -path '*' | xargs cat",
+    "find . -name '*' -name '*.md' | xargs cat",
+    'find . -name "$P" -name \'*.ts\' | xargs cat',
+    "find . -path './src/*.ts' -exec cat {} +",
   ]
   const refused = [
     "find . -type f | xargs cat",
@@ -552,12 +557,15 @@ describe("narrowed refusals: find feeding a file reader", () => {
     "find . -name '*.local' | xargs cat",
     "find . -name '*.json' | xargs cat",
     "find . -name '*.pem' | xargs cat",
+    "find . -path './src/*' -name '*' | xargs cat",
+    "find . -path './src/*' | xargs cat",
+    "find . -path '*.ts/*' | xargs cat",
+    "find . -name '*' -path './src/*' -type f | xargs cat",
     "find . -name 'id_*' | xargs cat",
     "find . -name '*.ts' -o -name '*.env' | xargs cat",
     "find . ! -name '*.ts' | xargs cat",
     "find . -not -name '*.ts' | xargs cat",
     "find . \\( -name '*.ts' \\) | xargs cat",
-    "find . -name '*.ts' -path '*' | xargs cat",
     "find . -regex '.*\\.ts' | xargs cat",
     "find ~/.aws -name '*.ts' | xargs cat",
     "find ~ -name '*.ts' | xargs cat",
@@ -573,7 +581,7 @@ describe("narrowed refusals: find feeding a file reader", () => {
     "find . -name '*.ts' -exec sh -c 'cat \"$1\"' _ {} \\;",
   ]
 
-  test("a find whose every pattern cannot match a key file's name, from folders that are not protected, may feed a reader", () => {
+  test("a find with a pattern that cannot match a key file's name, from folders that are not protected, may feed a reader", () => {
     for (const command of allowed) expect({ command, findings: commandFindings(command, CWD, HOME) }).toEqual({ command, findings: [] })
   })
 

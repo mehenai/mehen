@@ -535,14 +535,16 @@ const SECRET_EXTENSIONS = new Set(["env", "envrc", "vars", "pem", "key", "p12", 
 // fixed ones, and one of each family.
 const SECRET_WITNESSES = [".env", ".env.local", ".env.development", ".env.dev", ".env.production", ".env.prod", ".env.test", ".env.staging", ".env.ci", ".env.preview", "x.env", ".envrc", ".dev.vars", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ed25519_sk", ...[...DOTFILES], ...PROTECTED_FILE_NAMES]
 
-// Whether every name a find pattern matches is provably not a key file's:
-// a literal name that is not one, or a pattern ending in a literal
-// extension that no key file the rules know has. Anything else (*, .*,
-// *.env, a pattern with no extension) could match one.
+// Whether every name a find pattern matches is provably not a key file's,
+// judged on its final segment (for -name, the whole pattern; for -path,
+// what follows the last slash): a literal name that is not one, or a
+// pattern ending in a literal extension that no key file the rules know
+// has. Anything else (*, .*, *.env, a pattern with no extension) could
+// match one.
 function safeFindPattern(pattern: string, caseless: boolean): boolean {
   const last = pattern.split("/").at(-1) ?? ""
-  if (!/[*?[\\]/.test(pattern)) return !secretName(last) && !PROTECTED_FILE_NAMES.has(last)
-  const extension = /\.([A-Za-z0-9]+)$/.exec(pattern)?.[1]
+  if (!/[*?[\\]/.test(last)) return last !== "" && !secretName(last) && !PROTECTED_FILE_NAMES.has(last)
+  const extension = /\.([A-Za-z0-9]+)$/.exec(last)?.[1]
   if (extension === undefined || SECRET_EXTENSIONS.has(extension.toLowerCase())) return false
   const re = new RegExp(globRegex(last).source, caseless ? "i" : "")
   return !SECRET_WITNESSES.some((name) => re.test(name))
@@ -612,10 +614,12 @@ function findModel(args: Word[], cwds: Cwds, ctx: Context): FindModel {
     }
     fail(`its expression uses ${text}, which the guard does not follow`)
   }
+  // Joined by -a only, every file find yields passes every test, so one
+  // pattern that cannot match a key file's name is enough.
   if (patterns.length === 0) fail("it has no -name, -iname or -path pattern")
-  for (const { word, caseless } of patterns) {
-    if (word === undefined || word.dynamic) fail("one of its patterns is only known when the shell runs it")
-    else if (!safeFindPattern(word.text, caseless)) fail(`its pattern '${word.text}' could match a key file's name`)
+  else if (!patterns.some(({ word, caseless }) => word !== undefined && !word.dynamic && safeFindPattern(word.text, caseless))) {
+    const shown = patterns.find(({ word }) => word !== undefined && !word.dynamic)?.word?.text
+    fail(shown === undefined ? "its patterns are only known when the shell runs it" : `its pattern '${shown}' could match a key file's name, and no other pattern rules key files out`)
   }
   return model
 }
