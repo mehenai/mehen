@@ -1093,7 +1093,7 @@ describe("sixth review: reproductions", () => {
   })
 
   test("line continuations are removed before anything is read, as bash removes them, except where bash keeps them", () => {
-    for (const command of ["v=OPENAI_API_KEY; printf '%s\\n' $\\\n{!v}", "echo $\\\nOPENAI_API_KEY", 'echo "$\\\nOPENAI_API_KEY"', "echo $\\\n{OPENAI_API_KEY}", "echo $OPENAI_\\\nAPI_KEY", "bash -c 'echo $\\\nOPENAI_API_KEY'", "echo \\\\\ncat .env", "cat <<'EOF'\nfoo\\\nEOF\ncat .env", "# x \\\ncat .env", "true; \\\n# comment \\\ncat .env", "  \\\n# c \\\ncat .env", "cat <<E\\\nOF\n$OPENAI_API_KEY\nEOF", "cat <\\\n<'EOF'\nfoo\\\nEOF\ncat .env", "cat <<\\\nEOF\n$OPENAI_API_KEY\nEOF", "cat <<-\\\nEOF\n\t$GITHUB_TOKEN\n\tEOF"]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["v=OPENAI_API_KEY; printf '%s\\n' $\\\n{!v}", "echo $\\\nOPENAI_API_KEY", 'echo "$\\\nOPENAI_API_KEY"', "echo $\\\n{OPENAI_API_KEY}", "echo $OPENAI_\\\nAPI_KEY", "bash -c 'echo $\\\nOPENAI_API_KEY'", "echo \\\\\ncat .env", "cat <<'EOF'\nfoo\\\nEOF\ncat .env", "# x \\\ncat .env", "true; \\\n# comment \\\ncat .env", "  \\\n# c \\\ncat .env", "cat <<E\\\nOF\n$OPENAI_API_KEY\nEOF", "cat <\\\n<'EOF'\nfoo\\\nEOF\ncat .env", "cat <<\\\nEOF\n$OPENAI_API_KEY\nEOF", "cat <<-\\\nEOF\n\t$GITHUB_TOKEN\n\tEOF", "cat <<E\\\"OF\nliteral\nE\"OF\nprintf '%s\\n' $\\\nOPENAI_API_KEY", "cat <<\"E\\\"OF\"\nx\nE\"OF\necho $\\\nOPENAI_API_KEY"]) expect(refused("proj", command)).toEqual(yes(command))
     for (const command of ["cat <<EOF\nfoo\\\nEOF\ncat .env\nEOF", "curl -s \\\n  -H 'Accept: json' \\\n  https://example.com", "echo 'a\\\nb'", 'git commit -m "line one \\\nline two"', "echo a\\\n#b; cat README.md"]) none("proj", command)
   })
 

@@ -592,6 +592,30 @@ class Parser {
 // single quotes or $'...', in a comment, and in the body of a quoted
 // here-document, as bash does. So `$\<newline>{!v}` is `${!v}` and
 // `$\<newline>OPENAI_API_KEY` expands the key.
+// A word with its quoting removed as bash removes it: a backslash makes
+// the next character plain, '...' is taken as written, and in "..." a
+// backslash escapes only $, `, " and itself. A quote that was escaped is
+// kept, so the delimiter of <<E\"OF is E"OF.
+function unquoteWord(raw: string): string {
+  let out = ""
+  for (let j = 0; j < raw.length; j++) {
+    const c = raw[j] as string
+    if (c === "\\") out += raw[++j] ?? ""
+    else if (c === "'") {
+      const close = raw.indexOf("'", j + 1)
+      const stop = close === -1 ? raw.length : close
+      out += raw.slice(j + 1, stop)
+      j = stop
+    } else if (c === '"') {
+      for (j++; j < raw.length && raw[j] !== '"'; j++) {
+        if (raw[j] === "\\" && '$`"\\'.includes(raw[j + 1] ?? "")) j++
+        out += raw[j] ?? ""
+      }
+    } else out += c
+  }
+  return out
+}
+
 // The first index at or after `at` that does not begin a line continuation.
 function skipContinuations(s: string, at: number): number {
   let j = at
@@ -674,9 +698,16 @@ export function logicalText(s: string): string {
       let raw = ""
       while (j < s.length && !/[\s;&|<>()]/.test(s[j] as string)) {
         if (s[j] === "\\" && s[j + 1] === "\n") j += 2
-        else if (s[j] === "'" || s[j] === '"') {
-          const close = s.indexOf(s[j] as string, j + 1)
+        else if (s[j] === "'") {
+          const close = s.indexOf("'", j + 1)
           const stop = close === -1 ? s.length : close + 1
+          raw += s.slice(j, stop)
+          j = stop
+        } else if (s[j] === '"') {
+          // To the closing quote, a backslash escaping the next character.
+          let k = j + 1
+          while (k < s.length && s[k] !== '"') k += s[k] === "\\" ? 2 : 1
+          const stop = Math.min(k + 1, s.length)
           raw += s.slice(j, stop)
           j = stop
         } else {
@@ -685,7 +716,7 @@ export function logicalText(s: string): string {
           j += step
         }
       }
-      docs.push({ delimiter: raw.replace(/\\(.)/gs, "$1").replace(/['"]/g, ""), strip, quoted: /['"\\]/.test(raw) })
+      docs.push({ delimiter: unquoteWord(raw), strip, quoted: /['"\\]/.test(raw) })
       out += `<<${strip ? "-" : ""}${blanks}${raw}`
       i = j
       wordStart = false
