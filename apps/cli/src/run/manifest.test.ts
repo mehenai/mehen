@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync } from "node:fs"
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { CliError } from "../errors.ts"
 import { CommandError } from "./deps.ts"
@@ -151,6 +151,32 @@ describe("manifestWorkspace", () => {
         chmodSync(join(repo, "mehen.toml"), 0o644)
       }
       expect(manifestWorkspace(repo)).toEqual({ path: join(repo, "mehen.toml"), project: "prj_1", workspace: null, vault: null })
+    } finally {
+      removeDir(repo)
+    }
+  })
+
+  test("discovers mehen.local.toml and refuses when both mehen.toml and mehen.local.toml exist in one directory", () => {
+    const repo = tempDir()
+    try {
+      git(repo, "init", "-q")
+      writeFileSync(join(repo, "mehen.local.toml"), 'project = "prj_local"\nworkspace = "tn_8fQ2abcdef"\nvault = "http://localhost:7787"\n')
+      const sub = join(repo, "src", "api")
+      mkdirSync(sub, { recursive: true })
+      expect(findManifest(sub, repo)).toBe(join(repo, "mehen.local.toml"))
+      expect(locateManifest(sub).manifest).toMatchObject({ path: join(repo, "mehen.local.toml"), project: "prj_local" })
+      expect(manifestWorkspace(sub)).toEqual({ path: join(repo, "mehen.local.toml"), project: "prj_local", workspace: "tn_8fQ2abcdef", vault: "http://localhost:7787" })
+
+      // Refuses when both mehen.toml and mehen.local.toml exist in the same directory:
+      // neither locateManifest nor manifestWorkspace silently guesses.
+      writeManifest(repo, 'project = "prj_shared"\n')
+      expect(() => findManifest(sub, repo)).toThrow(CommandError)
+      expect(() => locateManifest(sub)).toThrow(/both mehen\.toml and mehen\.local\.toml/)
+      let thrown: unknown
+      try { manifestWorkspace(sub) } catch (error) { thrown = error }
+      expect(thrown).toBeInstanceOf(CliError)
+      expect((thrown as CliError).code).toBe("workspace_unbound")
+      expect((thrown as CliError).message).toContain("both mehen.toml and mehen.local.toml")
     } finally {
       removeDir(repo)
     }

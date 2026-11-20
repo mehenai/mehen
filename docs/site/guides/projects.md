@@ -16,7 +16,7 @@ A repo that uses the vault commits a `mehen.toml` at its root, with variable nam
 mehen init --env dev --env staging
 ```
 
-`mehen init` at the repo root creates the project in the vault, bound to the repo's `origin` remote, and writes `mehen.toml` with the project id, workspace and vault. It never overwrites a `mehen.toml` that is already there. Creating a project needs a member's machine (not a guest's or a team's) whose scope covers every project. If this machine is refused (`forbidden`), stop and ask the human or the project's maintainer for a checkout with the existing project's committed manifest; do not bypass the refusal or invent a project id. Once that manifest exists, `mehen workspace bind` fills in `workspace` and `vault`; it never guesses a project from the path.
+`mehen init` at the repo root creates the project in the vault, bound to the repo's `origin` remote, and writes `mehen.toml` with the project id, workspace and vault. It never overwrites a `mehen.toml` or `mehen.local.toml` that is already there. Working in a shared or open-source repo where you cannot commit `mehen.toml`? Pass `mehen init --local` to write an uncommitted `mehen.local.toml` instead (add `mehen.local.toml` to `.git/info/exclude` or `.gitignore`). Creating a project needs a member's machine (not a guest's or a team's) whose scope covers every project. If this machine is refused (`forbidden`), stop and ask the human or the project's maintainer for a checkout with the existing project's committed manifest; do not bypass the refusal or invent a project id. Once that manifest exists, `mehen workspace bind` fills in `workspace` and `vault`; it never guesses a project from the path.
 
 ### A repo that is already a project
 
