@@ -11,7 +11,7 @@ import { policyAreaGrantTermsDigest, policyRuleTermsDigest } from "@mehen/protoc
 import { VaultError } from "../src/http.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { can } from "../src/vault/access.ts"
-import { MANDATE_ASKED_MIGRATION, MANDATE_PROPOSALS_ITEMS_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATES_MIGRATION, mandatesArea, scheduleMandateSweep, settleShareExpiries, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
+import { MANDATE_ASKED_MIGRATION, recordMandateCoverAsk, MANDATE_PROPOSALS_ITEMS_MIGRATION, MANDATE_CAPPED_ASKS_MIGRATION, MANDATE_COVER_ASKS_MIGRATION, MANDATE_PROPOSALS_CLOSED_BY_MIGRATION, MANDATE_PROPOSALS_MANDATE_MIGRATION, MANDATES_MIGRATION, mandatesArea, scheduleMandateSweep, settleShareExpiries, sweepMandates, workspaceMandateOps } from "../src/vault/areas/mandates-workspace.ts"
 import { AREAS } from "../src/vault/registry.ts"
 import { auditLine } from "../src/ui/wording.ts"
 import { projects } from "../src/vault/areas/projects.ts"
@@ -412,6 +412,22 @@ describe("a machine proposes only what it asked for", () => {
       await askedFor(ctx, "dev_admin")
       expect(await refusal(() => propose(ctx, "dev_owner", proposedTerms()))).toMatchObject({ code: "forbidden", extra: { mandateRefused: "item_unasked" } })
       expect(await propose(ctx, "dev_member", proposedTerms())).toMatchObject({ id: expect.stringMatching(/^mdp_/) })
+    })
+  })
+
+  it("records an ask's time once, so the upgrade copies what the live path wrote even when the clock ticks between rows", async () => {
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const real = ctx.now
+      let tick = 1_000
+      ctx.now = () => tick++
+      try {
+        recordMandateCoverAsk(ctx, "apr_ticking", "dev_owner", "itm_ticking", { classes: ["change", "read"], state: "none", mandate: null, url: null })
+      } finally {
+        ctx.now = real
+      }
+      const cover = ctx.sql.exec("SELECT at FROM mandate_cover_asks WHERE approval='apr_ticking'").one().at
+      expect(ctx.sql.exec("SELECT cls, at FROM mandate_asked WHERE approval='apr_ticking' ORDER BY cls").toArray()).toEqual([{ cls: "change", at: cover }, { cls: "read", at: cover }])
     })
   })
 

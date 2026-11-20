@@ -939,9 +939,10 @@ export function recordMandateUse(ctx: VaultContext, principal: Extract<AccessPri
 // through (mandateCoverHint). A sweep already set prunes its line in time;
 // with none set, nothing else is due, and a day's sweep prunes it.
 export function recordMandateCoverAsk(ctx: VaultContext, approval: string, device: string, item: string, cover: MandateCoverHint): void {
-  ctx.sql.exec("INSERT OR IGNORE INTO mandate_cover_asks(approval,device,classes,at) VALUES (?,?,?,?)", approval, device, JSON.stringify(cover.classes), ctx.now())
-  for (const cls of cover.classes) ctx.sql.exec("INSERT OR IGNORE INTO mandate_asked(approval,device,item_id,cls,at) VALUES (?,?,?,?,?)", approval, device, item, cls, ctx.now())
-  if (one(ctx.sql.exec("SELECT 1 FROM schedule WHERE area='mandates' AND key=?", MANDATE_SWEEP_KEY)) === null) ctx.schedule("mandates", MANDATE_SWEEP_KEY, ctx.now() + DAY_MS)
+  const at = ctx.now()
+  ctx.sql.exec("INSERT OR IGNORE INTO mandate_cover_asks(approval,device,classes,at) VALUES (?,?,?,?)", approval, device, JSON.stringify(cover.classes), at)
+  for (const cls of cover.classes) ctx.sql.exec("INSERT OR IGNORE INTO mandate_asked(approval,device,item_id,cls,at) VALUES (?,?,?,?,?)", approval, device, item, cls, at)
+  if (one(ctx.sql.exec("SELECT 1 FROM schedule WHERE area='mandates' AND key=?", MANDATE_SWEEP_KEY)) === null) ctx.schedule("mandates", MANDATE_SWEEP_KEY, at + DAY_MS)
 }
 // The ask the relay opened, only a new one, for a request the machine's
 // mandate would have let through but for these caps.
