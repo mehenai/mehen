@@ -748,11 +748,18 @@ export function logicalText(s: string): string {
             raw += s.slice(j, end)
             j = end
           } else if (s[j] === '"') {
+            // To the closing quote: a backslash escapes the next character,
+            // and a continuation inside double quotes is removed too.
+            raw += '"'
             let k = j + 1
-            while (k < s.length && s[k] !== '"') k += s[k] === "\\" ? 2 : 1
-            const end = Math.min(k + 1, s.length)
-            raw += s.slice(j, end)
-            j = end
+            while (k < s.length && s[k] !== '"') {
+              if (s[k] === "\\") {
+                if (s[k + 1] !== "\n") raw += s.slice(k, k + 2)
+                k += 2
+              } else raw += s[k++]
+            }
+            if (k < s.length) raw += '"'
+            j = Math.min(k + 1, s.length)
           } else {
             const step = s[j] === "\\" ? 2 : 1
             raw += s.slice(j, j + step)
