@@ -587,7 +587,127 @@ class Parser {
   }
 }
 
+// The command as bash reads it once its line continuations are gone: a
+// backslash before a newline is removed with the newline, except inside
+// single quotes or $'...', in a comment, and in the body of a quoted
+// here-document, as bash does. So `$\<newline>{!v}` is `${!v}` and
+// `$\<newline>OPENAI_API_KEY` expands the key.
+export function logicalText(s: string): string {
+  let out = ""
+  let i = 0
+  let wordStart = true
+  const docs: { delimiter: string; strip: boolean; quoted: boolean }[] = []
+  // Copies a quoted run whose opening is `open` characters long, to its
+  // closing quote: backslash escapes the next character when `escapes`,
+  // and drops with a newline when `continuations`.
+  const copyQuoted = (open: number, close: string, escapes: boolean, continuations: boolean) => {
+    out += s.slice(i, i + open)
+    i += open
+    while (i < s.length && s[i] !== close) {
+      if (escapes && s[i] === "\\") {
+        if (!(continuations && s[i + 1] === "\n")) out += s.slice(i, i + 2)
+        i += 2
+        continue
+      }
+      out += s[i]
+      i++
+    }
+    if (i < s.length) {
+      out += s[i]
+      i++
+    }
+  }
+  while (i < s.length) {
+    const c = s[i] as string
+    if (c === "\\") {
+      if (s[i + 1] !== "\n") out += s.slice(i, i + 2)
+      i += 2
+      wordStart = false
+      continue
+    }
+    if (c === "'") {
+      copyQuoted(1, "'", false, false)
+      wordStart = false
+      continue
+    }
+    if (c === "$" && s[i + 1] === "'") {
+      copyQuoted(2, "'", true, false)
+      wordStart = false
+      continue
+    }
+    if (c === '"') {
+      copyQuoted(1, '"', true, true)
+      wordStart = false
+      continue
+    }
+    if (c === "#" && wordStart) {
+      const eol = s.indexOf("\n", i)
+      const end = eol === -1 ? s.length : eol
+      out += s.slice(i, end)
+      i = end
+      continue
+    }
+    if (c === "<" && s[i + 1] === "<" && s[i + 2] !== "<") {
+      // A here-document: its delimiter word, quoted if any part of it is.
+      let j = i + 2
+      const strip = s[j] === "-"
+      if (strip) j++
+      while (s[j] === " " || s[j] === "\t") j++
+      const start = j
+      while (j < s.length && !/[\s;&|<>()]/.test(s[j] as string)) {
+        if (s[j] === "'" || s[j] === '"') {
+          const close = s.indexOf(s[j] as string, j + 1)
+          j = close === -1 ? s.length : close + 1
+        } else j += s[j] === "\\" ? 2 : 1
+      }
+      const raw = s.slice(start, j)
+      docs.push({ delimiter: raw.replace(/\\(.)/gs, "$1").replace(/['"]/g, ""), strip, quoted: /['"\\]/.test(raw) })
+      out += s.slice(i, j)
+      i = j
+      wordStart = false
+      continue
+    }
+    if (c === "\n") {
+      out += c
+      i++
+      wordStart = true
+      // The bodies of the here-documents this line opened, line by line: a
+      // quoted one as written, an unquoted one with its continuations gone.
+      for (const doc of docs) {
+        while (i < s.length) {
+          let line = ""
+          let ended = false
+          while (i < s.length) {
+            if (s[i] === "\n") {
+              i++
+              ended = true
+              break
+            }
+            if (!doc.quoted && s[i] === "\\") {
+              if (s[i + 1] !== "\n") line += s.slice(i, i + 2)
+              i += 2
+              continue
+            }
+            line += s[i]
+            i++
+          }
+          out += ended ? `${line}\n` : line
+          if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delimiter) break
+        }
+      }
+      docs.length = 0
+      continue
+    }
+    out += c
+    i++
+    wordStart = /[\s;&|()]/.test(c)
+  }
+  return out
+}
+
 export function parseShell(command: string, home: string): ShellNode[] {
   if (command.length > MAX_COMMAND_LENGTH) return [{ kind: "unknown", why: `it is too long for the guard to read (more than ${MAX_COMMAND_LENGTH} characters)`, runs: true }]
-  return new Parser(command, home, 0).parse()
+  // A command another shell runs (bash -c, eval, env -S) loses its own
+  // continuations too.
+  return new Parser(logicalText(command), home, 0).parse()
 }

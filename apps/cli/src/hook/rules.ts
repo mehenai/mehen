@@ -9,7 +9,7 @@ import { type Dirent, existsSync, lstatSync, readdirSync, readlinkSync, statSync
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path"
 import { loginFiles, sourceType } from "../adopt/sources.ts"
-import { KEY_VARIABLE, type Op, type ShellNode, type Word, literal, parseShell } from "./shell.ts"
+import { KEY_VARIABLE, type Op, type ShellNode, type Word, literal, logicalText, parseShell } from "./shell.ts"
 import { OPTION_SPECS, own, parseOptions } from "./options.ts"
 
 export type Finding = { rule: "secret-file" | "secret-in-command" | "secret-in-write"; reason: string; path?: string }
@@ -1918,9 +1918,12 @@ function readsIndirectly(command: string): boolean {
   return false
 }
 
-export function commandFindings(command: string, cwd: string, home = homedir(), vaultDirs: string[] = []): Finding[] {
+export function commandFindings(raw: string, cwd: string, home = homedir(), vaultDirs: string[] = []): Finding[] {
   const findings: Finding[] = []
-  const inText = secretInText(command)
+  // Everything is judged on the command as bash reads it, its line
+  // continuations gone; a key is looked for in the text as written too.
+  const command = logicalText(raw)
+  const inText = secretInText(raw) ?? secretInText(command)
   if (inText) findings.push({ rule: "secret-in-command", reason: `the command carries ${inText}` })
   const ctx: Context = { home, vaultDirs, command, findings, outside: [], reads: false, nested: 0, words: [], arithmetic: false }
   lines(ctx, { cwds: [cwd], stack: [], links: new Map() }, parseShell(command, home))

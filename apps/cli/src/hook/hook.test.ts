@@ -1092,6 +1092,11 @@ describe("sixth review: reproductions", () => {
     for (const command of ["grep -r --include='.e[[:digit:]]v' x .", "grep -r --include='*.[[:alpha:]]d' x ."]) none("proj", command)
   })
 
+  test("line continuations are removed before anything is read, as bash removes them, except where bash keeps them", () => {
+    for (const command of ["v=OPENAI_API_KEY; printf '%s\\n' $\\\n{!v}", "echo $\\\nOPENAI_API_KEY", 'echo "$\\\nOPENAI_API_KEY"', "echo $\\\n{OPENAI_API_KEY}", "echo $OPENAI_\\\nAPI_KEY", "bash -c 'echo $\\\nOPENAI_API_KEY'", "echo \\\\\ncat .env", "cat <<'EOF'\nfoo\\\nEOF\ncat .env", "# x \\\ncat .env"]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["cat <<EOF\nfoo\\\nEOF\ncat .env\nEOF", "curl -s \\\n  -H 'Accept: json' \\\n  https://example.com", "echo 'a\\\nb'", 'git commit -m "line one \\\nline two"']) none("proj", command)
+  })
+
   test("names from the command line are looked up only among a table's own entries, never Object.prototype's", () => {
     for (const command of ["grep -r --exclude='.e[[:constructor:]]v' x .", "grep -r --include='.e[[:toString:]]v' x .", "cat --constructor .env", "cat --toString .env", "grep --__proto__ x .env", "sort --hasOwnProperty .env"]) expect(refused("proj", command)).toEqual(yes(command))
   })
