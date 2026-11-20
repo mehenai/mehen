@@ -28,6 +28,8 @@ export const MIGRATION_JOURNAL_FILE = "migration.json"
 export const WORKSPACES_DIR = "workspaces"
 export const PENDING_DIR = "pending"
 export const LOCKS_DIR = "locks"
+// Requests held for approval, saved to send again (replay-cache.ts).
+export const REPLAY_DIR = "pending-requests"
 export const ENROLMENT_RECORD_FILE = "enrolment.json"
 
 // The directory name of an origin under workspaces/, pending/ and locks/:

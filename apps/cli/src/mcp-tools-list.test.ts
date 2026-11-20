@@ -87,7 +87,7 @@ test("every tool has a title and its annotations, and only the tools that change
 
 // The keys an error's structuredContent may carry (errors.ts errorBody and
 // ErrorExtras): an outputSchema that typed one of them could refuse an error.
-const ERROR_BODY_KEYS = ["error", "message", "next", "ask", "mandateCover", "approval", "bindingCode", "choices", "retryAfter", "providerStatus", "mandate", "expiresAt", "request", "setup", "ruleRefused", "areaRefused", "bundle", "approvals", "cleared", "kind", "id", "status", "replacedBy", "summary", "item", "policyContext", "rememberOptions", "grant", "rule", "ruleProposal", "approvedAt", "push", "proposal", "outcome"]
+const ERROR_BODY_KEYS = ["error", "message", "next", "ask", "mandateCover", "approval", "bindingCode", "choices", "retryAfter", "providerStatus", "mandate", "expiresAt", "request", "setup", "ruleRefused", "areaRefused", "bundle", "approvals", "cleared", "kind", "id", "status", "replacedBy", "summary", "item", "policyContext", "rememberOptions", "grant", "rule", "ruleProposal", "approvedAt", "push", "proposal", "outcome", "replay"]
 
 test("an outputSchema requires nothing and names no field an error carries, so an error result meets it too", () => {
   const withOutput = (allToolsList.tools as ListedTool[]).filter((t) => t.outputSchema)

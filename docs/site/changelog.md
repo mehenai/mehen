@@ -13,6 +13,10 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
+### 20 November 2026: an approved request is sent again without rebuilding it
+
+The next `mehen` release saves a request the vault holds for approval on the machine that sent it, for an hour, and sends it again once a person approves: `mehen fetch --resume <apr_id>`, `mehen wait <apr_id> --execute`, or through MCP `vault_fetch` with `approval` alone and `vault_wait` with `execute`. Each approval is replayed once, through the same checks as a fresh request; a push is never replayed. The vault is unchanged. See [Approvals](guides/approvals.md) and the CLI's release notes below.
+
 ### 20 November 2026: agents see six Mehen tools by default
 
 The next `mehen` release serves six MCP tools by default (`vault_status`, `vault_list`, `vault_request`, `vault_fetch`, `vault_env` and `vault_wait`), a quarter of the tool list a host puts in front of the model in every conversation, and the skill becomes a short sheet that sends an agent to `mehen guide <topic>` for the rest. Every other tool is in an opt-in toolset; `mehen setup --toolsets all`, which writes `MEHEN_MCP_TOOLSETS=all` into each agent's `mehen` entry, restores the full list after a restart. See [MCP tools](reference/mcp.md) and the CLI's release notes below.

@@ -1,13 +1,15 @@
+import type { RelayRequestInput } from "@mehen/protocol/api"
 import { type Bytes, utf8 } from "@mehen/protocol/bytes"
 import { z } from "zod"
-import { FETCH_MAX_TIME_SECONDS, timedOut } from "../commands/fetch.ts"
+import { FETCH_MAX_TIME_SECONDS, heldRequestNote, replayOwner, timedOut, withReplayNote } from "../commands/fetch.ts"
 import { usageError } from "../errors.ts"
 import { bodyForJson, rejectedHint, type UpstreamHead, fetchContext, parseSelectPath, readLimited, relayReplaces, relayRequest, replacingRefused, selectBody, upstreamHead } from "../operations.ts"
 import { mandateAllowed, mandateCapped } from "../mandate-operations.ts"
 import { type PostureAllowed, type RuleAllowed, postureAllowed, ruleEnded, rulesAllowed } from "../policy-operations.ts"
-import { sessionLabel } from "../session.ts"
+import { claimSavedRequest, readSavedRequest } from "../replay-cache.ts"
+import { type VaultSession, sessionLabel } from "../session.ts"
 import { retrySafeMethod } from "../vault-api.ts"
-import { type ToolOutput, WORKSPACE_ARG, outputSchema, plain, tool } from "./shared.ts"
+import { type ToolCall, type ToolDeps, type ToolOutput, WORKSPACE_ARG, outputSchema, plain, tool } from "./shared.ts"
 import { FETCH_BODY_LIMIT } from "./constants.ts"
 
 export function decodeBase64(text: string): Bytes {
@@ -35,6 +37,51 @@ function bodyOutput(head: FetchHead, bytes: Bytes, truncated: boolean, size: num
   return plain({ ...head, body: text, truncated, ...(notes.length ? { note: notes.join(" ") } : {}) })
 }
 
+type RelayOptions = { select?: string | undefined; timeoutSeconds?: number | undefined }
+
+// One request through the relay, as vault_fetch answers it. A held answer
+// saves the request for sending again once approved.
+async function relayOutput(session: VaultSession, request: RelayRequestInput, options: RelayOptions, deps: ToolDeps, call: ToolCall): Promise<ToolOutput> {
+  const select = options.select === undefined ? null : parseSelectPath(options.select, MCP_SELECT)
+  const { api } = session
+  const timeout = options.timeoutSeconds === undefined ? null : AbortSignal.timeout(options.timeoutSeconds * 1000)
+  const signal = timeout ? AbortSignal.any([call.signal, timeout]) : call.signal
+  try {
+    const response = await api.relay(request, { signal })
+    const upstream = upstreamHead(response)
+    const rules = await rulesAllowed(api, response, request.item ?? null, signal)
+    const postures = postureAllowed(response)
+    const mandate = mandateAllowed(response)
+    const hint = await rejectedHint(api, upstream, request.item ?? null, signal)
+    const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}), ...(hint ? { hint } : {}) }
+    if (select !== null) {
+      const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
+      const chosen = selectBody(bytes, head.status, request.method, select, MCP_SELECT)
+      if (!chosen.json) {
+        const cut = bytes.length > FETCH_BODY_LIMIT
+        const output = bodyOutput(head, cut ? bytes.slice(0, FETCH_BODY_LIMIT) : bytes, cut, bytes.length, [chosen.note], request.method)
+        return { ...output, structured: { ...output.structured, selected: null, found: false } }
+      }
+      const picked = chosen.picked
+      return plain({ ...head, selected: picked.value, found: picked.found, ...(picked.found ? {} : { note: `select ${options.select} matched nothing in the body.` }) })
+    }
+    return await fetchOutput(head, response, request.method)
+  } catch (error) {
+    if (timeout?.aborted && !call.signal.aborted && options.timeoutSeconds !== undefined) throw timedOut(options.timeoutSeconds, request.method)
+    const held = call.signal.aborted ? null : await heldRequestNote(deps.env, session, request, error)
+    throw withReplayNote(replacingRefused(ruleEnded(await mandateCapped(api, error, signal)), request, "mcp"), held)
+  }
+}
+
+// The request saved for an approval, sent again once from the enrolment
+// that saved it: vault_fetch with approval alone, and vault_wait with execute.
+export async function resumeVaultFetch(approval: string, deps: ToolDeps, call: ToolCall, options: RelayOptions & { workspace?: string | undefined } = {}): Promise<ToolOutput> {
+  const saved = await readSavedRequest(deps.env, approval)
+  const session = await deps.session(options.workspace ?? saved.workspace)
+  const request = await claimSavedRequest(deps.env, saved, replayOwner(session))
+  return relayOutput(session, request, options, deps, call)
+}
+
 export const vaultFetch = tool({
   name: "vault_fetch",
   title: "Send a request with a credential",
@@ -44,12 +91,12 @@ export const vaultFetch = tool({
   input: z.object({
     item: z.string().optional().describe("the item to use (or run)"),
     run: z.string().optional().describe("a mehen run id whose placeholders the request carries (instead of item)"),
-    method: z.string().describe("HTTP method"),
-    url: z.string().describe("the full upstream URL"),
+    method: z.string().optional().describe("HTTP method"),
+    url: z.string().optional().describe("the full upstream URL"),
     headers: z.record(z.string(), z.string()).optional().describe("request headers, without the credential"),
     body: z.string().optional().describe("request body as text"),
     bodyBase64: z.string().optional().describe("request body as base64, for binary bodies"),
-    approval: z.string().optional().describe("an approved apr_ id, when retrying after an approval"),
+    approval: z.string().optional().describe("an approved apr_ id; alone, it sends the saved request"),
     replaces: z.string().optional().describe("your open apr_ ask this corrected request supersedes"),
     context: z.object({ project: z.string().describe("prj_..."), environment: z.string().describe("its name") }).optional().describe("the project environment it is used for, for a protected, team or guest credential; never changes the workspace"),
     select: z.string().optional().describe("one part of a JSON response, such as data.0.id (. for all), returned as `selected` from the whole response"),
@@ -59,8 +106,14 @@ export const vaultFetch = tool({
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   output: outputSchema({ statusText: "string", headers: "object", body: "string", truncated: "boolean", found: "boolean", note: "string", rules: "array", postures: "array" }),
   async call(args, deps, call) {
+    if (args.method === undefined && args.url === undefined && args.item === undefined && args.run === undefined) {
+      if (args.approval === undefined) throw usageError("Give method and url with item or run, or approval alone to send the request saved when it was held.", "vault_fetch")
+      const given = (["headers", "body", "bodyBase64", "replaces", "context"] as const).filter((name) => args[name] !== undefined)
+      if (given.length > 0) throw usageError(`approval alone sends the request saved for it as it was; leave out ${given.join(", ")}.`, "vault_fetch")
+      return resumeVaultFetch(args.approval, deps, call, { select: args.select, timeoutSeconds: args.timeoutSeconds, workspace: args.workspace })
+    }
+    if (args.method === undefined || args.url === undefined) throw usageError("Give method and url together, with item or run; or approval alone to send a saved request.", "vault_fetch")
     if (args.body !== undefined && args.bodyBase64 !== undefined) throw usageError("Give body or bodyBase64, not both.")
-    const select = args.select === undefined ? null : parseSelectPath(args.select, MCP_SELECT)
     const body = args.body !== undefined ? utf8(args.body) : args.bodyBase64 !== undefined ? decodeBase64(args.bodyBase64) : null
     const request = relayRequest({
       item: args.item ?? null,
@@ -74,32 +127,6 @@ export const vaultFetch = tool({
       session: sessionLabel(deps.env),
       context: args.context ? fetchContext(args.context.project, args.context.environment, "vault_fetch") : null,
     })
-    const { api } = await deps.session(args.workspace)
-    const timeout = args.timeoutSeconds === undefined ? null : AbortSignal.timeout(args.timeoutSeconds * 1000)
-    const signal = timeout ? AbortSignal.any([call.signal, timeout]) : call.signal
-    try {
-      const response = await api.relay(request, { signal })
-      const upstream = upstreamHead(response)
-      const rules = await rulesAllowed(api, response, request.item ?? null, signal)
-      const postures = postureAllowed(response)
-      const mandate = mandateAllowed(response)
-      const hint = await rejectedHint(api, upstream, request.item ?? null, signal)
-      const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}), ...(hint ? { hint } : {}) }
-      if (select !== null) {
-        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
-        const chosen = selectBody(bytes, head.status, request.method, select, MCP_SELECT)
-        if (!chosen.json) {
-          const cut = bytes.length > FETCH_BODY_LIMIT
-          const output = bodyOutput(head, cut ? bytes.slice(0, FETCH_BODY_LIMIT) : bytes, cut, bytes.length, [chosen.note], request.method)
-          return { ...output, structured: { ...output.structured, selected: null, found: false } }
-        }
-        const picked = chosen.picked
-        return plain({ ...head, selected: picked.value, found: picked.found, ...(picked.found ? {} : { note: `select ${args.select} matched nothing in the body.` }) })
-      }
-      return await fetchOutput(head, response, request.method)
-    } catch (error) {
-      if (timeout?.aborted && !call.signal.aborted && args.timeoutSeconds !== undefined) throw timedOut(args.timeoutSeconds, request.method)
-      throw replacingRefused(ruleEnded(await mandateCapped(api, error, signal)), request, "mcp")
-    }
+    return relayOutput(await deps.session(args.workspace), request, { select: args.select, timeoutSeconds: args.timeoutSeconds }, deps, call)
   },
 })

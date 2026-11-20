@@ -128,6 +128,8 @@ export function errorLines(error: CliError, stream: HumanWriter, options: ErrorO
   const s = styler(colourEnabled(stream, env))
   const lines: Segment[][] = [segments(s.dim("mehen:"), ` ${error.message}`)]
   if (cover) lines.push(segments(s.dim("mandate:"), ` ${mandateCoverText(cover, options.surface ?? "cli", options.served)}`))
+  const replay = replayText(error, options.surface ?? "cli")
+  const replayLine = replay ? [segments(s.dim("replay:"), ` ${replay}`)] : []
   if (refused) lines.push(segments(s.dim("mehen:"), " ", s.danger("warning:"), ` ${refusedLinkWarning(options.vaultUrl ?? null)}`))
   if (ask) {
     const then = options.then ? options.then(ask) : undefined
@@ -135,11 +137,24 @@ export function errorLines(error: CliError, stream: HumanWriter, options: ErrorO
     // An MCP step the ask's then: line does not already name.
     const call = next?.tool && !refused ? toolCallText(next.tool, next.arguments) : null
     if (call !== null && call !== then) lines.push(segments(`  call: ${call}`))
+    lines.push(...replayLine)
     lines.push(...askBlock(ask, stream, env, options.noQr ?? false, then !== undefined ? { then } : {}))
     return lines
   }
   if (!refused) for (const line of describeNext(next)) lines.push(segments(line))
+  lines.push(...replayLine)
   return lines
+}
+
+// The line a held request gets about its replay: the command or tool
+// that sends the saved request again once approved, or why it was not saved.
+export function replayText(error: CliError, surface: MandateSurface): string | null {
+  const note = error.extras.replay
+  const approval = error.extras.approval
+  if (!note || !approval) return null
+  if (!note.saved) return `not saved: ${note.reason}; once approved, send the same request again byte for byte.`
+  if (surface === "mcp") return `saved for an hour; once approved, \`vault_fetch { "approval": "${approval}" }\` (or vault_wait with execute) sends it again, once.`
+  return `saved for an hour; once approved, \`mehen fetch --resume ${approval}\` (or \`mehen wait ${approval} --execute\`) sends it again, once.`
 }
 
 // One renderer for every failure: the CLI's own commands (cli.ts) and the

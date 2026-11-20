@@ -11,7 +11,7 @@ description: >
 
 # Mehen
 
-Credentials live in a **workspace** in a vault; use them by name through the `mehen mcp` tools or the `mehen` CLI, never reading, printing or storing a value. With the CLI, pass `--json` wherever supported and read it; `mehen run`, `mehen env set` and `mehen mcp` do not accept it. If `MEHEN_SESSION` is already set in your environment, leave it: your harness chose the label the human sees. Otherwise prefix each command with `MEHEN_SESSION=<label>` (letters, digits, `.:_-`, up to 120); an `export` may not survive between calls.
+Credentials live in a **workspace** in a vault; use them by name through the `mehen mcp` tools or the `mehen` CLI, never reading, printing or storing a value. With the CLI, pass `--json` wherever supported and read it; `mehen run`, `mehen env set` and `mehen mcp` do not accept it. If `MEHEN_SESSION` is already set in your environment, leave it. Otherwise prefix each command with `MEHEN_SESSION=<label>` (letters, digits, `.:_-`, up to 120); an `export` may not survive between calls.
 
 Not set up (no `mehen`, or no workspace with `state: "active"`)? Follow https://docs.mehen.dev/setup.md, with the workspace slug the human gives; never guess one. Never reinstall over an installed `mehen`: `mehen update --json` updates it.
 
@@ -46,7 +46,7 @@ The page must show <ask.check, in full>. If it differs, do not approve.
 Valid until <ask.expiresAt>. I will wait.
 ```
 
-Name the workspace (`ask.context.workspace.slug`). Then call `vault_wait` with `ask.id`. A `timeout` (exit 4) means the human has not acted yet: wait again; the link stays the same. Hand over only links `mehen` gave you; never open one yourself or call a request safe. After an approved fetch or run, send exactly the same request again, byte for byte, from the same machine; keep bodies that need approval plain and under 64 KiB. A push is the exception: its wait ends once the vault has pushed, so never push again unless the human asks.
+Name the workspace (`ask.context.workspace.slug`). Then call `vault_wait` with `ask.id`. A `timeout` (exit 4) means the human has not acted yet: wait again; the link stays the same. Hand over only links `mehen` gave you; never open one yourself or call a request safe. Once a held fetch is approved, `mehen fetch --resume <apr_id>` or `vault_fetch { "approval": "<apr_id>" }` sends the saved request once. Without a saved request, send exactly the same request again, byte for byte, from the same machine; keep bodies plain and under 64 KiB. A push is the exception: its wait ends once the vault has pushed, so never push again unless the human asks.
 
 ## When refused
 
@@ -56,7 +56,7 @@ Every error carries `error`, `message` and `next`. Relay `next.say`, call `next.
 | --- | --- | --- |
 | 1 | Error | Report it. Expired or cancelled: start again with `next.command`. `cli_outdated`: run `next.command`; if it still fails, `mehen update --json` once. |
 | 2 | Usage or selection | Fix the call; a selection refusal sent nothing. `workspace_not_allowed` and `pin_outdated` are the harness's: tell the human. |
-| 3 | Approval required | Write the block, wait, then repeat a held fetch or run exactly. |
+| 3 | Approval required | Write the block, wait, then resume or repeat the held fetch or run. |
 | 4 | A human must act | Write the block, then wait. `frozen`: tell the human. |
 | 5 | Refused by rule | Do not retry; tell the human what was refused. |
 | 6 | Identity | Check `vault_status`. `workload_ended`: stop. |
@@ -64,6 +64,6 @@ Every error carries `error`, `message` and `next`. Relay `next.say`, call `next.
 
 ## The rest, on demand
 
-The server lists these six by default. The rest come in toolsets the human adds with `mehen setup --toolsets inspect,connect` (`all` for every tool), then a restart. A tool it does not serve is refused `tool_not_served`, naming its toolset and the CLI command that does the same.
+The server lists these six by default. The rest come in toolsets the human adds with `mehen setup --toolsets inspect,connect` (`all` for every tool), then a restart. Another tool is refused `tool_not_served`, naming its toolset and the CLI command for it.
 
-Read one topic when you need it, with `mehen guide <topic>` or at https://docs.mehen.dev/guide.md. Topics: `never`, `request` (homes, OAuth with `vault_connect`, templates), `approvals`, `plan` (several writes), `asking-less` (standing rules, task grants), `mandates`, `workspaces`, `enrol`, `projects` (`mehen.toml`, `mehen init`, `mehen run`), `adopt` (keys already on this machine), `sandbox` (Codex and other sandboxes), `mcp` (toolsets, the setup report), `exit-codes` and `updating` (when to restart after an update).
+Read one topic when you need it, with `mehen guide <topic>` or at https://docs.mehen.dev/guide.md. Topics: `never`, `request` (homes, OAuth, templates), `approvals`, `resume`, `plan` (several writes), `asking-less` (standing rules, task grants), `mandates`, `workspaces`, `enrol`, `projects` (`mehen.toml`, `mehen init`), `adopt` (keys already here), `sandbox` (Codex and others), `mcp` (toolsets, the setup report), `exit-codes` and `updating` (when to restart after an update).

@@ -434,6 +434,12 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 **What you do.** The message says why and names the fix.
 
+### `replay_missing`
+
+**What it means.** There is no saved request to send again for this approval: `mehen fetch --resume`, `mehen wait --execute`, `vault_fetch` with `approval` alone or `vault_wait` with `execute` found none on this machine. It was sent again already (each is sent once), it is past its hour, its body was over 64 KiB, or another machine, workspace or `MEHEN_HOME` made it. Nothing was sent.
+
+**What you do.** Build the request again and send it byte for byte from the machine that made it, with the approval id (`mehen fetch ... --approval <apr_id>`, or `approval` with the full request in `vault_fetch`). See [Sending an approved request again](../guide.md#sending-an-approved-request-again).
+
 ### `tool_not_served`
 
 **What it means.** An MCP client called a tool in a toolset this `mehen mcp` server was not started with. By default the server serves only the core toolset; the message names the toolset that has the tool. Nothing was sent.

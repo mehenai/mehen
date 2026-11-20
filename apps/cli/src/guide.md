@@ -4,7 +4,7 @@ Setting up a machine, or adding a workspace to one: follow https://docs.mehen.de
 
 Use credentials without reading them: you use them through the vault, by reference; never read, print, store or pass on their values. Use `--json` when a program reads supported commands; `mehen run`, `mehen env set` and `mehen mcp` do not accept it, and their documented output is the exception. The human lines are for people.
 
-The skill an agent loads is a short sheet; this guide has the rest. One section at a time: `mehen guide <topic>`, where the topic is `items`, `never`, `adopt`, `ask`, `request`, `approvals`, `asking-less`, `plan`, `mandates`, `next`, `exit-codes`, `workspaces`, `enrol`, `projects`, `sandbox`, `mcp`, `updating` or `commands`.
+The skill an agent loads is a short sheet; this guide has the rest. One section at a time: `mehen guide <topic>`, where the topic is `items`, `never`, `adopt`, `ask`, `request`, `approvals`, `resume`, `asking-less`, `plan`, `mandates`, `next`, `exit-codes`, `workspaces`, `enrol`, `projects`, `sandbox`, `mcp`, `updating` or `commands`.
 
 ## References, not values
 
@@ -86,7 +86,17 @@ Kinds: api-key, bearer-token, basic-auth, custom-headers, oauth-client, oauth-co
 
 ## Approvals
 
-Some requests need a human's approval first (sending email, deleting things). Say what you want to do, then write the ask block; `next.say` names who gets the link. The command exits 3 with the ask: the approval page for the human and a short binding code the page also shows. Share both, run `mehen wait <apr_id> --timeout 60 --json`, then repeat exactly the same request, byte for byte, from the same machine (you may add `--approval <apr_...>`; the vault matches the grant by a digest of the item, method, URL, content type and encoding, forwarded headers and body). You cannot approve anything yourself. Keep bodies that need approval plain, uncompressed and under 64 KiB. To correct a request still waiting, send the new one with `--replaces <apr_id>`: the old ask reads `superseded` and the new one is the one to wait on. `mehen pending` prints several open asks from the same machine, task and credential as one Review together link.
+Some requests need a human's approval first (sending email, deleting things). Say what you want to do, then write the ask block; `next.say` names who gets the link. The command exits 3 with the ask: the approval page for the human and a short binding code the page also shows. Share both, run `mehen wait <apr_id> --timeout 60 --json`, then send it again with `mehen fetch --resume <apr_id>` (see `resume`), or repeat exactly the same request, byte for byte, from the same machine (you may add `--approval <apr_...>`; the vault matches the grant by a digest of the item, method, URL, content type and encoding, forwarded headers and body). You cannot approve anything yourself. Keep bodies that need approval plain, uncompressed and under 64 KiB. To correct a request still waiting, send the new one with `--replaces <apr_id>`: the old ask reads `superseded` and the new one is the one to wait on. `mehen pending` prints several open asks from the same machine, task and credential as one Review together link.
+
+## Sending an approved request again
+
+When the vault holds a request for a human (`approval_required`, exit 3, with its `apr_` id), mehen saves it on this machine for an hour, as you sent it: the credential, method, URL, headers and body, with your references and placeholders and never a credential value. `--json` and `vault_fetch` say so in `replay` (`{ saved: true, expiresAt }`, or `{ saved: false, reason }`), and a body over 64 KiB is not saved. Once the human approves, send it again without rebuilding it:
+
+- `mehen fetch --resume <apr_id>` sends the saved request once, with the approval, through the same relay, guard and policy checks as a fresh one, and exits as a fresh fetch does. It takes the output flags (`--json`, `-o`, `--select`, `-i`, `--fail`, `--max-time`) and nothing that would change the request.
+- `mehen wait <apr_id> --execute` waits, then does the same once the approval comes, and answers with the request's result.
+- Through MCP, `vault_fetch { "approval": "<apr_id>" }` with nothing else, or `vault_wait` with `execute: true`.
+
+Each saved request is sent once: sending it removes it, whatever the answer. A write whose answer never came is `outcome_unknown` (exit 7) as ever: check whether it took effect before you build and send it again yourself; mehen never sends it a second time. A push approval is never replayed, since the vault performs the push: `--execute` on one only waits. With no saved request (sent already, past its hour, too large, or made by another machine or `MEHEN_HOME`), resuming is `replay_missing` (exit 1): build the request again and send it byte for byte with `--approval <apr_id>`.
 
 ## Asking less
 

@@ -285,12 +285,12 @@
             "type": "string"
           },
           "method": {
-            "type": "string",
-            "description": "HTTP method"
+            "description": "HTTP method",
+            "type": "string"
           },
           "url": {
-            "type": "string",
-            "description": "the full upstream URL"
+            "description": "the full upstream URL",
+            "type": "string"
           },
           "headers": {
             "description": "request headers, without the credential",
@@ -311,7 +311,7 @@
             "type": "string"
           },
           "approval": {
-            "description": "an approved apr_ id, when retrying after an approval",
+            "description": "an approved apr_ id; alone, it sends the saved request",
             "type": "string"
           },
           "replaces": {
@@ -350,11 +350,7 @@
             "description": "slug or id, when several workspaces could serve",
             "type": "string"
           }
-        },
-        "required": [
-          "method",
-          "url"
-        ]
+        }
       },
       "outputSchema": {
         "type": "object",
@@ -451,6 +447,10 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 600
+          },
+          "execute": {
+            "description": "apr_ only: once approved, send the saved request and answer with its result",
+            "type": "boolean"
           },
           "workspace": {
             "description": "slug or id, when several workspaces could serve",

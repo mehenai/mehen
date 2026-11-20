@@ -253,6 +253,8 @@ describe("mehen fetch", () => {
         next: { url: link, command: "mehen wait apr_1", say: "Ask the human." },
         approval: "apr_1",
         bindingCode: "K7Q2",
+        // A held request is saved to send again once approved.
+        ...(code === "approval_required" ? { replay: { saved: true, expiresAt: expect.any(String) } } : {}),
       })
       // Only a refusal that hands over a link carries an ask (UX-MEHEN-TOOLS 2.2).
       if (code === "approval_required") expect(ask).toMatchObject({ kind: "approval", id: "apr_1", url: link, check: { label: "code", value: "K7Q2" }, expiresAt: null })

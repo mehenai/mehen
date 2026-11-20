@@ -5,6 +5,7 @@ import { type ApiError, type ApprovalStatus, type ErrorCode, EXIT, EXIT_FOR_ERRO
 import type { PolicyAreaRefusal, PolicyProposalStatus, PolicyRuleRefusal } from "@mehen/protocol/policy-mode"
 import type { Ask } from "./ask.ts"
 import type { MandateCover } from "./mandate-cover.ts"
+import type { ReplayNote } from "./replay-cache.ts"
 import { type CallContext, RelayOutcomeUnknownError, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 
 // Failures that start on this machine rather than in the vault.
@@ -30,6 +31,7 @@ export const LOCAL_EXIT = {
   key_scope: EXIT.identity, // the key on disk was made for another vault
   command_failed: EXIT.error, // a mehen env call made through mehen mcp
   tool_not_served: EXIT.usage, // mehen mcp: a tool in a toolset this server was not started with
+  replay_missing: EXIT.error, // no saved request to send again for an approval: build it again
   // mehen fill (browser/fill.ts): the browser, the page and the field.
   cdp_unreachable: EXIT.transient,
   page_changed: EXIT.transient,
@@ -58,7 +60,7 @@ export type CliErrorCode = ErrorCode | LocalErrorCode
 // review group as the vault sent it: it reaches output only on the ask,
 // once askGroup has checked its link. `cleared` is mehen fill's: whether
 // it emptied a field it had typed into before giving up.
-export type ErrorExtras = Partial<ApprovalStatus | PolicyProposalStatus> & { kind?: "policy" | "approval"; id?: string } & Pick<ApiError, "approval" | "bindingCode" | "choices" | "retryAfter" | "providerStatus" | "mandate" | "deciders" | "mandateRefused"> & { mandateCover?: MandateCover; expiresAt?: string; ask?: Ask; request?: MissingClientRequest; setup?: MissingClientSetup; context?: CallContext; ruleRefused?: PolicyRuleRefusal; areaRefused?: PolicyAreaRefusal; group?: unknown; bundle?: string; approvals?: { id: string; status: ApprovalStatus["status"] }[]; cleared?: boolean }
+export type ErrorExtras = Partial<ApprovalStatus | PolicyProposalStatus> & { kind?: "policy" | "approval"; id?: string } & Pick<ApiError, "approval" | "bindingCode" | "choices" | "retryAfter" | "providerStatus" | "mandate" | "deciders" | "mandateRefused"> & { mandateCover?: MandateCover; replay?: ReplayNote; expiresAt?: string; ask?: Ask; request?: MissingClientRequest; setup?: MissingClientSetup; context?: CallContext; ruleRefused?: PolicyRuleRefusal; areaRefused?: PolicyAreaRefusal; group?: unknown; bundle?: string; approvals?: { id: string; status: ApprovalStatus["status"] }[]; cleared?: boolean }
 
 // Carried by client_missing: the exact `mehen request` / vault_request
 // arguments for the client, and what the human needs at the provider.
