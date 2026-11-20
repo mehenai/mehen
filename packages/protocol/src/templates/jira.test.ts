@@ -157,3 +157,51 @@ describe("jira second review fixes", () => {
     }
   })
 })
+
+describe("jira third review fixes", () => {
+  it("refuses creating, changing, copying and bulk-editing dashboards, which take share and edit permissions", () => {
+    for (const path of [
+      "/api/3/dashboard",
+      "/api/3/dashboard/10000/copy",
+    ]) {
+      expect({ path, policy: decide("POST", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "POST", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+    for (const path of [
+      "/api/3/dashboard/10000",
+      "/api/3/dashboard/bulk/edit",
+    ]) {
+      expect({ path, policy: decide("PUT", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "PUT", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+  })
+
+  it("refuses changing a filter's owner", () => {
+    for (const path of [
+      "/api/3/filter/10000/owner",
+    ]) {
+      expect({ path, policy: decide("PUT", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "PUT", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+  })
+
+  it("refuses changing or clearing the user's preferences, which set default filter sharing", () => {
+    for (const path of [
+      "/api/3/mypreferences?key=user.default.share.private",
+    ]) {
+      expect({ path, policy: decide("PUT", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "PUT", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+    for (const path of [
+      "/api/3/mypreferences?key=user.default.share.private",
+    ]) {
+      expect({ path, policy: decide("DELETE", `${API}${path}`) }).toEqual({ path, policy: "deny" })
+      expect({ path, relay: underBroadAllow(jira, "DELETE", `${API}${path}`) }).toEqual({ path, relay: "deny" })
+    }
+  })
+
+  it("still lets dashboards be read", () => {
+    expectAll([["GET", `${API}/api/3/myself`, "allow"]])
+    expect(decide("GET", `${API}/api/3/dashboard`)).toBe("approve")
+  })
+})

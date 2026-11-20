@@ -35,7 +35,7 @@ describe("pagerduty", () => {
 
   it("lets reads through and holds incident changes for approval", () => {
     expectAll([
-      ["GET", `${API}/incidents?statuses[]=triggered`, "allow"],
+      ["GET", `${API}/incidents?statuses[]=triggered`, "approve"],
       ["GET", `${API}/oncalls`, "allow"],
       ["POST", `${API}/incidents`, "approve"],
       ["PUT", `${API}/incidents/P1`, "approve"],
@@ -127,5 +127,27 @@ describe("pagerduty second review fixes", () => {
       expect({ path, policy: decide("POST", `${API}${path}`) }).toEqual({ path, policy: "deny" })
       expect({ path, relay: underBroadAllow(pagerduty, "POST", `${API}${path}`) }).toEqual({ path, relay: "deny" })
     }
+  })
+})
+
+describe("pagerduty third review fixes", () => {
+  it("holds incident reads, which return a trigger log entry's service_key with include[]=first_trigger_log_entries, whatever the item's policy says", () => {
+    for (const path of [
+      "/incidents",
+      "/incidents?include[]=first_trigger_log_entries",
+      "/incidents/P1",
+      "/incidents/P1?include[]=first_trigger_log_entries",
+    ]) {
+      expect({ path, policy: decide("GET", `${API}${path}`) }).toEqual({ path, policy: "approve" })
+      expect({ path, relay: underBroadAllow(pagerduty, "GET", `${API}${path}`) }).toEqual({ path, relay: "approve" })
+    }
+  })
+
+  it("still lets an incident's notes, alerts and related incidents through", () => {
+    expectAll([
+      ["GET", `${API}/incidents/P1/notes`, "allow"],
+      ["GET", `${API}/incidents/P1/alerts`, "allow"],
+      ["GET", `${API}/incidents/P1/related_incidents`, "allow"],
+    ])
   })
 })
