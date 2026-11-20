@@ -153,18 +153,18 @@ export async function waitSlot(deps: ToolDeps, id: string, workspace: string | n
     const chosen = await resolveSlot(server, workspace, { manifest: null })
     if (hits.length > 0 && !hits.some((h) => h.dir === chosen.dir)) {
       throw workspaceMismatch(`${id} is recorded in ${slotNames(hits)}, not in ${workspaceLabel(chosen.config)} at ${chosen.config.vault}, which this call uses.`, {
-        say: "Call vault_wait with the workspace the ask was made in (vault_pending shows each ask's workspace), or leave workspace out.",
+        say: "Call vault_wait with the workspace the ask was made in (`mehen pending` shows each ask's workspace), or leave workspace out.",
       })
     }
     return chosen
   }
   if (hits.length > 1) {
-    throw new CliError("context_ambiguous", `${id} is recorded in ${hits.length} workspaces this server may use: ${slotNames(hits)}.`, { say: "Pass workspace in the call to name the one the ask was made in; vault_pending shows each ask's workspace." })
+    throw new CliError("context_ambiguous", `${id} is recorded in ${hits.length} workspaces this server may use: ${slotNames(hits)}.`, { say: "Pass workspace in the call to name the one the ask was made in; `mehen pending` shows each ask's workspace." })
   }
   const only = hits[0] ?? (span.active.length === 1 ? span.active[0] : undefined)
   if (only) return only
   if (span.active.length === 0) throw notEnrolled()
-  throw new CliError("not_found", `${id} is not recorded in any workspace this server may use.`, { say: id.startsWith("mdp_") ? 'Pass workspace to ask that workspace\'s vault; vault_mandate { "action": "list" } with workspace lists its open mandate proposals.' : "Call vault_pending to see what is open and in which workspace, or pass workspace to ask that workspace's vault." })
+  throw new CliError("not_found", `${id} is not recorded in any workspace this server may use.`, { say: id.startsWith("mdp_") ? "Pass workspace to ask that workspace's vault; `mehen mandate ls` with workspace lists its open mandate proposals." : "`mehen pending` shows what is open and in which workspace; or pass workspace to ask that workspace's vault." })
 }
 
 // Does a slot under pending/ that reads as active (the interim form of an

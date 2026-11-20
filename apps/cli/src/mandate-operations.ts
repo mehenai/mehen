@@ -83,7 +83,7 @@ export const MANDATE_NEVER_COVERS = "minting or reading credentials, webhooks, f
 // and so does a vault from before mandates.
 export const MANDATES_OFF_LINE = "This workspace has no mandates: they are not switched on here, or this vault is older than them."
 const MANDATES_OFF_NEXT = { say: "Carry on asking for each request as before; do not propose a mandate again." }
-const MANDATE_NOT_FOUND_NEXT = { command: "mehen mandate ls", say: "mehen mandate ls (MCP vault_mandate with action list) lists this machine's mandates in this workspace; use an id it shows." }
+const MANDATE_NOT_FOUND_NEXT = { command: "mehen mandate ls", say: "`mehen mandate ls` lists this machine's mandates in this workspace; use an id it shows." }
 
 async function mandateCall<T>(call: () => Promise<T>): Promise<T> {
   try {

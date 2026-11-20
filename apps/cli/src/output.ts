@@ -89,7 +89,8 @@ export function printAsk(ask: Ask, options: PrintAskOptions = {}): void {
 // `then` replaces the ask block's then: line for a given ask (MCP names its
 // own tool there instead of `mehen wait`); null drops the line.
 // `surface` words a mandateCover line for the command line (the default) or MCP.
-export type ErrorOutputOptions = { env?: Env; noQr?: boolean; vaultUrl?: AskVault | null; then?: (ask: Ask) => string | null; surface?: MandateSurface }
+// `served` says which MCP tools the server serves, so a line names only those.
+export type ErrorOutputOptions = { env?: Env; noQr?: boolean; vaultUrl?: AskVault | null; then?: (ask: Ask) => string | null; surface?: MandateSurface; served?: (tool: string) => boolean }
 
 // The error's ask and next, with every link checked: the ask's through
 // askForError, and next.url (whatever the error code) through askUrl. A
@@ -126,7 +127,7 @@ export function errorLines(error: CliError, stream: HumanWriter, options: ErrorO
   const { ask, next, refused, cover } = checkedError(error, options)
   const s = styler(colourEnabled(stream, env))
   const lines: Segment[][] = [segments(s.dim("mehen:"), ` ${error.message}`)]
-  if (cover) lines.push(segments(s.dim("mandate:"), ` ${mandateCoverText(cover, options.surface ?? "cli")}`))
+  if (cover) lines.push(segments(s.dim("mandate:"), ` ${mandateCoverText(cover, options.surface ?? "cli", options.served)}`))
   if (refused) lines.push(segments(s.dim("mehen:"), " ", s.danger("warning:"), ` ${refusedLinkWarning(options.vaultUrl ?? null)}`))
   if (ask) {
     const then = options.then ? options.then(ask) : undefined

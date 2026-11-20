@@ -41,16 +41,18 @@ export function checkedMandateCover(hint: MandateCover, vault: AskVault | null):
 }
 
 // The one line for a held request, by state, with the propose the surface
-// really takes for "none": the command, or vault_mandate's arguments, for
+// really takes for "none": the command, or vault_mandate's arguments when
+// the server serves it, for
 // the credential and the classes this request needs and nothing more; the
 // length is left to the default, which the person may shorten.
-export function mandateCoverText(hint: MandateCover, surface: MandateSurface): string {
+export function mandateCoverText(hint: MandateCover, surface: MandateSurface, served: (tool: string) => boolean = () => true): string {
+  const tool = surface === "mcp" && served("vault_mandate")
   const at = hint.url ? `at ${hint.url}` : "on its page"
   const classes = MANDATE_CLASSES.filter((c) => hint.classes.includes(c))
   const items = hint.items ?? ["<slug>"]
   switch (hint.state) {
     case "none": {
-      const propose = surface === "cli" ? `\`mehen mandate propose --items ${items.join(",")} --classes ${classes.join(",")} --note "<why>"\`` : `vault_mandate { "action": "propose", "items": [${items.map((i) => `"${i}"`).join(", ")}], "classes": [${classes.map((c) => `"${c}"`).join(", ")}], "note": "<why>" }`
+      const propose = !tool ? `\`mehen mandate propose --items ${items.join(",")} --classes ${classes.join(",")} --note "<why>"\`` : `vault_mandate { "action": "propose", "items": [${items.map((i) => `"${i}"`).join(", ")}], "classes": [${classes.map((c) => `"${c}"`).join(", ")}], "note": "<why>" }`
       return `A mandate could let this machine make requests like this without asking. If this kind of ask keeps coming, propose one for only this credential and these kinds: ${propose}.`
     }
     case "paused":
@@ -61,7 +63,7 @@ export function mandateCoverText(hint: MandateCover, surface: MandateSurface): s
     case "outside_schedule":
       return `This machine's mandate does not cover this time; it covers its hours only${hint.url ? ` (${hint.url})` : ""}.`
     case "unticked":
-      return `This machine's mandate does not name ${classes.join(", ")} requests with ${hint.items ? hint.items.join(", ") : "this credential"}; if this keeps asking, propose its terms again with only those added (${surface === "cli" ? `\`mehen mandate show ${hint.mandate ?? "<mdt_id>"}\`` : `vault_mandate { "action": "show", "id": "${hint.mandate ?? "<mdt_id>"}" }`} lists them).`
+      return `This machine's mandate does not name ${classes.join(", ")} requests with ${hint.items ? hint.items.join(", ") : "this credential"}; if this keeps asking, propose its terms again with only those added (${!tool ? `\`mehen mandate show ${hint.mandate ?? "<mdt_id>"}\`` : `vault_mandate { "action": "show", "id": "${hint.mandate ?? "<mdt_id>"}" }`} lists them).`
     case "not_covering":
       return `This machine's mandate is not covering requests right now; its signer can see why ${at}.`
   }

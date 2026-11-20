@@ -28,7 +28,7 @@ import { TOOL_SCHEMA_NEXT, toolNext } from "./mcp/tool-next.ts"
 import { APP_TOOLS, TOOLS, TOOLSETS_ENV, TOOLSET_NAMES, TOOL_COMMAND, type Toolset, resolveToolsets, servedTools, toolsetOf } from "./mcp/registry.ts"
 import { CARDS, CARD_FOR_TOOL, appsNegotiated, readCard } from "./mcp/ui/cards.ts"
 import { displayChanged, narrowedSpan, resolveSlot, startServer, validateSlot } from "./mcp/binding.ts"
-import { type McpServer, type ProgressToken, type SpanSlot, type ToolDeps, type ToolOutput, mcpThen } from "./mcp/shared.ts"
+import { type McpServer, type ProgressToken, type SpanSlot, type ToolDeps, type ToolOutput, mcpThen, servedBy } from "./mcp/shared.ts"
 
 export { CallRegistry } from "./mcp/call-registry.ts"
 export { FETCH_BODY_LIMIT, WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS, PROGRESS_INTERVAL_MS } from "./mcp/constants.ts"
@@ -153,9 +153,9 @@ function newEnrolmentVault(env: Env): { vaultUrl: string; workspaceSlug: string 
 async function toolError(failure: CliError, tool: string, deps: ToolDeps): Promise<Record<string, unknown>> {
   const vaultUrl = callVault(deps)
   const { ask } = askForError(failure, deps.env, vaultUrl)
-  const served = listsFor(servedToolsets(deps)).tools
-  const error = toolNext(failure, tool, (name) => served.some((t) => t.name === name))
-  const options = { env: deps.env, vaultUrl, then: mcpThen, surface: "mcp" as const }
+  const served = servedBy(deps)
+  const error = toolNext(failure, tool, served)
+  const options = { env: deps.env, vaultUrl, then: mcpThen, surface: "mcp" as const, served }
   const lines = errorLines(error, NOT_A_TTY, options).map(terminalText)
   const text = [`${error.code}: ${visibleText(error.message)}`, ...lines.slice(1)].join("\n")
   return { content: [{ type: "text", text }, ...(ask ? [resourceLink(ask)] : [])], structuredContent: errorJson(error, options), isError: true }

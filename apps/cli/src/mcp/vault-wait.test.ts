@@ -167,6 +167,33 @@ test("with two workspaces and none named, vault_wait mdp_ finds the one vault_ma
   }
 })
 
+// vault_wait is core: its steps name vault_pending and vault_mandate only
+// when the server serves them, and the mehen command otherwise.
+test("with two workspaces, an id no workspace recorded points at the tools the server serves, else at the mehen command", async () => {
+  const home = await tempDir()
+  try {
+    const homeEnv = { HOME: home.path, MEHEN_CONFIG_DIR: "", MEHEN_VAULT_URL: vault.url }
+    const root = `${home.path}/.config/mehen`
+    await vault.enrolSoftware(root, { config: { tenant: "tn_second00000001", workspaceSlug: "second-space", workspaceName: "Second" } })
+    await vault.enrolSoftware(root)
+    const wait = async (toolsets: string, id: string) => {
+      const result = await runJv(["mcp", "--toolsets", toolsets], homeEnv, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "vault_wait", arguments: { id, timeoutSeconds: 0 } } })}\n`)
+      return (JSON.parse(result.stdout) as { result: WaitOutput }).result
+    }
+    const sayOf = (output: WaitOutput) => (output.structuredContent.next as { say?: string } | undefined)?.say
+    for (const [id, tool, command] of [["int_nowhere", "vault_pending", "`mehen pending`"], ["mdp_nowhere", "vault_mandate", "`mehen mandate ls`"]] as const) {
+      const core = await wait("core", id)
+      expect(core.structuredContent).toMatchObject({ error: "not_found" })
+      expect(JSON.stringify(core)).not.toContain(tool)
+      expect(sayOf(core)).toContain(command)
+    }
+    expect(sayOf(await wait("inspect", "int_nowhere"))).toContain("`vault_pending`")
+    expect(sayOf(await wait("policy", "mdp_nowhere"))).toContain('`vault_mandate { "action": "list" }`')
+  } finally {
+    await home.remove()
+  }
+})
+
 test("vault_wait polls again with a fresh proof when a held poll's connection drops, and returns the answer", async () => {
   const approved = { approval: "apr_drop", status: "approved", bindingCode: "K7Q2MX", summary: "Send an email", grant: { id: "gnt_1", uses: 1, expiresAt: expiresAt(), kind: "exact" as const, scope: { selector: { device: "dev_test", session: null }, route: null }, parent: null } }
   vault.sequences.set("approval:apr_drop", [{ approval: "apr_drop", status: "pending", bindingCode: "K7Q2MX", summary: "Send an email", expiresAt: expiresAt() }, approved])

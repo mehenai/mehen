@@ -23,6 +23,16 @@ test("each state says one line: propose for none, with the flags propose takes; 
   expect(mandateCoverText(hint("outside_schedule", { url: null }), "cli")).toBe("This machine's mandate does not cover this time; it covers its hours only.")
 })
 
+// A server without the policy toolset has no vault_mandate to name: the
+// line names the mehen command instead.
+test("through MCP, the line names vault_mandate only when the server serves it", () => {
+  const core = (tool: string) => tool !== "vault_mandate"
+  const gmail = { items: ["gmail-support"] }
+  expect(mandateCoverText(hint("none", gmail), "mcp", core)).toBe(mandateCoverText(hint("none", gmail), "cli"))
+  expect(mandateCoverText(hint("unticked", gmail), "mcp", core)).toBe(mandateCoverText(hint("unticked", gmail), "cli"))
+  expect(mandateCoverText(hint("none", gmail), "mcp", () => true)).toContain('vault_mandate { "action": "propose"')
+})
+
 test("refusal/the link is this vault's page for the hint's own mandate, else rebuilt from its id, else none", () => {
   expect(checkedMandateCover(hint("paused"), vault).url).toBe(page)
   for (const url of ["https://evil.example/w/space/mandates/mdt_live", "https://vault.example/w/space/mandates/mdt_other", "https://vault.example/w/other/mandates/mdt_live", "https://vault.example/w/space/a/apr_1", null]) {

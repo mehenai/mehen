@@ -14,7 +14,7 @@ export const vaultConnect = tool({
     "or set `requestClient` to ask for the client first (an `ask` with `step: \"client\"`): vault_wait for it, then call vault_connect again with the same arguments. " +
     "Naming an existing connection reconnects it: same account, its scopes kept, `scopes` added.",
   input: z.object({
-    provider: z.string().describe("OAuth provider, e.g. google-gmail (vault_templates lists them)"),
+    provider: z.string().describe("OAuth provider id, e.g. google-gmail"),
     client: z.string().optional().describe("the oauth-client item to use; when absent, the one client made from the provider's client template"),
     name: z.string().describe("slug for the connection item"),
     reason: z.string().describe("why you need it; the human sees this"),
