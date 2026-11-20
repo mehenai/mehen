@@ -27,7 +27,8 @@ export type ShellNode =
   | { kind: "command"; words: Word[]; inputs: Word[]; op: Op; next: Op | null; heredoc: boolean }
   // A subshell (a list element), or a command or process substitution
   // inside a word (`sub`): what changes inside it ends with it.
-  | { kind: "open"; op: Op; sub: boolean }
+  // `process` marks a process substitution, <(...) or >(...).
+  | { kind: "open"; op: Op; sub: boolean; process?: boolean }
   | { kind: "close" }
   // A construct outside the grammar the guard reads, with why; `runs` when
   // it may run a command the guard cannot see.
@@ -139,7 +140,6 @@ class Parser {
           this.word(nodes)
         } else {
           this.i++
-          nodes.push({ kind: "unknown", why: "a command run in the background" })
           operator("&")
         }
         continue
@@ -213,9 +213,8 @@ class Parser {
       return true
     }
     if (s.startsWith("<(", this.i) || s.startsWith(">(", this.i)) {
-      nodes.push({ kind: "unknown", why: "a process substitution" })
       this.i += 2
-      nodes.push({ kind: "open", op: "start", sub: true }, ...this.list(")"), { kind: "close" })
+      nodes.push({ kind: "open", op: "start", sub: true, process: true }, ...this.list(")"), { kind: "close" })
       return false
     }
     const reading = s[this.i] === "<"

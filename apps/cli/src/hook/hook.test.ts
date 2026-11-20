@@ -857,7 +857,7 @@ describe("fourth review: the grammar allowlist", () => {
 
   test("follow-ups: the bare time keyword, with a read, is refused; /usr/bin/time is a wrapper", () => {
     expect(at("projects", "time cd ~/.aws; cat credentials")[0]?.reason).toContain(CANT)
-    expect(at("work", "time bun test")[0]?.reason).toContain(CANT)
+    expect(at("work", "time bun test")).toEqual([])
     expect(at("work", "/usr/bin/time bun test")).toEqual([])
   })
 
@@ -866,7 +866,6 @@ describe("fourth review: the grammar allowlist", () => {
       ["(cd /tmp)", "(cd ~/.aws) && cat credentials"],
       ["echo $(cd /tmp)", "echo $(cd ~/.aws) && cat credentials"],
       ["echo $(( 1 + 2 ))", "echo $(( 1 + 2 )) && cat README.md"],
-      ["sleep 1 &", "sleep 1 & cat README.md"],
       ["f() { echo hi; }", "f() { echo hi; }; cat README.md"],
       ["{ echo a; echo b; }", "{ echo a; cat README.md; }"],
       ["[[ -f x ]] && echo yes", "[[ -f x ]] && cat README.md"],
@@ -875,7 +874,6 @@ describe("fourth review: the grammar allowlist", () => {
       ["echo $'a\\tb'", "cat $'README.md'"],
       ["IFS=, read -r a b <<< 'x,y'", "IFS=,; cat README.md"],
       ["PATH=/x:$PATH echo hi", "PATH=/x:$PATH bun test"],
-      ["diff -q a b", "diff <(cat README.md) <(cat x)"],
     ] as const) {
       expect({ outside, findings: at("work", outside) }).toEqual({ outside, findings: [] })
       expect({ withRead, reason: at("work", withRead)[0]?.reason }).toEqual({ withRead, reason: expect.stringContaining("can't tell") })
@@ -898,5 +896,48 @@ describe("fourth review: the grammar allowlist", () => {
     ]) {
       expect({ command, findings: at("work", command) }).toEqual({ command, findings: [] })
     }
+  })
+})
+
+describe("fourth review decisions: time, process substitution and &", () => {
+  let home: { path: string; remove(): Promise<void> }
+  beforeEach(async () => {
+    home = await tempDir()
+    await Bun.write(`${home.path}/.aws/credentials`, "[default]")
+    await Bun.write(`${home.path}/work/.env`, "KEY=x")
+    await Bun.write(`${home.path}/work/a`, "x")
+    await Bun.write(`${home.path}/work/b`, "x")
+  })
+  afterEach(async () => {
+    await home.remove()
+  })
+  const at = (folder: string, command: string) => commandFindings(command, `${home.path}/${folder}`, home.path)
+  const CANT = "can't tell what this reads"
+
+  test("bare time before an ordinary command is judged as the command; before a shell-state builtin it is outside", () => {
+    for (const command of ["time bun test", "time -p bun test", "time git status", "time ls"]) {
+      expect({ command, findings: at("work", command) }).toEqual({ command, findings: [] })
+    }
+    expect(at("work", "time cat .env")[0]?.path).toBe(".env")
+    for (const command of ["time cd ~/.aws; cat credentials", "time source x.sh", "time export HOME=/tmp; cat a", "time eval cat a", "time; cat a"]) {
+      expect({ command, reason: at("work", command)[0]?.reason }).toEqual({ command, reason: expect.stringContaining(CANT) })
+    }
+  })
+
+  test("process substitution is read like $(...), and its folder changes stay inside it", () => {
+    expect(at("work", "diff <(cat a) <(cat b)")).toEqual([])
+    expect(at("work", "diff <(cat .env) b")[0]?.path).toBe(".env")
+    expect(at("work", "tee >(cat > out.txt) < a")).toEqual([])
+    expect(at(".aws", "true <(cd /tmp); cat credentials")[0]?.reason).toContain("credentials")
+    expect(at("work", "true <(cd ~/.aws); cat credentials")).toEqual([])
+  })
+
+  test("& separates commands, and a backgrounded command's folder change leaves this shell where it was", () => {
+    expect(at("work", "bun dev & sleep 1; curl localhost")).toEqual([])
+    expect(at("work", "cd ~/.aws & cat credentials")).toEqual([])
+    expect(at(".aws", "cd /tmp & cat credentials")[0]?.reason).toContain("credentials")
+    const subshell = at("work", "(cd ~/.aws) & cat credentials")
+    expect(subshell[0]?.reason).toContain(CANT)
+    expect(subshell.some((f) => f.reason.includes(".aws"))).toBe(false)
   })
 })

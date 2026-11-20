@@ -970,6 +970,8 @@ type Unwrapped = { words: Word[]; cwds: Cwds; reads: Word[]; xargs: XargsInfo | 
 
 export const MAX_WRAPPERS = 8
 const WRAPPERS = new Set(["command", "builtin", "nohup", "exec", "time", "env", "sudo", "xargs"])
+// Builtins that change this shell's folder or state.
+const STATE_BUILTINS = new Set(["cd", "pushd", "popd", "source", ".", "exec", "eval", "export", "set", "shopt", "alias", "unset"])
 
 function takeValue(args: Word[], i: number, word: Word, attached: string): [Word | undefined, number] {
   return attached ? [part(word, attached), i] : [args[i + 1], i + 1]
@@ -1080,8 +1082,12 @@ function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
       case "time": {
         // Bare `time` is the shell's keyword, which runs builtins such as
         // cd in this shell; a path names a time program, a child process.
-        if (head.text === "time") outside(ctx, "the time keyword")
-        else out.child = true
+        // Before a builtin that changes this shell's folder or state it is
+        // outside the grammar; before any other command it only times it.
+        if (head.text === "time") {
+          const timed = rest.find((w) => w.dynamic || !w.text.startsWith("-"))
+          if (timed === undefined || (!timed.dynamic && STATE_BUILTINS.has(timed.text))) outside(ctx, "the time keyword before a shell builtin")
+        } else out.child = true
         let j = 0
         while (j < rest.length && (rest[j] as Word).text.startsWith("-")) j += ["-f", "-o"].includes((rest[j] as Word).text) ? 2 : 1
         rest = rest.slice(j)
@@ -1244,7 +1250,7 @@ function shellRun(ctx: Context, state: State, node: CommandNode, program: string
 function command(ctx: Context, state: State, node: CommandNode, producer: CommandNode | null = null, conditional = false): void {
   let words = node.words
   while (words.length && !(words[0] as Word).dynamic && RESERVED.has((words[0] as Word).text)) words = words.slice(1)
-  const apart = node.op === "|" || node.next === "|" || node.next === "&" || conditional
+  const apart = node.op === "|" || node.next === "|" || conditional
   const unwrapped = unwrap(words, state.cwds, ctx)
   const first = unwrapped.words[0]
   const name = first === undefined ? "the redirect" : first.dynamic ? "the command" : `\`${basename(first.text)}\``
@@ -1279,6 +1285,8 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
     if (unwrapped.child) return
     if (ctx.nested > 0) return outside(ctx, "a folder change inside a subshell or a substitution")
     if (node.op === "|" || node.next === "|") return outside(ctx, "a folder change in a pipeline")
+    // A command run in the background with & runs in a subshell.
+    if (node.next === "&") return
     folderChange(program, args, state, ctx.home, apart)
     return
   }
@@ -1400,7 +1408,7 @@ type AndOr = { states: Cwds[]; pureAnd: boolean }
 const COMPOUND_OPEN = new Set(["if", "while", "until", "for", "case", "select"])
 // Words that start a construct outside the grammar when they start a
 // command: loops, conditionals, groups, tests, negation, coprocesses.
-const OUTSIDE_KEYWORDS = new Set(["if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "select", "function", "{", "}", "[[", "]]", "!", "coproc", "time"])
+const OUTSIDE_KEYWORDS = new Set(["if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "select", "function", "{", "}", "[[", "]]", "!", "coproc"])
 const COMPOUND_CLOSE = new Set(["fi", "done", "esac"])
 
 function unionAll(states: Cwds[]): Cwds {
@@ -1423,7 +1431,7 @@ function enter(state: State, list: AndOr | null, op: Op): AndOr | null {
 }
 
 function lines(ctx: Context, state: State, nodes: ShellNode[]): void {
-  type Saved = { cwds: Cwds; stack: Cwds[]; previous: CommandNode | null; list: AndOr | null; compound: number; sub: boolean }
+  type Saved = { cwds: Cwds; stack: Cwds[]; previous: CommandNode | null; list: AndOr | null; compound: number; sub: boolean; process: boolean }
   const saved: Saved[] = []
   // The command before, at this level: what a pipe feeds the next one.
   let previous: CommandNode | null = null
@@ -1431,15 +1439,17 @@ function lines(ctx: Context, state: State, nodes: ShellNode[]): void {
   let compound = 0
   for (const node of nodes) {
     if (node.kind === "open") {
-      ctx.nested++
+      // A process substitution runs in a process of its own: what it does
+      // to its folder ends with it, as the restore below models.
+      if (!node.process) ctx.nested++
       if (!node.sub) list = enter(state, list, node.op)
-      saved.push({ cwds: state.cwds, stack: [...state.stack], previous, list, compound, sub: node.sub })
+      saved.push({ cwds: state.cwds, stack: [...state.stack], previous, list, compound, sub: node.sub, process: node.process === true })
       previous = null
       list = null
       compound = 0
     } else if (node.kind === "close") {
-      ctx.nested = Math.max(0, ctx.nested - 1)
       const back = saved.pop()
+      if (!back?.process) ctx.nested = Math.max(0, ctx.nested - 1)
       if (back) {
         state.cwds = back.cwds
         state.stack = back.stack
@@ -1454,7 +1464,7 @@ function lines(ctx: Context, state: State, nodes: ShellNode[]): void {
       const head = node.words[0]
       const keyword = head && !head.dynamic ? head.text : ""
       if (COMPOUND_OPEN.has(keyword)) compound++
-      if (OUTSIDE_KEYWORDS.has(keyword)) outside(ctx, keyword === "time" ? "the time keyword" : `\`${keyword}\``, keyword === "coproc")
+      if (OUTSIDE_KEYWORDS.has(keyword)) outside(ctx, `\`${keyword}\``, keyword === "coproc")
       command(ctx, state, node, previous, compound > 0)
       if (COMPOUND_CLOSE.has(keyword)) compound = Math.max(0, compound - 1)
       list?.states.push(state.cwds)

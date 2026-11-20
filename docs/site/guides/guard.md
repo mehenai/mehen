@@ -49,17 +49,18 @@ Each file is backed up once, to `<file>.mehen-backup`, before Mehen first change
 
 The guard follows a fixed part of the shell's grammar, exactly:
 
-- simple commands with their redirections, joined by pipes, `;`, `&&` and `||`;
+- simple commands with their redirections, joined by pipes, `;`, `&&`, `||` and `&` (a command run in the background with `&` runs in a subshell, so its `cd` leaves this shell where it was);
 - single and double quotes and backslash escapes;
-- `$VAR` and `${VAR}` with no operator; `$(...)` and backticks, whose commands are read too;
+- `$VAR` and `${VAR}` with no operator; `$(...)`, backticks and process substitution `<(...)` and `>(...)`, whose commands are read too (a `cd` inside a process substitution ends with it);
 - `cd`, `pushd` and `popd` in the main shell;
 - globs using `*`, `?` and plain `[...]` sets and ranges, and brace expansions such as `{a,b}` and `{1..3}`;
 - here-documents given to a program as data;
+- the `time` keyword before a command that is not one of the builtins that change this shell (`cd`, `pushd`, `popd`, `source`, `.`, `exec`, `eval`, `export`, `set`, `shopt`, `alias`, `unset`): the command is judged as if `time` were not there;
 - the wrappers below, up to 8 in a row, and the one form of `find` described below.
 
 **The rule.** When a command line uses anything outside that grammar, and anything on the line reads a file or prints the environment, the guard stops it: "can't tell what this reads; run the read on its own". Reading means a program that reads files (`cat`, `grep`, `head`, `git`, `bun` and the like), a file given to a shell or an interpreter to run, input redirected from a file, `grep -r`, `find` feeding a program that reads, or `env`, `printenv`, `set` or `export -p` printing the environment. A line that uses something outside the grammar but reads nothing passes, so `for f in *.ts; do echo $f; done` is fine and `for i in 1 2; do cd ..; done; cat x` is stopped.
 
-Outside the grammar: loops and conditionals (`for`, `while`, `until`, `if`, `case`, `select`), `{ ...; }` groups, `[[ ]]`, `!`, functions, subshells `( ... )`, a `cd` inside a subshell, a substitution or a pipeline, a command run in the background with `&`, `${...}` with any operator, arithmetic `$(( ))`, `$'...'` and `$"..."` quoting, here-strings, process substitution, coprocesses, aliases, `eval`, `source` and `.`, `exec`, the bare `time` keyword (a `time` program named by its path, such as `/usr/bin/time`, is a wrapper), `shopt`, `set -o`, `set +o` and `set -f`, `bash -O`, `+O`, `-o` and `+o`, assignments to `HOME`, `IFS`, `GLOBIGNORE`, `PATH`, `CDPATH`, `BASH_ENV`, `ENV`, `BASHOPTS` or `SHELLOPTS`, POSIX classes such as `[[:alpha:]]` in a glob, and extended globs. A few of these can run a command the guard cannot see, and are stopped even with no read on the line: an alias, a coprocess, `eval` of a word only the shell knows, a `${...}` or `$(( ))` holding a command substitution, an unquoted here-document that runs one, and a line too long (over 65,536 characters) or too deeply nested (over 32 levels) to read. More than 8 wrappers in a row is stopped too.
+Outside the grammar: loops and conditionals (`for`, `while`, `until`, `if`, `case`, `select`), `{ ...; }` groups, `[[ ]]`, `!`, functions, subshells `( ... )`, a `cd` inside a subshell, a `$(...)` or a pipeline, `${...}` with any operator, arithmetic `$(( ))`, `$'...'` and `$"..."` quoting, here-strings, coprocesses, aliases, `eval`, `source` and `.`, `exec`, the `time` keyword before one of those builtins, or alone (a `time` program named by its path, such as `/usr/bin/time`, is a wrapper), `shopt`, `set -o`, `set +o` and `set -f`, `bash -O`, `+O`, `-o` and `+o`, assignments to `HOME`, `IFS`, `GLOBIGNORE`, `PATH`, `CDPATH`, `BASH_ENV`, `ENV`, `BASHOPTS` or `SHELLOPTS`, POSIX classes such as `[[:alpha:]]` in a glob, and extended globs. A few of these can run a command the guard cannot see, and are stopped even with no read on the line: an alias, a coprocess, `eval` of a word only the shell knows, a `${...}` or `$(( ))` holding a command substitution, an unquoted here-document that runs one, and a line too long (over 65,536 characters) or too deeply nested (over 32 levels) to read. More than 8 wrappers in a row is stopped too.
 
 Within the grammar:
 
