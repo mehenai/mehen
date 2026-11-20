@@ -686,8 +686,17 @@ export function logicalText(s: string): string {
     // split by continuations, which bash removes first. The delimiter is
     // quoted if any part of it is, continuations aside.
     const second = skipContinuations(s, i + 1)
-    if (c === "<" && s[second] === "<" && s[skipContinuations(s, second + 1)] !== "<") {
-      let j = skipContinuations(s, second + 1)
+    const third = skipContinuations(s, second + 1)
+    // A here-string, <<<, is one operator: its last two < never open a
+    // here-document.
+    if (c === "<" && s[second] === "<" && s[third] === "<") {
+      out += "<<<"
+      i = third + 1
+      wordStart = false
+      continue
+    }
+    if (c === "<" && s[second] === "<") {
+      let j = third
       const strip = s[j] === "-"
       if (strip) j = skipContinuations(s, j + 1)
       let blanks = ""
