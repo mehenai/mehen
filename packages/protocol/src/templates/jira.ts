@@ -49,7 +49,9 @@ const ISSUE_SURFACE = [`${API}/issue/**`, `${API}/issueLink/**`, `${API}/bulk/is
 // the named reads, nothing more. Administrative mutations are unsupported:
 // their routes are outside the binding or explicitly denied on retained
 // read-only paths. Without a human: the named reads, JQL searches and bulk
-// issue fetches. Every other issue write asks. Archiving, unarchiving and
+// issue fetches. Every other issue write asks, and an issue notification,
+// which emails the users and groups its body names, is pinned to an
+// approval whatever its body. Archiving, unarchiving and
 // bulk issue properties are refused, and so are moving issues in bulk and
 // moving worklogs. An issue write that may change who can see an issue is
 // held for a person even when the item's own policy allows writes: one
@@ -92,6 +94,7 @@ export const jira: Template = {
       { action: "deny", methods: WRITES, paths: READ_ONLY, note: "administrative changes to projects, fields, users, issue types and other shared settings" },
       { action: "deny", paths: [`${API}/issue/archive`, `${API}/issue/unarchive`, `${API}/issue/properties`, `${API}/issue/properties/**`], note: "archives issues, or sets properties on many issues at once" },
       { action: "deny", methods: WRITES, paths: [`${API}/bulk/issues/move`, `${API}/issue/*/worklog/move`], note: "moves issues or worklogs to another project or issue, whose security may differ" },
+      { action: "approve", methods: ["POST"], paths: [`${API}/issue/*/notify`], note: "emails the users and groups the request names" },
       {
         action: "approve",
         methods: ["POST", "PUT", "PATCH"],
