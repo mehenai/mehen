@@ -42,9 +42,10 @@ class McpClient {
   private started(): ReturnType<typeof Bun.spawn<"pipe", "pipe", "pipe">> {
     if (this.proc) return this.proc
     // HOME is an empty directory: a server under test never discovers this user's own enrolments.
+    // Every toolset: this suite covers every tool.
     this.home = mkdtempSync(join(tmpdir(), "mehen-mcp-home-"))
     const proc = Bun.spawn([process.execPath, MAIN, "mcp"], {
-      env: { PATH: process.env.PATH ?? "", HOME: this.home, MEHEN_POLL_INTERVAL_MS: "20", ...this.env },
+      env: { PATH: process.env.PATH ?? "", HOME: this.home, MEHEN_POLL_INTERVAL_MS: "20", MEHEN_MCP_TOOLSETS: "all", ...this.env },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",

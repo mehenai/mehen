@@ -11,7 +11,7 @@ const publicText = (file: string) => Bun.file(resolve(PUBLIC, file)).text()
 const PIN_OUTDATED = "This host uses an outdated managed-agent configuration. Stop and contact the harness owner. Relay the refusal and its next step; do not edit the pin, identity files or launch environment yourself."
 
 test("no published page carries the managed pin rewrite procedure", async () => {
-  for (const file of ["skill.md", "reference/errors.md"]) expect(await publicText(file), file).toContain(PIN_OUTDATED)
+  for (const file of ["guide.md", "reference/errors.md"]) expect(await publicText(file), file).toContain(PIN_OUTDATED)
   for (const file of ["skill.md", "changelog.md", "reference/errors.md", "concepts/machines.md", "llms-full.txt"]) {
     const text = await publicText(file)
     for (const recipe of ["rewrites the pin", "rewrite the pin", "as version 3", "version-2 map", "pin map is version 2", "privateCredentials` set to", "privateCredentials set to"]) {
@@ -31,21 +31,19 @@ test("the operator's takeover power is stated, unverified custody is not", async
   expect(await publicText("security/keys-and-signing.md")).toContain("not proof that a production key is provisioned today")
 })
 
+// The skill is a short sheet since 0.5; the guide it points to carries the rules.
 test("the byte-published guide and skill carry the corrected sentences", async () => {
   const guide = await publicText("guide.md")
   const skill = await publicText("skill.md")
   expect(guide).toBe(await Bun.file(resolve(import.meta.dir, "../../cli/src/guide.md")).text())
   const modes = "Relay and placeholder modes keep credential values off the agent's machine. Explicitly allowed lease mode delivers values to the child process. Requests marked for approval by policy, and protected runs, need an eligible human's passkey"
   const reuse = "Repeating the same open request from the same requester, with the same home and details, reuses its link without extending it. Other requests under that name conflict; `--new` replaces your own open request."
-  for (const [file, text] of [["guide.md", guide], ["skill.md", skill]] as const) {
-    expect(text, file).toContain(modes)
-    expect(text, file).toContain(reuse)
-  }
+  expect(guide).toContain(modes)
+  expect(guide).toContain(reuse)
   expect(guide).toContain("Refusals include a reason. The CLI adds a next step where it can: a command, a human link or advice. Some problems need a human to repair the setup.")
   expect(guide).toContain("It sends no request upstream and creates no approval.")
   expect(guide).toContain("it is not a byte-for-byte copy of the upstream response")
-  expect(skill).toContain("Check fetches public item metadata from the vault, evaluates base binding and policy locally, sends nothing upstream and creates no approval. It does not predict live permission to send.")
-  expect(skill).toContain("usable by members within their machine scope; a guest's or team's machine needs an authorised project environment that references the credential")
+  expect(guide).toContain("usable by members within their machine scope; a guest's or team's machine needs an authorised project environment that references the credential")
   expect(skill).toContain("No MCP tool starts an enrolment, approves, revokes or freezes. `vault_wait` can finish an enrolment already started at the terminal.")
   const threat = await publicText("security/threat-model.md")
   expect(threat).toContain("A consuming app should draw a trusted vault card only for an ask from its own authenticated call, after checking exact origin, workspace and device context. Each app must enforce this boundary.")
@@ -98,7 +96,7 @@ test("no served file, generated or handwritten, names gmail-alex", async () => {
 const RELEASE_KEY = "Installed release builds with a compiled trusted release key check for signed updates automatically; a build with no trusted key updates nothing."
 
 test("self-update is qualified by the compiled release key", async () => {
-  for (const file of ["guides/connect-one-workspace.md", "skill.md", "guide.md", "changelog.md"]) expect(await publicText(file), file).toContain(RELEASE_KEY)
+  for (const file of ["guides/connect-one-workspace.md", "guide.md", "changelog.md"]) expect(await publicText(file), file).toContain(RELEASE_KEY)
   const full = await publicText("llms-full.txt")
   for (const stale of ["`mehen` keeps itself current", "a CLI that keeps itself current", "the machine keeps itself current", "`mehen` updates itself in the background"]) expect(full, stale).not.toContain(stale)
 })

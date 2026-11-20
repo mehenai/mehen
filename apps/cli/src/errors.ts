@@ -29,6 +29,7 @@ export const LOCAL_EXIT = {
   key_insecure: EXIT.identity,
   key_scope: EXIT.identity, // the key on disk was made for another vault
   command_failed: EXIT.error, // a mehen env call made through mehen mcp
+  tool_not_served: EXIT.usage, // mehen mcp: a tool in a toolset this server was not started with
   // mehen fill (browser/fill.ts): the browser, the page and the field.
   cdp_unreachable: EXIT.transient,
   page_changed: EXIT.transient,

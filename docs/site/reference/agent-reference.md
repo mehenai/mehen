@@ -13,6 +13,8 @@ The parts of [the skill](https://docs.mehen.dev/skill.md) an agent looks up rath
 
 ## MCP tools
 
+By default the server lists the six core tools: `vault_status`, `vault_list`, `vault_request`, `vault_fetch`, `vault_env` and `vault_wait`. The rest are in opt-in toolsets: `inspect` (`vault_doctor`, `vault_templates`, `vault_show`, `vault_check`, `vault_pending`), `connect` (`vault_connect`), `writes` (`vault_plan`, `vault_fill`, `vault_push`), `policy` (`vault_policy`, `vault_mandate`) and `adopt` (`vault_adopt_scan`, `vault_adopt_status`). The harness adds them with `mehen mcp --toolsets <names>` or `MEHEN_MCP_TOOLSETS`; `all` serves every tool. A call to a tool the server does not serve is refused `tool_not_served`, naming its toolset, with the `mehen` command that does the same as `next.command`. See [MCP tools](mcp.md).
+
 Every tool except `vault_templates` also takes `workspace?` (a slug or id), needed when this server may use more than one workspace and neither the call nor the checkout decides:
 
 - `vault_status`: `mehen status --json`, every workspace this server may use, each with its `state` and `check` (usable when `state` is `active` and `check.ok` is true; when none is, the top-level `next` is the first failed check's, and `mehen status` exits with its code, its `--json` carrying that check's `error` and `message` on top too) and, when the vault says, this machine's live `mandate` (or `null`) and `mandateProposals` waiting for a signer; before any enrolment it is a success with `next.command`
@@ -159,6 +161,8 @@ mehen setup --agent claude-code --json
 mehen setup --agent codex --json
 mehen setup --agent pi --json
 ```
+
+For every MCP tool rather than the core six, add `MEHEN_MCP_TOOLSETS` with `all` (or the toolsets wanted) to the environment of the entry setup wrote, and restart the agent; setup keeps an entry's environment when it runs again.
 
 `--mcp-file <path>` writes `mcpServers.mehen` into a compatible JSON client's file; use `--agent vscode` or `--agent opencode` for those clients' different formats. `mehen setup --print --json` prints the entry without writing anything.
 

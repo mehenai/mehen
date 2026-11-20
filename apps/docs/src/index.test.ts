@@ -188,7 +188,7 @@ test("the setup page updates an installed mehen and never reinstalls it", async 
   }
   const skill = await (await request("/skill.md")).text()
   expect(skill).toContain("Never reinstall over an installed `mehen`")
-  expect(skill).toContain("In `agents`, inspect `mcp`, `reason`, `skill`, `skillReason` and `restart`")
+  expect(await (await request("/guide.md")).text()).toContain("In `agents`, inspect `mcp`, `reason`, `skill`, `skillReason` and `restart`")
   // No hand-written MCP registration offered as a fallback.
   expect(skill).not.toContain("mcp add")
   for (const stale of ["background with its output captured", "(15 minutes)", "MEHEN_CONFIG_DIR", "setup --workspace ", "mehen-<slug>", "up to 3 times", "https://mehen.dev/setup.md"]) {

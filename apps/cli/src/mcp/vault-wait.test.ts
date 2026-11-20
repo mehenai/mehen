@@ -147,7 +147,7 @@ test("with two workspaces and none named, vault_wait mdp_ finds the one vault_ma
     await vault.enrolSoftware(root, { config: { tenant: "tn_second00000001", workspaceSlug: "second-space", workspaceName: "Second" } })
     const first = await vault.enrolSoftware(root)
     const callTool = async (name: string, args: Record<string, unknown>) => {
-      const result = await runJv(["mcp"], homeEnv, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } })}\n`)
+      const result = await runJv(["mcp", "--toolsets", "all"], homeEnv, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } })}\n`)
       return (JSON.parse(result.stdout) as { result: WaitOutput }).result
     }
     vault.overrides.set("GET /v1/mandates/asked", () => Response.json({ items: ["github-work"], classes: [] }))

@@ -155,7 +155,7 @@ async function updateIn(f: Fixture, bytes: Uint8Array, version = UPDATE): Promis
   return installed
 }
 
-const envFor = (f: Fixture, extra: Record<string, string> = {}) => ({ PATH: process.env.PATH ?? "", HOME: f.home, TMPDIR: f.tmp, MEHEN_CONFIG_DIR: f.config, MEHEN_VAULT_URL: vault.url, MEHEN_SELF_EXECUTABLE: f.binary, MEHEN_DL_BASE: "http://127.0.0.1:9/dl", MEHEN_RELEASE_KEYS: JSON.stringify([releaseKey]), MEHEN_POLL_INTERVAL_MS: "20", CI: "", ...extra })
+const envFor = (f: Fixture, extra: Record<string, string> = {}) => ({ PATH: process.env.PATH ?? "", HOME: f.home, TMPDIR: f.tmp, MEHEN_CONFIG_DIR: f.config, MEHEN_VAULT_URL: vault.url, MEHEN_SELF_EXECUTABLE: f.binary, MEHEN_DL_BASE: "http://127.0.0.1:9/dl", MEHEN_RELEASE_KEYS: JSON.stringify([releaseKey]), MEHEN_POLL_INTERVAL_MS: "20", MEHEN_MCP_TOOLSETS: "all", CI: "", ...extra })
 // settings.json under the installation's config root.
 const handoverSetting = async (f: Fixture, on: boolean) => {
   await mkdir(f.config, { recursive: true, mode: 0o700 })

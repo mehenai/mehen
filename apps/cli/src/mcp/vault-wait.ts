@@ -82,7 +82,7 @@ export const vaultWait = tool({
   name: "vault_wait",
   title: "Wait for a human",
   description:
-    `Wait for a human to finish an intake (int_), an approval (apr_), an OAuth connection (con_), a policy proposal (pol_), an adoption batch (adp_), a bundle from vault_plan (bnd_: done when every request in it is approved; a denial is an error that names the approved ones, which stay usable), a mandate proposal (mdp_: done once signed) or an enrolment this machine started at its terminal (enr_). The id is found in the one workspace this server may use that recorded it; pass workspace only when the call should be held to one. Returns the outcome; a human who has not acted yet is a \`timeout\` error: call it again, and remind the human of the link if needed. ` +
+    `Wait for a human to finish an ask: intake (int_), approval (apr_), connection (con_), policy (pol_), adoption (adp_), bundle (bnd_), mandate proposal (mdp_) or an enrolment begun at the terminal (enr_). \`timeout\` means not yet: call again, reminding the human of the link if needed. ` +
     `Default ${WAIT_DEFAULT_SECONDS} s, at most ${WAIT_MAX_SECONDS} s. Decides nothing itself.`,
   input: z.object({
     id: z.string().describe("int_..., apr_..., con_..., pol_..., adp_..., bnd_..., mdp_... or enr_..."),

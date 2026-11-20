@@ -14,7 +14,7 @@ function deps(api: VaultApi, configDir = "/unused"): ToolDeps {
   const config = { vault: VAULT, tenant: "ten_test", device: "dev_test", backend: "software" as const, workspaceSlug: "test-space", workspaceName: "Test Space" }
   const session: VaultSession = { api, config, vaultUrl: config.vault, configDir, selection: { dir: configDir, config, reason: "workspace" }, ledger: { vaultUrl: config.vault, workspace: config.tenant, device: config.device, workspaceSlug: "test-space" }, context: { origin: config.vault, workspace: null, device: config.device } }
   const server = { home: "/unused", managed: null, ceiling: null, allowed: null, pin: null, manifest: null, slots: new Map(), seen: new Map(), realRoot: "/unused" }
-  return { env: {}, server, apps: { negotiated: false }, used: null, session: async () => session, span: async () => ({ active: [], pending: [], corrupt: [], absent: [] }), open: async () => session, validate: async () => config, notify: () => {}, calls: new CallRegistry() }
+  return { env: {}, server, apps: { negotiated: false }, used: null, session: async () => session, span: async () => ({ active: [], pending: [], corrupt: [], absent: [] }), open: async () => session, validate: async () => config, notify: () => {}, calls: new CallRegistry(), toolsets: ["core", "policy"] }
 }
 
 type Seen = { method: string; path: string; body: unknown }

@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import toolsList from "./mcp/fixtures/tools-list.json"
+import allToolsList from "./mcp/fixtures/tools-list-all.json"
+import { CORE_TOOLS, TOOLSETS } from "./mcp/registry.ts"
 import { runJv, tempDir } from "./testing/run-mehen.ts"
 
 // An empty context directory: the server binds it (not enrolled) and reads
@@ -14,35 +16,51 @@ beforeEach(async () => {
 })
 afterEach(() => dir.remove())
 
-// Captured through mehen mcp tools/list from the integrated policy head.
-// MEHEN_REGENERATE_TOOLS_LIST=1 rewrites the fixture from the server's own
-// answer first; review the diff (it changes only by the optional argument
-// and the descriptions).
-test("tools/list preserves the captured names, descriptions, schemas and order byte for byte", async () => {
-  const result = await runJv(["mcp"], env, '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n')
-  expect(result.code).toBe(0)
-  if (process.env.MEHEN_REGENERATE_TOOLS_LIST === "1") {
-    const fixture = join(import.meta.dir, "mcp", "fixtures", "tools-list.json")
-    await writeFile(fixture, `${JSON.stringify((JSON.parse(result.stdout) as { result: unknown }).result, null, 2)}\n`)
-    expect(JSON.parse(await readFile(fixture, "utf8"))).toEqual(JSON.parse(result.stdout).result)
-    return
-  }
-  expect(result.stderr).toBe("")
-  expect(result.stdout).toBe(`${JSON.stringify({ jsonrpc: "2.0", id: 1, result: toolsList })}\n`)
-})
+// Captured through mehen mcp tools/list: the default list (the core
+// toolset) and the list with --toolsets all. MEHEN_REGENERATE_TOOLS_LIST=1
+// rewrites both fixtures from the server's own answers first; review the
+// diff (it changes only by the optional argument and the descriptions).
+const LISTS = [
+  { file: "tools-list.json", args: [] as string[], fixture: toolsList },
+  { file: "tools-list-all.json", args: ["--toolsets", "all"], fixture: allToolsList },
+]
 
+for (const { file, args, fixture } of LISTS) {
+  test(`tools/list ${args.join(" ") || "by default"} preserves the captured names, descriptions, schemas and order byte for byte`, async () => {
+    const result = await runJv(["mcp", ...args], env, '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n')
+    expect(result.code).toBe(0)
+    if (process.env.MEHEN_REGENERATE_TOOLS_LIST === "1") {
+      const path = join(import.meta.dir, "mcp", "fixtures", file)
+      await writeFile(path, `${JSON.stringify((JSON.parse(result.stdout) as { result: unknown }).result, null, 2)}\n`)
+      expect(JSON.parse(await readFile(path, "utf8"))).toEqual(JSON.parse(result.stdout).result)
+      return
+    }
+    expect(result.stderr).toBe("")
+    expect(result.stdout).toBe(`${JSON.stringify({ jsonrpc: "2.0", id: 1, result: fixture })}\n`)
+  })
+}
+
+test("the default list is the core toolset, and the full list is every toolset's tools", () => {
+  expect(toolsList.tools.map((tool) => tool.name).sort()).toEqual([...CORE_TOOLS].sort())
+  expect(allToolsList.tools.map((tool) => tool.name).sort()).toEqual(Object.values(TOOLSETS).flat().sort())
+})
 
 // What a host puts in front of the model for every conversation: the list
 // as the server sends it, kept under a budget so descriptions do not creep.
-test("the tools/list result stays under 34,100 bytes", () => {
-  expect(Buffer.byteLength(JSON.stringify(toolsList))).toBeLessThan(34_100)
+// The default is the six core tools; the rest are opt-in.
+test("the default tools/list result stays under 8,750 bytes", () => {
+  expect(Buffer.byteLength(JSON.stringify(toolsList))).toBeLessThan(8_750)
+})
+
+test("the --toolsets all result stays under 32,000 bytes", () => {
+  expect(Buffer.byteLength(JSON.stringify(allToolsList))).toBeLessThan(32_000)
 })
 
 test("vault_fill follows vault_fetch and vault_plan, with the design's arguments and no value in its result", () => {
-  const names = toolsList.tools.map((tool) => tool.name)
+  const names = allToolsList.tools.map((tool) => tool.name)
   const fetch = names.indexOf("vault_fetch")
   expect(names.slice(fetch, fetch + 3)).toEqual(["vault_fetch", "vault_plan", "vault_fill"])
-  const fill = toolsList.tools.find((tool) => tool.name === "vault_fill") as { inputSchema: { properties: Record<string, unknown>; required: string[] }; description: string }
+  const fill = allToolsList.tools.find((tool) => tool.name === "vault_fill") as { inputSchema: { properties: Record<string, unknown>; required: string[] }; description: string }
   expect(Object.keys(fill.inputSchema.properties)).toEqual(["item", "field", "cdp", "target", "selector", "submit", "context", "approval", "workspace"])
   expect(fill.inputSchema.required).toEqual(["item", "field", "cdp", "selector"])
   expect(fill.description).toContain("never returns the value")
@@ -53,7 +71,7 @@ type ListedTool = { name: string; title?: string; annotations?: Record<string, u
 // The MCP spec: destructiveHint and idempotentHint apply only when
 // readOnlyHint is false, so a read-only tool may leave them out.
 test("every tool has a title and its annotations, and only the tools that change nothing are read-only", () => {
-  const tools = toolsList.tools as ListedTool[]
+  const tools = allToolsList.tools as ListedTool[]
   for (const tool of tools) {
     expect(tool.title).toEqual(expect.any(String))
     const hints = tool.annotations?.readOnlyHint === true ? ["openWorldHint", "readOnlyHint"] : ["destructiveHint", "idempotentHint", "openWorldHint", "readOnlyHint"]
@@ -72,7 +90,7 @@ test("every tool has a title and its annotations, and only the tools that change
 const ERROR_BODY_KEYS = ["error", "message", "next", "ask", "mandateCover", "approval", "bindingCode", "choices", "retryAfter", "providerStatus", "mandate", "expiresAt", "request", "setup", "ruleRefused", "areaRefused", "bundle", "approvals", "cleared", "kind", "id", "status", "replacedBy", "summary", "item", "policyContext", "rememberOptions", "grant", "rule", "ruleProposal", "approvedAt", "push", "proposal", "outcome"]
 
 test("an outputSchema requires nothing and names no field an error carries, so an error result meets it too", () => {
-  const withOutput = (toolsList.tools as ListedTool[]).filter((t) => t.outputSchema)
+  const withOutput = (allToolsList.tools as ListedTool[]).filter((t) => t.outputSchema)
   expect(withOutput.map((t) => t.name)).toEqual(["vault_templates", "vault_list", "vault_check", "vault_fetch", "vault_env", "vault_pending"])
   for (const { outputSchema } of withOutput) {
     expect(outputSchema?.type).toBe("object")
@@ -83,7 +101,7 @@ test("an outputSchema requires nothing and names no field an error carries, so a
 })
 
 test("vault_policy's captured model schema has a closed object root, not a union root", () => {
-  const policy = toolsList.tools.find((tool) => tool.name === "vault_policy")
+  const policy = allToolsList.tools.find((tool) => tool.name === "vault_policy")
   expect(policy).toBeDefined()
   const schema = policy!.inputSchema
   expect(schema.type).toBe("object")
@@ -93,16 +111,20 @@ test("vault_policy's captured model schema has a closed object root, not a union
 })
 
 
-test("mehen mcp --help names every tool the server lists, in its order", async () => {
+test("mehen mcp --help names the core tools and each toolset with its tools, in the server's order", async () => {
   const result = await runJv(["mcp", "--help"], env)
   expect(result.code).toBe(0)
-  const names = toolsList.tools.map((tool) => tool.name)
-  expect(names).toHaveLength(19)
-  expect(result.stdout).toContain(`Tools: ${names.join(", ")}.`)
+  expect(allToolsList.tools).toHaveLength(19)
+  const order = allToolsList.tools.map((tool) => tool.name)
+  const inOrder = (names: readonly string[]) => [...names].sort((a, b) => order.indexOf(a) - order.indexOf(b)).join(", ")
+  expect(result.stdout).toContain(`Core tools, always served: ${inOrder(CORE_TOOLS)}.`)
+  for (const [name, tools] of Object.entries(TOOLSETS)) if (name !== "core") expect(result.stdout).toContain(`${name} (${inOrder(tools)})`)
+  expect(result.stdout).toContain("--toolsets all")
+  expect(result.stdout).toContain("MEHEN_MCP_TOOLSETS")
 })
 
 test("MCP instructions describe check as advice, not approval prediction", async () => {
-  const result = await runJv(["mcp"], env, '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n')
+  const result = await runJv(["mcp", "--toolsets", "inspect"], env, '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n')
   expect(result.code).toBe(0)
   const { instructions } = JSON.parse(result.stdout).result as { instructions: string }
   expect(instructions).toContain("vault_check is local base-policy advice only, not permission to send")

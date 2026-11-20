@@ -366,6 +366,16 @@ test.skipIf(!Object.values(RELEASE_COMMITS).every((commit) => releasedSkill(comm
     expect((await run([], { skillsOnly: true })).skills[1]?.status).toBe(text === stampedSkill() ? "unchanged" : "updated")
   }
 })
+// 0.5's skill is a short sheet unlike any release's: a saved copy of the
+// last release's long one is still Mehen's own, and setup replaces it.
+test.skipIf(!releasedSkill(RELEASE_COMMITS["0.4.1"]!).success)("the released 0.4.1 skill, saved unstamped, is Mehen's own and is replaced by this one", async () => {
+  const text = releasedSkill(RELEASE_COMMITS["0.4.1"]!).stdout.toString()
+  expect(skillSha256(text)).toBe(RELEASED_SKILL_SHA256["0.4.1"]!)
+  expect(text).not.toBe(publishedSkill)
+  await put(join(home, ".agents/skills/mehen/SKILL.md"), text)
+  expect((await run([], { skillsOnly: true })).skills[1]).toEqual({ path: join(home, ".agents/skills/mehen/SKILL.md"), status: "updated" })
+  expect(await readFile(join(home, ".agents/skills/mehen/SKILL.md"), "utf8")).toBe(stampedSkill())
+})
 test("force never overwrites an existing skill backup, even in dry run", async () => {
   const path = join(home, ".agents/skills/mehen/SKILL.md")
   await put(path, "foreign skill")

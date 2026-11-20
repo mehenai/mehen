@@ -13,6 +13,10 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
+### 20 November 2026: agents see six Mehen tools by default
+
+The next `mehen` release serves six MCP tools by default (`vault_status`, `vault_list`, `vault_request`, `vault_fetch`, `vault_env` and `vault_wait`), a quarter of the tool list a host puts in front of the model in every conversation, and the skill becomes a short sheet that sends an agent to `mehen guide <topic>` for the rest. Every other tool is in an opt-in toolset; `mehen mcp --toolsets all`, or `MEHEN_MCP_TOOLSETS=all` in the agent's `mehen` entry, restores the full list. See [MCP tools](reference/mcp.md) and the CLI's release notes below.
+
 ### 20 November 2026: eighteen more services have templates, and each template names the variable its SDK reads
 
 New templates: Hugging Face, Replicate, DeepSeek, xAI, Supabase, DigitalOcean, Railway, Render, Upstash, PlanetScale, GitLab, PagerDuty, Jira, Twilio, SendGrid, Discord, Figma and PyPI. Each allows reads only on routes it names, because these APIs have reads that hand back tokens, keys or signing secrets; every other read and every write asks unless the template allows a narrow everyday call by name, such as a model call. Some requests always ask, whatever a credential's own policy says, as does any such request whose body cannot be read: an xAI model call that names a remote MCP server, xAI media published at a public link or uploaded to a URL the request names, a Replicate prediction that names a webhook, a Jira write that may change who can see an issue, and a Jira notification. Where a service documents the environment variable its SDK or CLI reads the key from, the template now names it as `defaultEnvVar`, and `mehen templates --json` shows it. See [Providers and templates](reference/providers.md).

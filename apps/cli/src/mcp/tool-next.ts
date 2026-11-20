@@ -58,6 +58,12 @@ const OUTPUT_FLAGS = new Set(["--json", "--no-qr"])
 // A tool call as next carries it: the arguments only where they carry over.
 export type ToolStep = { tool: string; arguments?: Record<string, string> }
 
+// Whether the server serves a tool: a step another tool does names it only
+// when it does; otherwise the step stays a command, as one only the command
+// line takes. Every tool when the caller does not say.
+export type Served = (tool: string) => boolean
+const EVERY: Served = () => true
+
 function call(tool: string, args: Record<string, string> | null): ToolStep {
   return args === null ? { tool } : { tool, arguments: args }
 }
@@ -67,7 +73,7 @@ function call(tool: string, args: Record<string, string> | null): ToolStep {
 // name alone; null when no tool does it. `loose` takes a command with
 // flags the tool spells another way (a request's --name) as the tool by
 // name; without it such a command maps to nothing.
-export function toolStep(command: string, loose: boolean): ToolStep | null {
+export function toolStep(command: string, loose: boolean, served: Served = EVERY): ToolStep | null {
   const words = command.trim().split(/\s+/)
   if (words[0] !== "mehen") return null
   const rest = words.slice(1).filter((w) => !OUTPUT_FLAGS.has(w))
@@ -76,6 +82,7 @@ export function toolStep(command: string, loose: boolean): ToolStep | null {
     const name = rest.slice(0, length).join(" ")
     const tool = rest.length >= length ? TOOL_FOR[name] : undefined
     if (tool === undefined) continue
+    if (!served(tool)) return null
     const after = rest.slice(length)
     if (after.length === 0) return call(tool, FIXED_ARGUMENTS[name] ?? null)
     const [value = "", ...extra] = after
@@ -90,17 +97,17 @@ export function toolStep(command: string, loose: boolean): ToolStep | null {
 }
 
 // toolStep as text, as a say names it.
-export function toolCall(command: string, loose: boolean): string | null {
-  const step = toolStep(command, loose)
+export function toolCall(command: string, loose: boolean, served: Served = EVERY): string | null {
+  const step = toolStep(command, loose, served)
   return step === null ? null : toolCallText(step.tool, step.arguments)
 }
 
 // A say written for the command line names the tools instead: each
 // `mehen ...` in it that a tool does is that tool's call. A command with
 // flags of its own (`mehen fetch -o <file>`) stays, since no tool takes them.
-export function toolSay(say: string): string {
+export function toolSay(say: string, served: Served = EVERY): string {
   return say.replace(/`(mehen [^`]+)`/g, (whole, command: string) => {
-    const tool = toolCall(command, false)
+    const tool = toolCall(command, false, served)
     return tool === null ? whole : `\`${tool}\``
   })
 }
@@ -160,21 +167,21 @@ export function toolFlags(say: string, tool: string): string {
 // input schema: usageError's generic say becomes the schema's, while a say
 // written for the case stays. A step only the command line takes keeps its
 // command and names no tool.
-export function toolNext(error: CliError, tool: string): CliError {
+export function toolNext(error: CliError, tool: string, served: Served = EVERY): CliError {
   const next = error.next
   if (next === null) return error
   const replaced = (step: NextStep) => new CliError(error.code, error.message, step, error.extras)
   if (error.code === "bad_request" && next.say === DEFAULT_NEXT.bad_request.say && next.command === undefined) return replaced(TOOL_SCHEMA_NEXT)
   const command = next.command
-  const say = toolFlags(toolSay(next.say), tool)
+  const say = toolFlags(toolSay(next.say, served), tool)
   const link = next.url === undefined ? {} : { url: next.url }
   if (command === undefined) return say === next.say ? error : replaced({ ...link, say })
-  if (command === "mehen templates") return replaced(TEMPLATES_NEXT)
+  if (command === "mehen templates" && served(TEMPLATES_NEXT.tool)) return replaced(TEMPLATES_NEXT)
   if (error.code === "usage" && (CLI_HELP.test(command) || command === tool)) {
     const generic = next.say === `Check the usage with \`${command}\`.`
     return replaced(generic ? TOOL_SCHEMA_NEXT : { say })
   }
-  const step = toolStep(command, true)
+  const step = toolStep(command, true, served)
   if (step !== null) return replaced({ ...link, say, ...step })
   const workspace = /^mehen --workspace (\S+)$/.exec(command)?.[1]
   if (workspace !== undefined) return replaced({ ...link, say, tool, arguments: { workspace } })

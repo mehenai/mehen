@@ -29,7 +29,7 @@ export const vaultEnv = tool({
   name: "vault_env",
   title: "Check project variables",
   description:
-    "How each variable a project declares in mehen.toml resolves for an environment (a vault item, a plain value, or unset), as `mehen env ls` prints it. Never returns values. With check, fails when any variable does not resolve.",
+    "How each variable in the project's mehen.toml resolves for an environment (vault item, plain value or unset), as `mehen env ls` prints it. With check, fails when one does not resolve. Never returns values.",
   input: z.object({
     env: z.string().optional().describe("environment name; the project's default when absent"),
     cwd: z.string().optional().describe("absolute path inside the project; where mehen mcp runs when absent"),

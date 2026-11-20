@@ -32,7 +32,7 @@ export type JsonSchema = {
   properties?: Record<string, JsonSchema>
   required?: readonly string[]
 }
-export type McpTool = { name: string; description: string; inputSchema: JsonSchema }
+export type McpTool = { name: string; description: string; inputSchema: JsonSchema; toolset?: string }
 export type McpReference = { tools: McpTool[] }
 
 export type ProvidersReference = {
@@ -252,7 +252,8 @@ function toolSection(tool: McpTool, prose: Entry | undefined): string {
   const inputs = properties.length
     ? table(["Input", "Type", "Required", "What it is"], properties.map(([name, schema]) => [`\`${name}\``, schemaType(schema), required.has(name) ? "yes" : "no", schema.description ?? ""]))
     : "No inputs."
-  return joinBlocks([`## \`${tool.name}\``, tool.description, inputs, prose?.body ?? null])
+  const served = tool.toolset === undefined ? null : tool.toolset === "core" ? "Toolset: `core`, served by default." : `Toolset: \`${tool.toolset}\`, served with \`--toolsets ${tool.toolset}\` or \`--toolsets all\`.`
+  return joinBlocks([`## \`${tool.name}\``, tool.description, served, inputs, prose?.body ?? null])
 }
 
 // Every hand entry must name a tool the fixture has; a tool without prose
@@ -264,7 +265,7 @@ export function mcpMarkdown(source: HandSource, mcp: McpReference, file: string)
   return joinBlocks([
     source.intro,
     "## Tools",
-    table(["Tool", "What it is for"], mcp.tools.map((t) => [`[\`${t.name}\`](#${t.name})`, firstSentence(t.description)])),
+    table(["Tool", "Toolset", "What it is for"], mcp.tools.map((t) => [`[\`${t.name}\`](#${t.name})`, t.toolset === undefined ? "" : `\`${t.toolset}\``, firstSentence(t.description)])),
     ...mcp.tools.map((t) => toolSection(t, source.entries.find((e) => e.key === t.name))),
   ])
 }

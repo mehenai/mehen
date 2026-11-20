@@ -25,7 +25,7 @@ import { CallRegistry } from "./mcp/call-registry.ts"
 import { type McpResumePayload, StdinLines, assertStillVerified, prepareHandover, quietWithin, resumeInto, takeResume } from "./mcp/handover.ts"
 import { SelfWatch } from "./mcp/self-watch.ts"
 import { TOOL_SCHEMA_NEXT, toolNext } from "./mcp/tool-next.ts"
-import { APP_TOOLS, TOOLS } from "./mcp/registry.ts"
+import { APP_TOOLS, TOOLS, TOOLSETS_ENV, TOOLSET_NAMES, TOOL_COMMAND, type Toolset, resolveToolsets, servedTools, toolsetOf } from "./mcp/registry.ts"
 import { CARDS, CARD_FOR_TOOL, appsNegotiated, readCard } from "./mcp/ui/cards.ts"
 import { displayChanged, narrowedSpan, resolveSlot, startServer, validateSlot } from "./mcp/binding.ts"
 import { type McpServer, type ProgressToken, type SpanSlot, type ToolDeps, type ToolOutput, mcpThen } from "./mcp/shared.ts"
@@ -44,34 +44,62 @@ export function negotiatedProtocolVersion(requested: unknown): string {
   return typeof requested === "string" && MCP_PROTOCOL_VERSIONS.includes(requested) ? requested : MCP_PROTOCOL_VERSION
 }
 
-const INSTRUCTIONS =
-  "Mehen lets you use credentials without reading them. Start with vault_status. When something fails and the error does not say why, vault_doctor checks this machine and says what to do. " +
+// The instructions name only the tools a server serves: the core's always,
+// then a sentence for each toolset that adds a step to them.
+const CORE_INSTRUCTIONS =
+  "Mehen lets you use credentials without reading them. Start with vault_status. " +
   "No tool enrols this machine: when vault_status says it is not enrolled and you cannot run commands, ask the human to run its next.command in a terminal and open the link it prints. " +
-  "Use credentials by name with vault_fetch; never ask a human to paste a value into the chat, and never put a key, token or placeholder into a URL, header or body yourself. " +
-  "When something is missing, call vault_templates to find the right provider, then vault_request (or vault_connect for an account the human signs in to), " +
-  "give the human the `ask` (the link, what it is for, what to check, when it expires), then vault_wait with the id. " +
-  "vault_check is local base-policy advice only, not permission to send; use vault_policy for current item policy and vault_fetch for authoritative enforcement. " +
+  "Use credentials by name with vault_fetch (vault_list shows which exist); never ask a human to paste a value into the chat, and never put a key, token or placeholder into a URL, header or body yourself. " +
+  "When something is missing, call vault_request, give the human the `ask` (the link, what it is for, what to check, when it expires), then vault_wait with the id. " +
+  "In a checkout with a mehen.toml, vault_env says how its variables resolve. " +
   "Every error carries `next` and, when a human must open something, `ask`: relay them; never open the link yourself. " +
   "An error's `next.tool` is the tool that does its step, with `next.arguments` to add to the call (keep the call's other arguments when it is the tool you called; fill in any <placeholder>); a `next.command` without `next.tool` only the mehen command line runs: if you cannot run commands, ask the human to run it in a terminal. " +
   "Approvals happen on the vault's page with a passkey; nothing you send can approve anything. " +
   "This server may use several workspaces; `vault_status` lists them; pass `workspace` when it lists more than one and the checkout does not bind one."
+
+const TOOLSET_INSTRUCTIONS: Partial<Record<Toolset, string>> = {
+  inspect: "When something fails and the error does not say why, vault_doctor checks this machine and says what to do. vault_templates finds the provider to name in vault_request. vault_check is local base-policy advice only, not permission to send; the vault decides when vault_fetch sends.",
+  connect: "For an account the human signs in to (Gmail, GitHub), call vault_connect instead of vault_request, then vault_wait.",
+  policy: "vault_policy shows an item's current policy and proposes standing rules; vault_mandate proposes a mandate. Only the human's passkey turns either on.",
+}
+
+export function mcpInstructions(toolsets: readonly Toolset[]): string {
+  const extra = toolsets.flatMap((name) => TOOLSET_INSTRUCTIONS[name] ?? [])
+  const served = `Toolsets served: ${toolsets.join(", ")}.`
+  const rest = toolsets.length === TOOLSET_NAMES.length ? "" : " Other tools come in toolsets the harness adds with `mehen mcp --toolsets <names>`; a call to one this server does not serve is refused with tool_not_served, which names its toolset and the mehen command that does the same."
+  return [CORE_INSTRUCTIONS, ...extra, served + rest].join(" ")
+}
 
 function listed(t: (typeof TOOLS)[number]): Record<string, unknown> {
   const { $schema: _schema, ...inputSchema } = z.toJSONSchema(t.advertised ?? t.input, { io: "input" }) as Record<string, unknown>
   return { name: t.name, title: t.title, description: t.description, inputSchema, ...(t.output ? { outputSchema: t.output } : {}), annotations: t.annotations }
 }
 
-const TOOL_LIST = TOOLS.map(listed)
+type ToolLists = { tools: typeof TOOLS; plain: Record<string, unknown>[]; apps: Record<string, unknown>[]; hash: string }
+const toolLists = new Map<string, ToolLists>()
 
-// The list a host that negotiated MCP Apps gets: the same tools, each
-// linked one naming its card, then the tools only a card calls.
-const APPS_TOOL_LIST = [
-  ...TOOLS.map((t) => {
-    const resourceUri = CARD_FOR_TOOL.get(t.name)
-    return resourceUri ? { ...listed(t), _meta: { ui: { resourceUri } } } : listed(t)
-  }),
-  ...APP_TOOLS.map((t) => ({ ...listed(t), _meta: { ui: { visibility: ["app"] } } })),
-]
+// The lists a server with these toolsets answers tools/list with: the plain
+// one, and the one a host that negotiated MCP Apps gets (the same tools,
+// each linked one naming its card, then the tools only a card calls).
+function listsFor(toolsets: readonly Toolset[]): ToolLists {
+  const key = toolsets.join(",")
+  const cached = toolLists.get(key)
+  if (cached) return cached
+  const tools = servedTools(toolsets)
+  const plain = tools.map(listed)
+  const apps = [
+    ...tools.map((t) => {
+      const resourceUri = CARD_FOR_TOOL.get(t.name)
+      return resourceUri ? { ...listed(t), _meta: { ui: { resourceUri } } } : listed(t)
+    }),
+    ...APP_TOOLS.map((t) => ({ ...listed(t), _meta: { ui: { visibility: ["app"] } } })),
+  ]
+  const lists = { tools, plain, apps, hash: sha256(new TextEncoder().encode(JSON.stringify([plain, apps]))) }
+  toolLists.set(key, lists)
+  return lists
+}
+
+const servedToolsets = (deps: ToolDeps): readonly Toolset[] => deps.toolsets ?? ["core"]
 
 type JsonRpcId = string | number
 
@@ -125,7 +153,8 @@ function newEnrolmentVault(env: Env): { vaultUrl: string; workspaceSlug: string 
 async function toolError(failure: CliError, tool: string, deps: ToolDeps): Promise<Record<string, unknown>> {
   const vaultUrl = callVault(deps)
   const { ask } = askForError(failure, deps.env, vaultUrl)
-  const error = toolNext(failure, tool)
+  const served = listsFor(servedToolsets(deps)).tools
+  const error = toolNext(failure, tool, (name) => served.some((t) => t.name === name))
   const options = { env: deps.env, vaultUrl, then: mcpThen, surface: "mcp" as const }
   const lines = errorLines(error, NOT_A_TTY, options).map(terminalText)
   const text = [`${error.code}: ${visibleText(error.message)}`, ...lines.slice(1)].join("\n")
@@ -156,8 +185,12 @@ function progressToken(params: Record<string, unknown>): ProgressToken | null {
 // result either way (the host has stopped listening for it): the error the
 // abort raised is rethrown and handleMessage sends nothing.
 async function callTool(params: Record<string, unknown>, shared: ToolDeps, signal: AbortSignal): Promise<Record<string, unknown> | null> {
-  const found = TOOLS.find((t) => t.name === params.name) ?? APP_TOOLS.find((t) => t.name === params.name)
-  if (!found) return null
+  const found = listsFor(servedToolsets(shared)).tools.find((t) => t.name === params.name) ?? APP_TOOLS.find((t) => t.name === params.name)
+  if (!found) {
+    const name = typeof params.name === "string" ? params.name : null
+    const toolset = name === null ? null : toolsetOf(name)
+    return name === null || toolset === null ? null : toolError(notServed(name, toolset, servedToolsets(shared)), name, { ...shared, used: null })
+  }
   // This call's own record of the workspace it used.
   const deps: ToolDeps = {
     ...shared,
@@ -186,6 +219,16 @@ async function callTool(params: Record<string, unknown>, shared: ToolDeps, signa
     if (signal.aborted) throw error
     return toolError(await healedRefusal(toCliError(error), deps), found.name, deps)
   }
+}
+
+// A tool this server knows but does not list: the toolset that has it, and
+// the mehen command that does the same for an agent that can run one.
+function notServed(name: string, toolset: Toolset, served: readonly Toolset[]): CliError {
+  const command = `${TOOL_COMMAND[name] ?? "mehen --help"} --json`
+  return new CliError("tool_not_served", `${name} is in the ${toolset} toolset, which this server does not serve (it serves ${served.join(", ")}).`, {
+    say: `Run \`${command}\` instead if you can run commands; otherwise ask the human to add ${toolset} to this server's toolsets (${TOOLSETS_ENV}=${toolset} in its entry's environment, or \`--toolsets ${toolset}\` on its \`mehen mcp\` command) and restart the agent.`,
+    command,
+  })
 }
 
 // A call refused cli_outdated runs the foreground heal inside the call
@@ -223,13 +266,15 @@ export async function handleMessage(message: unknown, deps: ToolDeps): Promise<J
           // The tool list changes only with a handover.
           capabilities: { tools: { listChanged: deps.mcpHandover?.handover === "on" }, ...(deps.apps.negotiated ? { resources: {} } : {}) },
           serverInfo: { name: "mehen", title: "Mehen", version: VERSION },
-          instructions: INSTRUCTIONS,
+          instructions: mcpInstructions(servedToolsets(deps)),
         },
       }
     case "ping":
       return { jsonrpc: "2.0", id, result: {} }
-    case "tools/list":
-      return { jsonrpc: "2.0", id, result: { tools: deps.apps.negotiated ? APPS_TOOL_LIST : TOOL_LIST } }
+    case "tools/list": {
+      const lists = listsFor(servedToolsets(deps))
+      return { jsonrpc: "2.0", id, result: { tools: deps.apps.negotiated ? lists.apps : lists.plain } }
+    }
     case "resources/list":
       if (!deps.apps.negotiated) return failure(id, METHOD_NOT_FOUND, `Method ${m.method} is not supported.`)
       return { jsonrpc: "2.0", id, result: { resources: CARDS } }
@@ -279,7 +324,7 @@ export function sessionKey(dir: string, config: { vault: string; tenant: string;
   return JSON.stringify([real, config.vault, config.tenant, config.device])
 }
 
-export function mcpDeps(env: Env, server: McpServer, notify: ToolDeps["notify"]): ToolDeps {
+export function mcpDeps(env: Env, server: McpServer, notify: ToolDeps["notify"], toolsets: readonly Toolset[] = resolveToolsets(null, env)): ToolDeps {
   // Cached by full identity, with the config each session was opened under:
   // the same identity with refreshed display fields (a rename that status
   // recorded) is reopened so its ledger scope and call provenance follow
@@ -313,6 +358,7 @@ export function mcpDeps(env: Env, server: McpServer, notify: ToolDeps["notify"])
     validate,
     notify,
     calls: new CallRegistry(),
+    toolsets,
   }
 }
 
@@ -323,7 +369,7 @@ export function mcpDeps(env: Env, server: McpServer, notify: ToolDeps["notify"])
 // after `mcp`, for the re-exec.
 // This setting replaced a compiled-off constant, and is on by default from
 // 0.3.15.
-export type ServeOptions = { args?: string[]; stage?: (stage: HandoverStage) => Promise<void>; hashed?: () => void; running?: string }
+export type ServeOptions = { args?: string[]; toolsets?: string | null; stage?: (stage: HandoverStage) => Promise<void>; hashed?: () => void; running?: string }
 
 // Test seams only, awaited: as the self-watch reads a replacement, after
 // the look that follows each call, when a held partial line puts a switch
@@ -341,8 +387,6 @@ export function setServeSeamsForTests(seams: Pick<ServeOptions, "stage" | "hashe
   seamsForTests = seams
 }
 
-const TOOLS_HASH = sha256(new TextEncoder().encode(JSON.stringify([TOOL_LIST, APPS_TOOL_LIST])))
-
 export async function serveMcp(parentEnv: Env, options: ServeOptions = {}): Promise<number> {
   // A resume payload never outlives the start. One handed over is taken
   // whatever this image's own decision says now: the old image committed
@@ -353,8 +397,10 @@ export async function serveMcp(parentEnv: Env, options: ServeOptions = {}): Prom
   const mcpHandover = await mcpHandoverNow(env)
   const handover = mcpHandover.handover === "on"
   let server: McpServer
+  let toolsets: Toolset[]
   let resumed: McpResumePayload | null = null
   try {
+    toolsets = resolveToolsets(options.toolsets ?? null, env)
     server = await bindMcpContext(env, process.cwd())
     if (taken.payload !== null) resumed = await resumeInto(server, taken.payload)
   } catch (error) {
@@ -379,10 +425,11 @@ export async function serveMcp(parentEnv: Env, options: ServeOptions = {}): Prom
   const hashed = options.hashed ?? seamsForTests.hashed
   const running = options.running ?? seamsForTests.running
   const watch = self === null ? null : await SelfWatch.create({ env, binary: installation(self).binary, busy: () => inflight.size > 0, handover: mcpHandover, ...(running ? { running } : {}), ...(stage ? { hooks: { afterRead: () => stage("verifying") } } : {}) })
-  const deps = { ...mcpDeps(env, server, write), selfWatch: watch, mcpHandover }
+  const deps = { ...mcpDeps(env, server, write, toolsets), selfWatch: watch, mcpHandover }
+  const toolsHash = listsFor(toolsets).hash
   let handshake = resumed ? { protocolVersion: resumed.protocolVersion, clientInfo: resumed.clientInfo, apps: resumed.apps ?? false } : null
   deps.apps.negotiated = handshake?.apps ?? false
-  if (resumed && resumed.toolsHash !== TOOLS_HASH) write({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} })
+  if (resumed && resumed.toolsHash !== toolsHash) write({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} })
   const send = (response: JsonRpcResponse | null) => {
     if (response) write(response)
   }
@@ -441,7 +488,7 @@ export async function serveMcp(parentEnv: Env, options: ServeOptions = {}): Prom
               // stops this switch before anything is committed to.
               const now = await mcpHandoverNow(env)
               if (now.handover === "off") throw new Error(`the handover was turned off: ${now.reason}`)
-              const exec = await prepareHandover({ env, server, replacement: ready, binary: watch.binary, executables: watch.executables, args: options.args ?? [], handshake, startedAt: new Date().toISOString(), toolsHash: TOOLS_HASH })
+              const exec = await prepareHandover({ env, server, replacement: ready, binary: watch.binary, executables: watch.executables, args: options.args ?? [], handshake, startedAt: new Date().toISOString(), toolsHash })
               await stage?.("accepted")
               // A guard only: both decisions above are off without execve.
               if (typeof process.execve !== "function") throw new Error("this runtime cannot execve")

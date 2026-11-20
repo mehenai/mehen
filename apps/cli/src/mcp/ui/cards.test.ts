@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import toolsList from "../fixtures/tools-list.json"
+import toolsList from "../fixtures/tools-list-all.json"
 import { MCP_PROTOCOL_VERSION } from "../../mcp.ts"
 import { VERSION } from "../../version.ts"
 import { TOOLS } from "../registry.ts"
@@ -25,7 +25,7 @@ async function session(capabilities: Record<string, unknown> | null, requests: {
     ...(capabilities ? [JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities, clientInfo: { name: "host", version: "1" } } })] : []),
     ...requests.map((r, i) => JSON.stringify({ jsonrpc: "2.0", id: i + 1, method: r.method, ...(r.params === undefined ? {} : { params: r.params }) })),
   ]
-  const run = await runJv(["mcp"], env, `${lines.join("\n")}\n`)
+  const run = await runJv(["mcp", "--toolsets", "all"], env, `${lines.join("\n")}\n`)
   expect(run.code).toBe(0)
   expect(run.stderr).toBe("")
   return { replies: new Map(jsonLines(run.stdout).map((m) => [(m as Reply).id, m as Reply])), stdout: run.stdout }

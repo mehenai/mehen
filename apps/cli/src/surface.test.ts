@@ -3,7 +3,8 @@ import { z } from "zod"
 import { GLOBAL_FLAGS } from "./args.ts"
 import { COMMANDS } from "./cli.ts"
 import type { AskKind } from "./ask.ts"
-import { TOOLS } from "./mcp/registry.ts"
+import { GUIDE_TOPICS } from "./commands/info.ts"
+import { CORE_TOOLS, TOOLS } from "./mcp/registry.ts"
 import { WAIT_ID_PREFIXES } from "./operations.ts"
 import { runJv, tempDir } from "./testing/run-mehen.ts"
 
@@ -84,12 +85,23 @@ test("the guide names every command, MCP tool, ask kind and wait id prefix", asy
   expect(WAIT_ID_PREFIXES.filter((prefix) => !guide.includes(`(\`${prefix}_\`)`))).toEqual([])
 })
 
-// Claude Code attaches only the first 5,000 tokens of a skill again after
-// compaction; 18 KB of this skill is about 4,400. Move detail to
-// docs/site/reference/agent-reference.md rather than raise this.
-test("the skill stays under 18 KB, so an agent keeps all of it after compaction", async () => {
+// The skill is a core sheet of about 1,500 tokens: an agent loads it for
+// every task that touches a credential. Move detail to a guide topic
+// (`mehen guide <topic>`) rather than raise this.
+test("the skill is a core sheet under 6,500 bytes", async () => {
   const skill = await Bun.file(new URL("../../../skills/mehen/SKILL.md", import.meta.url)).bytes()
-  expect(skill.length).toBeLessThan(18 * 1024)
+  expect(skill.length).toBeLessThan(6_500)
+})
+
+test("the skill covers the six core tools, the ask-and-wait loop, exit 7's outcome_unknown and where the rest is", async () => {
+  const skill = await Bun.file(new URL("../../../skills/mehen/SKILL.md", import.meta.url)).text()
+  for (const name of CORE_TOOLS) expect(skill).toContain(`\`${name}\``)
+  expect(skill).toContain("**Needs you in the vault:**")
+  expect(skill).toMatch(/\| 7 \|[^\n]*`outcome_unknown`[^\n]*check/)
+  expect(skill).toContain("mehen guide <topic>")
+  expect(skill).toContain("--toolsets")
+  expect(skill).toContain("https://docs.mehen.dev/guide.md")
+  for (const [, topic] of skill.matchAll(/`mehen guide ([a-z-]+)`/g)) expect(Object.keys(GUIDE_TOPICS)).toContain(topic ?? "")
 })
 
 // 0.3.2's skill carried "Bringing existing credentials in" twice, from two

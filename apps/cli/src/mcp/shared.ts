@@ -6,6 +6,7 @@ import type { CliMcp, McpHandover } from "../install-state.ts"
 import { type ManifestWorkspace } from "../run/manifest.ts"
 import { type VaultSession } from "../session.ts"
 import type { CeilingEntry, FoundCorrupt, FoundPending } from "../slots.ts"
+import type { Toolset } from "./registry.ts"
 
 export type ProgressToken = string | number
 export type JsonRpcNotification = { jsonrpc: "2.0"; method: string; params: Record<string, unknown> }
@@ -109,6 +110,9 @@ export type ToolDeps = {
   // The server's handover decision at its start, for `cli.mcpHandover`
   // and `tools.listChanged`; absent in-process.
   mcpHandover?: McpHandover
+  // The toolsets this server lists and calls, fixed at its start; the core
+  // alone when absent.
+  toolsets?: readonly Toolset[]
 }
 
 // What the host attached to this call: a progressToken means it wants
@@ -176,8 +180,10 @@ type Tool<S extends z.ZodType> = {
   title: string
   description: string
   input: S
-  // What tools/list advertises when narrower than what input parses: the
-  // vault then answers a wider value with its own structured refusal.
+  // What tools/list advertises when it differs from what input parses:
+  // narrower, when the vault answers a wider value with its own structured
+  // refusal; or flatter, when the exact shape would cost the list more
+  // than it tells, and input refuses a wrong one as a usage error.
   advertised?: z.ZodType
   output?: Record<string, unknown>
   annotations: ToolAnnotations

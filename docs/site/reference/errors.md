@@ -434,6 +434,12 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 **What you do.** The message says why and names the fix.
 
+### `tool_not_served`
+
+**What it means.** An MCP client called a tool in a toolset this `mehen mcp` server was not started with. By default the server serves only the core toolset; the message names the toolset that has the tool. Nothing was sent.
+
+**What you do.** If you can run commands, run `next.command`, the `mehen` command that does the same. Otherwise ask the human to add the toolset to the server's entry (`--toolsets <name>` or `MEHEN_MCP_TOOLSETS`, see [MCP tools](mcp.md)) and restart the agent.
+
 ### `cdp_unreachable`
 
 **What it means.** `mehen fill` could not reach the browser: nothing answered at the endpoint, the profile has no `DevToolsActivePort`, the connection closed, or the browser did not answer within 10 seconds. Nothing was typed.

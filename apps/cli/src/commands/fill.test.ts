@@ -162,7 +162,7 @@ describe("mehen fill", () => {
 })
 
 describe("vault_fill", () => {
-  const callFill = (args: Record<string, unknown>) => runJv(["mcp"], env, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "vault_fill", arguments: args } })}\n`)
+  const callFill = (args: Record<string, unknown>) => runJv(["mcp", "--toolsets", "all"], env, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "vault_fill", arguments: args } })}\n`)
   const reply = (result: JvResult) => (JSON.parse(result.stdout.trim().split("\n").at(-1) as string) as { result: { structuredContent: Record<string, unknown>; isError?: boolean } }).result
 
   test("returns what was typed where, never the value", async () => {
