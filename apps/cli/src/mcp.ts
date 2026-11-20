@@ -226,7 +226,7 @@ async function callTool(params: Record<string, unknown>, shared: ToolDeps, signa
 function notServed(name: string, toolset: Toolset, served: readonly Toolset[]): CliError {
   const command = `${TOOL_COMMAND[name] ?? "mehen --help"} --json`
   return new CliError("tool_not_served", `${name} is in the ${toolset} toolset, which this server does not serve (it serves ${served.join(", ")}).`, {
-    say: `Run \`${command}\` instead if you can run commands; otherwise ask the human to add ${toolset} to this server's toolsets (${TOOLSETS_ENV}=${toolset} in its entry's environment, or \`--toolsets ${toolset}\` on its \`mehen mcp\` command) and restart the agent.`,
+    say: `Run \`${command}\` instead if you can run commands; otherwise ask the human to run \`mehen setup --toolsets ${toolset}\`, which sets ${TOOLSETS_ENV} in this agent's entry, and restart the agent.`,
     command,
   })
 }

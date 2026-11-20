@@ -162,7 +162,7 @@ mehen setup --agent codex --json
 mehen setup --agent pi --json
 ```
 
-For every MCP tool rather than the core six, add `MEHEN_MCP_TOOLSETS` with `all` (or the toolsets wanted) to the environment of the entry setup wrote, and restart the agent; setup keeps an entry's environment when it runs again.
+For every MCP tool rather than the core six, run `mehen setup --toolsets all --json` (or name the toolsets wanted) and restart the agent; it writes `MEHEN_MCP_TOOLSETS` into each entry, a later setup without the flag keeps it, and `--toolsets core` takes it out.
 
 `--mcp-file <path>` writes `mcpServers.mehen` into a compatible JSON client's file; use `--agent vscode` or `--agent opencode` for those clients' different formats. `mehen setup --print --json` prints the entry without writing anything.
 

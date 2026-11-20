@@ -57,7 +57,7 @@ Every error carries `error`, `message` and `next`. Relay `next.say`, call `next.
 
 ## The rest, on demand
 
-The server lists these six tools by default. The rest come in toolsets the harness adds (`mehen mcp --toolsets inspect,connect`; `--toolsets all` for every tool). A call to a tool it does not serve is refused `tool_not_served`, naming its toolset and the CLI command that does the same.
+The server lists these six tools by default. The rest come in toolsets the human adds with `mehen setup --toolsets inspect,connect` (`all` for every tool), then a restart. A call to a tool it does not serve is refused `tool_not_served`, naming its toolset and the CLI command that does the same.
 
 Read one topic when you need it, with `mehen guide <topic>` or at https://docs.mehen.dev/guide.md:
 

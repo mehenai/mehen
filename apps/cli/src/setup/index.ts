@@ -10,6 +10,7 @@ import type { Env } from "../config.ts"
 import { installedBinaryRequired, usageError } from "../errors.ts"
 import { printBlock, printJson, printLine } from "../output.ts"
 import { isCompiledBinary } from "../version.ts"
+import { TOOLSETS_ENV, type Toolset, parseToolsets, toolsetsValue } from "../mcp/registry.ts"
 import { type Agent, MCP_FILE, type PinnedBase, agents, assertPinnedBase, envField, legacyServerKey, mcpFileAgent, pinMcpFileBase, recordedMcpFile, serverEntry } from "./agents.ts"
 import { type SetupCeiling, printCeiling, resolveSetupCeiling } from "./ceiling.ts"
 import { atomicText, FileChanged, info, textFile, unchanged } from "./files.ts"
@@ -35,7 +36,9 @@ export type SetupReport = { agents: AgentResult[]; skills: SkillReport[]; remove
 // `entry`: the JSON entry object, or the TOML table as text.
 export type PrintResult = { printed: true; format: "json" | "toml"; server: "mehen"; entry: unknown; text: string; allowed: string[] | null; home: string | null }
 
-export type SetupOptions = { home: string; binary: string; names?: string[]; mcpFile?: string; workspaces?: string | null; dryRun?: boolean; remove?: boolean; force?: boolean; resetEnv?: boolean; env?: Env; platform?: NodeJS.Platform; skillsOnly?: boolean; files?: VaultFileOptions; beforeWrite?: (path: string, attempt: number) => Promise<void> }
+// `toolsets`, when given, sets the entry's MEHEN_MCP_TOOLSETS (the core
+// alone takes it out); absent, the entry keeps whatever it has.
+export type SetupOptions = { home: string; binary: string; names?: string[]; mcpFile?: string; workspaces?: string | null; toolsets?: readonly Toolset[] | null; dryRun?: boolean; remove?: boolean; force?: boolean; resetEnv?: boolean; env?: Env; platform?: NodeJS.Platform; skillsOnly?: boolean; files?: VaultFileOptions; beforeWrite?: (path: string, attempt: number) => Promise<void> }
 
 type PlanStatus = "added" | "updated" | "unchanged" | "skipped"
 
@@ -136,6 +139,15 @@ function entryEnv(agent: Agent, current: unknown, ceiling: SetupCeiling, resetEn
   return { env }
 }
 
+// The entry's env with MEHEN_MCP_TOOLSETS as --toolsets asked: written,
+// taken out for the core alone, or left as it was without the flag.
+function withToolsets(result: { env: Record<string, unknown> } | { skip: string }, toolsets: readonly Toolset[] | null): { env: Record<string, unknown> } | { skip: string } {
+  if ("skip" in result || toolsets === null) return result
+  const { [TOOLSETS_ENV]: _old, ...env } = result.env
+  const value = toolsetsValue(toolsets)
+  return { env: value === null ? env : { ...env, [TOOLSETS_ENV]: value } }
+}
+
 // The config root a launched entry opens: its
 // MEHEN_HOME, else the default root of its HOME, which is the harness's own
 // HOME unless the entry sets one. Null for a path that is not an absolute,
@@ -164,7 +176,7 @@ type Plan = { before: string | null; after: string | null; status: PlanStatus; o
 // `restoreCeiling`: the caller's ceiling a restored original entry is
 // checked against: the resolved one when registering, resolved
 // on first need when removing, or why it cannot be resolved.
-type PlanContext = { home: string; binary: string; force: boolean; resetEnv: boolean; ceiling: SetupCeiling | null; backupGone: boolean; pin: PinnedBase | null; restoreCeiling: () => Promise<SetupCeiling | { unverifiable: string }> }
+type PlanContext = { home: string; binary: string; force: boolean; resetEnv: boolean; toolsets: readonly Toolset[] | null; ceiling: SetupCeiling | null; backupGone: boolean; pin: PinnedBase | null; restoreCeiling: () => Promise<SetupCeiling | { unverifiable: string }> }
 
 // Why restoring the backup's original entry for a server would write an
 // entry wider than the caller may, or null when it may come
@@ -240,7 +252,7 @@ async function planAgent(context: PlanContext, agent: Agent, server: string, rem
     return { before, after: before, status: "skipped", owned, handEdited: true, reason: current === undefined ? `The ${server} entry setup wrote was removed by hand since, so setup left it out; --force registers it again.` : `The ${server} entry changed after setup, by hand, so setup left it as it is; --force replaces it with setup's entry.` }
   }
   if (ceiling === null) throw new Error("setup registers an entry only with a resolved ceiling")
-  const env = entryEnv(agent, current, ceiling, resetEnv, context.home)
+  const env = withToolsets(entryEnv(agent, current, ceiling, resetEnv, context.home), context.toolsets)
   if ("skip" in env) return { before, after: before, status: "skipped", ...(owned ? { owned } : {}), reason: env.skip }
   const expected = serverEntry(agent, binary, env.env)
   if (owned && digest(current) === digest(expected)) return { before, after: before, status: "unchanged", owned }
@@ -353,7 +365,7 @@ export async function setup(options: SetupOptions): Promise<SetupReport> {
   ]
   let resolvedForRestore: Promise<SetupCeiling | { unverifiable: string }> | null = null
   const restoreCeiling = () => resolvedForRestore ??= ceiling !== null ? Promise.resolve(ceiling) : resolveSetupCeiling(env, home, null, options.files).catch((error: unknown) => ({ unverifiable: error instanceof Error ? error.message : String(error) }))
-  const context: PlanContext = { home, binary, force: Boolean(options.force), resetEnv: Boolean(options.resetEnv), ceiling, backupGone: false, pin: null, restoreCeiling }
+  const context: PlanContext = { home, binary, force: Boolean(options.force), resetEnv: Boolean(options.resetEnv), toolsets: options.toolsets ?? null, ceiling, backupGone: false, pin: null, restoreCeiling }
   const results: { agent: Agent; result: AgentResult }[] = []
   const handEdited = new Set<AgentResult>()
   const removed: string[] = []
@@ -447,12 +459,14 @@ export function setupExitCode(report: SetupReport): number {
 // `mehen setup --print`: the entry rendered from the environment
 // alone. It reads the managed-host marker and nothing else, and writes
 // nothing.
-export function printSetup(options: { home: string; binary: string; env: Env; workspaces: string | null; format: "json" | "toml"; files?: VaultFileOptions }): PrintResult {
+export function printSetup(options: { home: string; binary: string; env: Env; workspaces: string | null; format: "json" | "toml"; toolsets?: readonly Toolset[] | null; files?: VaultFileOptions }): PrintResult {
   if (!isAbsolute(options.home) || !isAbsolute(options.binary)) throw usageError("Setup requires an absolute HOME and executable path.")
   const { home, allowed } = printCeiling(options.env, options.home, options.workspaces, options.files)
   const env: Record<string, string> = {}
   if (allowed !== null) env.MEHEN_WORKSPACES = allowed.join(",")
   if (home !== null) env.MEHEN_HOME = home
+  const toolsets = options.toolsets ? toolsetsValue(options.toolsets) : null
+  if (toolsets !== null) env[TOOLSETS_ENV] = toolsets
   const json = { command: options.binary, args: ["mcp"], ...(Object.keys(env).length ? { env } : {}) }
   if (options.format === "json") return { printed: true, format: "json", server: DEFAULT_SERVER, entry: json, text: JSON.stringify({ mcpServers: { [DEFAULT_SERVER]: json } }, null, 2), allowed, home }
   const table = `[mcp_servers.${DEFAULT_SERVER}]\ncommand = ${JSON.stringify(options.binary)}\nargs = ["mcp"]\n${Object.keys(env).length ? tomlEnv(env) : ""}`
@@ -472,14 +486,22 @@ export function setupLines(report: SetupReport): string[] {
   return lines
 }
 
-export type SetupRequest = { print: { workspaces: string | null; format: "json" | "toml" } | null; names: string[]; mcpFile: string | null; workspaces: string | null; dryRun: boolean; remove: boolean; force: boolean; resetEnv: boolean }
+export type SetupRequest = { print: { workspaces: string | null; format: "json" | "toml" } | null; names: string[]; mcpFile: string | null; workspaces: string | null; toolsets: Toolset[] | null; dryRun: boolean; remove: boolean; force: boolean; resetEnv: boolean }
+
+// --toolsets as given: null without the flag. An empty value is refused
+// rather than read as the core, which is spelled out to take the variable out.
+function requestedToolsets(value: string | null): Toolset[] | null {
+  if (value === null) return null
+  if (value.trim() === "") throw usageError("--toolsets needs a toolset: --toolsets core takes MEHEN_MCP_TOOLSETS out of the entry, and --toolsets all serves every tool.", "mehen setup --help")
+  return parseToolsets(value, "--toolsets")
+}
 
 // The flags, with every usage refusal decided before anything is read.
 export function setupRequest(args: ParsedArgs): SetupRequest {
   if (args.string("workspace") !== null) throw usageError("mehen setup --workspace was removed: one mehen server serves every workspace this machine may use. Narrow the entry with --workspaces <a,b> instead.", "mehen setup --help")
   const format = args.string("format")
   const workspaces = args.string("workspaces")
-  const request: SetupRequest = { print: null, names: args.list("agent"), mcpFile: args.string("mcp-file"), workspaces, dryRun: args.bool("dry-run"), remove: args.bool("remove"), force: args.bool("force"), resetEnv: args.bool("reset-env") }
+  const request: SetupRequest = { print: null, names: args.list("agent"), mcpFile: args.string("mcp-file"), workspaces, toolsets: requestedToolsets(args.string("toolsets")), dryRun: args.bool("dry-run"), remove: args.bool("remove"), force: args.bool("force"), resetEnv: args.bool("reset-env") }
   if (!args.bool("print")) {
     if (format !== null) throw usageError("--format goes with --print.", "mehen setup --help")
     return request
@@ -494,14 +516,15 @@ export function setupRequest(args: ParsedArgs): SetupRequest {
 export const setupCommand: Command = {
   summary: "register the Mehen MCP server and skills in your installed agents, at user level",
   spec: {
-    usage: "mehen setup [--agent <name>]... [--workspaces <a,b>] [--mcp-file <path>] [--remove] [--dry-run] [--force] [--reset-env] [--print [--format json|toml]]",
-    flags: { agent: { type: "list" }, workspaces: { type: "string" }, "mcp-file": { type: "string" }, "dry-run": { type: "boolean" }, remove: { type: "boolean" }, force: { type: "boolean" }, "reset-env": { type: "boolean" }, print: { type: "boolean" }, format: { type: "string" } },
+    usage: "mehen setup [--agent <name>]... [--workspaces <a,b>] [--toolsets <names>] [--mcp-file <path>] [--remove] [--dry-run] [--force] [--reset-env] [--print [--format json|toml]]",
+    flags: { agent: { type: "list" }, workspaces: { type: "string" }, toolsets: { type: "string" }, "mcp-file": { type: "string" }, "dry-run": { type: "boolean" }, remove: { type: "boolean" }, force: { type: "boolean" }, "reset-env": { type: "boolean" }, print: { type: "boolean" }, format: { type: "string" } },
     positionals: { min: 0, max: 0 },
   },
-  examples: [["setup", "--json"], ["setup", "--agent", "codex", "--dry-run"], ["setup", "--workspaces", "acme", "--agent", "claude-code"], ["setup", "--mcp-file", "/path/to/mcp.json"], ["setup", "--print", "--format", "toml"], ["setup", "--remove"]],
+  examples: [["setup", "--json"], ["setup", "--agent", "codex", "--dry-run"], ["setup", "--workspaces", "acme", "--agent", "claude-code"], ["setup", "--toolsets", "all"], ["setup", "--mcp-file", "/path/to/mcp.json"], ["setup", "--print", "--format", "toml"], ["setup", "--remove"]],
   notes: [
     "Agents: claude-code, codex, cursor, pi, gemini, opencode, vscode, claude-desktop. Reload or restart afterwards.",
     "One `mehen` server per agent, always `mehen mcp`, serving every workspace this machine may use. The entry carries MEHEN_WORKSPACES when this shell is restricted or --workspaces narrows it (never wider than this shell), and MEHEN_HOME for a root other than ~/.config/mehen.",
+    "--toolsets <names> writes MEHEN_MCP_TOOLSETS into each entry, so its server lists those MCP toolsets beside the core (inspect, connect, writes, policy, adopt, or all); --toolsets core takes it out. Without the flag an entry keeps the MEHEN_MCP_TOOLSETS it has; --reset-env alone drops it.",
     "--mcp-file writes mcpServers.mehen into any JSON MCP client's file. --print renders the entry and writes nothing.",
     "Symlinked and foreign skills and entries are left alone unless --force, which needs the human's agreement and still refuses unsafe files; read every entry's status and reason. Settings are backed up once; --remove only undoes entries still owned by setup, and the skills stay while another entry remains.",
     "Exit 1 when a skill or an agent file failed; 2 when every agent was skipped.",
@@ -512,14 +535,14 @@ export const setupCommand: Command = {
     if (request.print) {
       // Rendered (and refused) from the environment first, then shown only
       // from an installed binary, whose path the entry names.
-      const printed = printSetup({ home, binary: process.execPath, env, workspaces: request.print.workspaces, format: request.print.format })
+      const printed = printSetup({ home, binary: process.execPath, env, workspaces: request.print.workspaces, format: request.print.format, toolsets: request.toolsets })
       if (!isCompiledBinary()) throw installedBinaryRequired("setup")
       if (json) printJson(printed)
       else printBlock(printed.text)
       return EXIT.ok
     }
     if (!isCompiledBinary()) throw installedBinaryRequired("setup")
-    const report = await setup({ home, binary: process.execPath, names: request.names, ...(request.mcpFile !== null ? { mcpFile: request.mcpFile } : {}), workspaces: request.workspaces, dryRun: request.dryRun, remove: request.remove, force: request.force, resetEnv: request.resetEnv, env, skillsOnly: env.MEHEN_SETUP_SKILLS_ONLY === "1" })
+    const report = await setup({ home, binary: process.execPath, names: request.names, ...(request.mcpFile !== null ? { mcpFile: request.mcpFile } : {}), workspaces: request.workspaces, toolsets: request.toolsets, dryRun: request.dryRun, remove: request.remove, force: request.force, resetEnv: request.resetEnv, env, skillsOnly: env.MEHEN_SETUP_SKILLS_ONLY === "1" })
     if (json) printJson(report)
     else for (const line of setupLines(report)) printLine(line)
     return setupExitCode(report)

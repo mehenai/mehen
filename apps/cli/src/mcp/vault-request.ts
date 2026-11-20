@@ -21,15 +21,6 @@ const requestInput = z.object({
   workspace: WORKSPACE_ARG,
 })
 
-// injection as one flat object rather than its four shapes, which would be
-// a quarter of the default tool list; input still parses the exact shape.
-const advertised = requestInput.extend({
-  injection: z
-    .object({ in: z.enum(["header", "query", "basic", "headers"]), name: z.string().optional(), format: z.string().optional(), field: z.string().optional(), username: z.string().optional(), password: z.string().optional() })
-    .optional()
-    .describe('without a provider: how it goes in: header (name, format such as "Bearer {key}"), query (name, field), basic (username, password) or headers (field)'),
-})
-
 export const vaultRequest = tool({
   name: "vault_request",
   title: "Ask for a credential",
@@ -37,7 +28,6 @@ export const vaultRequest = tool({
     "Ask a human to add a credential, or rotate one this machine may reach. Returns `ask`, a checked link where the human types the value into the vault page, never the chat: hand it over, then call vault_wait with the id. " +
     "Without a provider template, propose hosts (and paths) and, if Bearer in Authorization is wrong, injection; the human sees both marked unverified. Never returns the value.",
   input: requestInput,
-  advertised,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   async call(args, deps) {
     const now = new Date()

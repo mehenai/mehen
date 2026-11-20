@@ -301,36 +301,90 @@
             }
           },
           "injection": {
-            "description": "without a provider: how it goes in: header (name, format such as \"Bearer {key}\"), query (name, field), basic (username, password) or headers (field)",
-            "type": "object",
-            "properties": {
-              "in": {
-                "type": "string",
-                "enum": [
-                  "header",
-                  "query",
-                  "basic",
-                  "headers"
+            "description": "without a provider: how it goes into a request, e.g. { \"in\": \"header\", \"name\": \"X-Api-Key\", \"format\": \"{key}\" }",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "in": {
+                    "type": "string",
+                    "const": "header"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "format": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "in",
+                  "name",
+                  "format"
                 ]
               },
-              "name": {
-                "type": "string"
+              {
+                "type": "object",
+                "properties": {
+                  "in": {
+                    "type": "string",
+                    "const": "query"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "field": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "in",
+                  "name",
+                  "field"
+                ]
               },
-              "format": {
-                "type": "string"
+              {
+                "type": "object",
+                "properties": {
+                  "in": {
+                    "type": "string",
+                    "const": "basic"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "in",
+                  "username",
+                  "password"
+                ]
               },
-              "field": {
-                "type": "string"
-              },
-              "username": {
-                "type": "string"
-              },
-              "password": {
-                "type": "string"
+              {
+                "type": "object",
+                "properties": {
+                  "in": {
+                    "type": "string",
+                    "const": "headers"
+                  },
+                  "field": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "in",
+                  "field"
+                ]
               }
-            },
-            "required": [
-              "in"
             ]
           },
           "new": {

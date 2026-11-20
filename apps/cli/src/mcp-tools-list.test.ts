@@ -48,12 +48,12 @@ test("the default list is the core toolset, and the full list is every toolset's
 // What a host puts in front of the model for every conversation: the list
 // as the server sends it, kept under a budget so descriptions do not creep.
 // The default is the six core tools; the rest are opt-in.
-test("the default tools/list result stays under 8,750 bytes", () => {
-  expect(Buffer.byteLength(JSON.stringify(toolsList))).toBeLessThan(8_750)
+test("the default tools/list result stays under 9,200 bytes", () => {
+  expect(Buffer.byteLength(JSON.stringify(toolsList))).toBeLessThan(9_200)
 })
 
-test("the --toolsets all result stays under 32,000 bytes", () => {
-  expect(Buffer.byteLength(JSON.stringify(allToolsList))).toBeLessThan(32_000)
+test("the --toolsets all result stays under 32,500 bytes", () => {
+  expect(Buffer.byteLength(JSON.stringify(allToolsList))).toBeLessThan(32_500)
 })
 
 test("vault_fill follows vault_fetch and vault_plan, with the design's arguments and no value in its result", () => {
@@ -98,6 +98,14 @@ test("an outputSchema requires nothing and names no field an error carries, so a
     expect(outputSchema?.additionalProperties).toBeUndefined()
     for (const key of Object.keys(outputSchema?.properties ?? {})) expect(ERROR_BODY_KEYS).not.toContain(key)
   }
+})
+
+// A client checks a wrong injection shape before the round trip.
+test("vault_request advertises injection's exact shapes, one per way it goes in", () => {
+  const request = toolsList.tools.find((tool) => tool.name === "vault_request") as { inputSchema: { properties: { injection: { oneOf?: { properties: { in: { const: string } }; required: string[] }[] } } } }
+  const shapes = request.inputSchema.properties.injection.oneOf ?? []
+  expect(shapes.map((shape) => shape.properties.in.const)).toEqual(["header", "query", "basic", "headers"])
+  expect(shapes.map((shape) => shape.required)).toEqual([["in", "name", "format"], ["in", "name", "field"], ["in", "username", "password"], ["in", "field"]])
 })
 
 test("vault_policy's captured model schema has a closed object root, not a union root", () => {

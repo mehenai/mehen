@@ -1457,3 +1457,61 @@ describe("the skills report", () => {
     }
   })
 })
+
+// The MCP server's toolsets, in the entry's environment: --toolsets writes
+// MEHEN_MCP_TOOLSETS, `core` takes it out, and a setup without the flag
+// (the update's refresh among them) leaves it as it is.
+describe("--toolsets", () => {
+  const toolsetsOf = async () => (await claudeEntry())?.env?.MEHEN_MCP_TOOLSETS
+  test("writes MEHEN_MCP_TOOLSETS as a normalised list, into a new entry and over an existing one", async () => {
+    expect((await run(["claude-code"], { toolsets: ["core", "inspect", "connect"] })).agents[0]?.mcp).toBe("added")
+    expect(await claudeEntry()).toEqual({ type: "stdio", command: join(home, "bin/mehen"), args: ["mcp"], env: { MEHEN_MCP_TOOLSETS: "inspect,connect" } })
+    expect((await run(["claude-code"], { toolsets: ["core", "inspect", "connect", "writes", "policy", "adopt"] })).agents[0]?.mcp).toBe("updated")
+    expect(await toolsetsOf()).toBe("all")
+    expect((await run(["claude-code"], { toolsets: ["core", "inspect", "connect", "writes", "policy", "adopt"] })).agents[0]?.mcp).toBe("unchanged")
+  })
+
+  test("without --toolsets the entry keeps its MEHEN_MCP_TOOLSETS, and the update's skills-only refresh never touches the entry", async () => {
+    await run(["claude-code"], { toolsets: ["core", "policy"] })
+    expect((await run(["claude-code"])).agents[0]?.mcp).toBe("unchanged")
+    expect(await toolsetsOf()).toBe("policy")
+    const before = await readFile(claude().file, "utf8")
+    await run([], { skillsOnly: true })
+    expect(await readFile(claude().file, "utf8")).toBe(before)
+  })
+
+  test("--toolsets core takes MEHEN_MCP_TOOLSETS out of the entry", async () => {
+    await run(["claude-code"], { toolsets: ["core", "adopt"] })
+    expect(await toolsetsOf()).toBe("adopt")
+    expect((await run(["claude-code"], { toolsets: ["core"] })).agents[0]?.mcp).toBe("updated")
+    expect((await claudeEntry())?.env).toBeUndefined()
+  })
+
+  test("--reset-env without --toolsets drops it like any other key; with --toolsets it writes the new list", async () => {
+    await run(["claude-code"], { toolsets: ["core", "inspect"] })
+    expect((await run(["claude-code"], { resetEnv: true })).agents[0]?.mcp).toBe("updated")
+    expect((await claudeEntry())?.env).toBeUndefined()
+    await run(["claude-code"], { toolsets: ["core", "inspect"] })
+    await run(["claude-code"], { resetEnv: true, toolsets: ["core", "writes"] })
+    expect(await toolsetsOf()).toBe("writes")
+  })
+
+  test("at the command line: a list parses with the core, an empty value names core, an unknown name names the toolsets, and --print renders it", async () => {
+    const request = (...argv: string[]) => setupRequest(parseArgs(argv, setupCommand.spec))
+    expect(request().toolsets).toBeNull()
+    expect(request("--toolsets", "inspect,connect").toolsets).toEqual(["core", "inspect", "connect"])
+    expect(request("--toolsets", "all").toolsets).toEqual(["core", "inspect", "connect", "writes", "policy", "adopt"])
+    expect(request("--toolsets", "core").toolsets).toEqual(["core"])
+    for (const empty of ["", " "]) {
+      let thrown: unknown = null
+      try { request(`--toolsets=${empty}`) } catch (error) { thrown = error }
+      expect(thrown).toBeInstanceOf(CliError)
+      expect((thrown as CliError).code).toBe("usage")
+      expect((thrown as CliError).message).toContain("--toolsets core")
+    }
+    expect(() => request("--toolsets", "nope")).toThrow("core, inspect, connect, writes, policy, adopt, all")
+    expect(request("--print", "--toolsets", "writes")).toMatchObject({ toolsets: ["core", "writes"], print: { format: "json" } })
+    const printed = printSetup({ home, binary: join(home, "bin/mehen"), env: {}, workspaces: null, format: "toml", toolsets: ["core", "writes"], files: { ownerRoot: owner } })
+    expect(printed.text).toBe(`[mcp_servers.mehen]\ncommand = ${JSON.stringify(join(home, "bin/mehen"))}\nargs = ["mcp"]\nenv = { "MEHEN_MCP_TOOLSETS" = "writes" }\n`)
+  })
+})

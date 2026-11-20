@@ -15,7 +15,7 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ### 20 November 2026: agents see six Mehen tools by default
 
-The next `mehen` release serves six MCP tools by default (`vault_status`, `vault_list`, `vault_request`, `vault_fetch`, `vault_env` and `vault_wait`), a quarter of the tool list a host puts in front of the model in every conversation, and the skill becomes a short sheet that sends an agent to `mehen guide <topic>` for the rest. Every other tool is in an opt-in toolset; `mehen mcp --toolsets all`, or `MEHEN_MCP_TOOLSETS=all` in the agent's `mehen` entry, restores the full list. See [MCP tools](reference/mcp.md) and the CLI's release notes below.
+The next `mehen` release serves six MCP tools by default (`vault_status`, `vault_list`, `vault_request`, `vault_fetch`, `vault_env` and `vault_wait`), a quarter of the tool list a host puts in front of the model in every conversation, and the skill becomes a short sheet that sends an agent to `mehen guide <topic>` for the rest. Every other tool is in an opt-in toolset; `mehen setup --toolsets all`, which writes `MEHEN_MCP_TOOLSETS=all` into each agent's `mehen` entry, restores the full list after a restart. See [MCP tools](reference/mcp.md) and the CLI's release notes below.
 
 ### 20 November 2026: eighteen more services have templates, and each template names the variable its SDK reads
 

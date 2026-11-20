@@ -108,6 +108,15 @@ export function resolveToolsets(flag: string | null, env: Env): Toolset[] {
   return set === undefined ? ["core"] : parseToolsets(set, TOOLSETS_ENV)
 }
 
+// What an agent entry's MEHEN_MCP_TOOLSETS says for these toolsets: `all`
+// for every one, else the toolsets beyond the core (which it implies); null
+// for the core alone, which needs no variable.
+export function toolsetsValue(toolsets: readonly Toolset[]): string | null {
+  const extra = TOOLSET_NAMES.filter((name) => name !== "core" && toolsets.includes(name))
+  if (extra.length === TOOLSET_NAMES.length - 1) return "all"
+  return extra.length === 0 ? null : extra.join(",")
+}
+
 export function servedTools(toolsets: readonly Toolset[]): typeof TOOLS {
   const served = new Set<string>(toolsets.flatMap((name) => TOOLSETS[name]))
   return TOOLS.filter((t) => served.has(t.name))
