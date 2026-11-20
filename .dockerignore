@@ -1,0 +1,10 @@
+.git
+node_modules
+apps/*/node_modules
+packages/*/node_modules
+apps/*/dist
+apps/*/.wrangler
+apps/docs/public
+apps/web/public/dl
+*.log
+.DS_Store
