@@ -599,19 +599,43 @@ describe("mandateRequestFacts and mandateClassesOf on real routes", () => {
     ["conversations.setPurpose", ["change", "send"]],
     ["chat.delete", ["change", "delete"]],
     ["chat.scheduleMessage", ["change", "send"]],
+    ["chat.postEphemeral", ["change", "send"]],
+    ["chat.meMessage", ["change", "send"]],
+    // Slackbot delivers it to its user later, another user's with a bot token.
+    ["reminders.add", ["change", "send"]],
+    ["REMINDERS.ADD", ["change", "send"]],
+    // A link in the channel's header, in front of everyone in it.
+    ["bookmarks.add", ["change", "send"]],
+    ["bookmarks.edit", ["change", "send"]],
+    ["reminders.complete", ["change"]],
+    ["reminders.delete", ["change", "delete"]],
+    // A call's record; a person sees it only through a message posted for it.
+    ["calls.add", ["change"]],
+    ["calls.participants.add", ["change"]],
     ["chat.updateX", ["change"]],
     ["views.update", ["change"]],
     ["files.remote.update", ["change"]],
-    ["bookmarks.edit", ["change"]],
     ["reactions.get", ["read"]],
   ] as [string, MandateClass[]][])("Slack %s on a workspace host gives %p, on a GET and a POST alike", (method, classes) => {
     expect(classesOf(held(null, "GET", `https://acme.slack.com/api/${method}`))).toEqual(classes)
     if (!classes.includes("read")) expect(classesOf(held(null, "POST", `https://acme.slack.com/api/${method}`, { channel: "C1", ts: "1", text: "hi" }))).toEqual(classes)
   })
 
-  test("Slack's chat.update is a send on slack.com too, through the template and without it", () => {
-    expect(classesOf(held(null, "GET", "https://slack.com/api/chat.update"))).toEqual(["change", "send"])
-    expect(classesOf(held("slack-bot", "POST", "https://slack.com/api/chat.update", { channel: "C1", ts: "1", text: "hi" }))).toEqual(["change", "send"])
+  test.each(["chat.update", "reminders.add", "bookmarks.add"])("Slack's %s is a send on slack.com too, through the template and without it", (method) => {
+    expect(classesOf(held(null, "GET", `https://slack.com/api/${method}`))).toEqual(["change", "send"])
+    expect(classesOf(held("slack-bot", "POST", `https://slack.com/api/${method}`, { channel: "C1", ts: "1", text: "hi", user: "U1", time: "in 5 minutes", title: "Runbook", type: "link", link: "https://example.com" }))).toEqual(["change", "send"])
+  })
+
+  // What delivers elsewhere or to more people is never covered: an invite
+  // is sharing, and a file shared on upload a send where the template
+  // reads it, never where its floor holds it.
+  test("Slack's invites are never covered, and a file's upload is a send on a workspace host", () => {
+    for (const method of ["conversations.invite", "conversations.inviteShared", "admin.conversations.invite"]) {
+      expect([method, classesOf(held(null, "POST", `https://acme.slack.com/api/${method}`, { channel: "C1", users: "U1" }))]).toEqual([method, "never"])
+      expect([method, classesOf(held("slack-bot", "POST", `https://slack.com/api/${method}`, { channel: "C1", users: "U1" }))]).toEqual([method, "never"])
+    }
+    expect(classesOf(held(null, "POST", "https://acme.slack.com/api/files.completeUploadExternal", { files: [{ id: "F1" }], channel_id: "C1" }))).toEqual(["change", "send"])
+    expect(classesOf(held("slack-bot", "POST", "https://slack.com/api/files.completeUploadExternal", { files: [{ id: "F1" }], channel_id: "C1" }))).toBe("never")
   })
 
   // Telegram's: an edit of a message is a send, a delete a delete, and a

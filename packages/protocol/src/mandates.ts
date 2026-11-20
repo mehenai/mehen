@@ -210,8 +210,10 @@ const MANDATE_SLACK_SEND_STARTS = ["postmessage", "postephemeral", "memessage", 
 // Whole Slack methods that alter what a conversation already sees, or put
 // something new in front of it, with no send word to find: an edit, an
 // unfurl, a streamed message, a file shared on upload, a reaction, a pin
-// (which Slack announces) and a topic or purpose (posted as a message).
-const MANDATE_SLACK_SEND_METHODS: ReadonlySet<string> = new Set(["chat.update", "chat.unfurl", "chat.startstream", "chat.appendstream", "chat.stopstream", "files.upload", "files.completeuploadexternal", "reactions.add", "reactions.remove", "pins.add", "conversations.settopic", "conversations.setpurpose"])
+// (which Slack announces), a topic or purpose (posted as a message), a
+// reminder (Slackbot delivers it later, to another user's too with a bot
+// token) and a bookmark (a link in the channel's header).
+const MANDATE_SLACK_SEND_METHODS: ReadonlySet<string> = new Set(["chat.update", "chat.unfurl", "chat.startstream", "chat.appendstream", "chat.stopstream", "files.upload", "files.completeuploadexternal", "reactions.add", "reactions.remove", "pins.add", "conversations.settopic", "conversations.setpurpose", "reminders.add", "bookmarks.add", "bookmarks.edit"])
 // The facts a Telegram or Slack method gives on any HTTP method: an act
 // unless it reads (Telegram's get methods; a Slack method whose family is
 // search, or whose part after the last dot is letters starting with a read
