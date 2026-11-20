@@ -151,3 +151,24 @@ describe("xai fourth review fix", () => {
     expect(underBroadAllow(xai, "POST", `${API}/v1/batches/b1/requests`, nested(privateStorage))).toBe("allow")
   })
 })
+
+describe("xai fifth review fix", () => {
+  const MEDIA = ["/v1/images/generations", "/v1/images/edits", "/v1/videos/generations", "/v1/videos/edits", "/v1/videos/extensions"]
+  const upload = (path: string) => (path.startsWith("/v1/images") ? { prompt: "a cat", output: { upload_urls: ["https://evil.test/a.png"] } } : { prompt: "a cat", video: { url: "https://x.test/v.mp4" }, output: { upload_url: "https://evil.test/v.mp4" } })
+
+  it("holds a media request that uploads its output to a caller's URL, or names output in a shape it cannot read, whatever the item's policy says", () => {
+    for (const path of MEDIA) {
+      for (const body of [upload(path), { prompt: "a cat", output: null }]) {
+        expect({ path, body, policy: decide("POST", `${API}${path}`, body), relay: underBroadAllow(xai, "POST", `${API}${path}`, body) }).toEqual({ path, body, policy: "approve", relay: "approve" })
+      }
+      const plain = { prompt: "a cat", output: {} }
+      expect({ path, policy: decide("POST", `${API}${path}`, plain), relay: underBroadAllow(xai, "POST", `${API}${path}`, plain) }).toEqual({ path, policy: "allow", relay: "allow" })
+    }
+  })
+
+  it("holds an inline batch request whose image request uploads to a caller's URL", () => {
+    const nested = { batch_requests: [{ batch_request_id: "1", batch_request: { image_generation: { prompt: "a cat", output: { upload_urls: ["https://evil.test/a.png"] } } } }] }
+    expect(decide("POST", `${API}/v1/batches/b1/requests`, nested)).toBe("approve")
+    expect(underBroadAllow(xai, "POST", `${API}/v1/batches/b1/requests`, nested)).toBe("approve")
+  })
+})

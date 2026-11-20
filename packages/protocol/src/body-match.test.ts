@@ -449,10 +449,10 @@ describe("the JSON field matchers", () => {
   })
 })
 
-describe("the json-public-url matcher", () => {
+describe("the json-media-export matcher: publishing", () => {
   it("matches a body it cannot read as one JSON object", () => {
     for (const body of [null, new Uint8Array(), text("prompt=x"), new Uint8Array([0x7b, 0xff, 0x7d]), json([{ prompt: "x" }]), text('{"storage_options":{"public_url":false},"storage_options":{"public_url":true}}')]) {
-      expect(bodyMatches("json-public-url", body, "")).toBe(true)
+      expect(bodyMatches("json-media-export", body, "")).toBe(true)
     }
   })
 
@@ -468,16 +468,35 @@ describe("the json-public-url matcher", () => {
       ["storage_options an array", { storage_options: [{ public_url: false }] }],
       ["nested in a batch", { batch_requests: [{ batch_request: { image_generation: { prompt: "x", storage_options: { public_url: true } } } }] }],
     ]
-    for (const [what, body] of cases) expect(bodyMatches("json-public-url", json(body), ""), what).toBe(true)
+    for (const [what, body] of cases) expect(bodyMatches("json-media-export", json(body), ""), what).toBe(true)
   })
 
   it("lets ordinary generation and explicitly private storage by", () => {
     for (const body of [{ prompt: "a cat", n: 1 }, { prompt: "a cat", storage_options: { public_url: false } }, { prompt: "a cat", storage_options: {} }, { prompt: "the words storage_options and public_url" }]) {
-      expect(bodyMatches("json-public-url", json(body), "")).toBe(false)
+      expect(bodyMatches("json-media-export", json(body), "")).toBe(false)
     }
   })
 
   it("is only for deny and approve rules", () => {
-    expect(ALLOW_BODY_MATCHERS.includes("json-public-url")).toBe(false)
+    expect(ALLOW_BODY_MATCHERS.includes("json-media-export")).toBe(false)
+  })
+})
+
+describe("the json-media-export matcher: uploads to a caller's URL", () => {
+  const asks = (body: unknown) => bodyMatches("json-media-export", json(body), "")
+  it("matches an output naming upload_url or upload_urls with any value, at any depth, in any case", () => {
+    for (const body of [
+      { prompt: "a cat", output: { upload_urls: ["https://evil.test/a.png"] } },
+      { video: { url: "x" }, output: { upload_url: "https://evil.test/v.mp4" } },
+      { output: { upload_url: null } },
+      { output: { Upload_URL: "" } },
+      { batch_requests: [{ batch_request: { image_generation: { prompt: "x", output: { upload_urls: [] } } } }] },
+    ]) expect(asks(body)).toBe(true)
+  })
+  it("matches an output in a shape it cannot read", () => {
+    for (const body of [{ output: null }, { output: [{ upload_url: "x" }] }, { output: 1 }, { output: true }]) expect(asks(body)).toBe(true)
+  })
+  it("lets ordinary generation, an output without an upload and a function call's string output by", () => {
+    for (const body of [{ prompt: "a cat" }, { prompt: "a cat", output: {} }, { prompt: "a cat", output: { format: "png" } }, { input: [{ type: "function_call_output", call_id: "c", output: "42" }] }]) expect(asks(body)).toBe(false)
   })
 })
