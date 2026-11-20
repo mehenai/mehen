@@ -1,6 +1,6 @@
 import { z } from "zod"
 import { CredentialHomeSchema, KINDS, canonicalJson, type CustomOAuthProvider, customItemPolicy, getTemplate, isLeaseOnly, isSealedBox, leaseOnlyAllowed, leaseOnlyBinding, leaseOnlyRefusal, mintOnly, mintOnlyRefusal, NATURAL_INJECTION, openText, type CredentialHome, type PrivateEvent, type WorkspaceIntakeView } from "@mehen/protocol"
-import { WorkspaceIntakeCreate, Slug, Tag, type IntakeStatus } from "@mehen/protocol/api"
+import { BindingSchema, InjectionSchema, KindSchema, WorkspaceIntakeCreate, Slug, Tag, type IntakeStatus } from "@mehen/protocol/api"
 import type { AccessPrincipal } from "../access.ts"
 import { one, randomId, type VaultContext } from "../core.ts"
 import { auditPrivateEvent } from "../audit.ts"
@@ -203,11 +203,23 @@ export function requestAudit(ctx: VaultContext, p: AccessPrincipal, row: Credent
   else
     ctx.audit({ actor: p.kind === "member" ? `member:${p.memberId}` : `device:${p.deviceId}`, action, target: row.id, detail: { item: payload.requestItemId, outcome: row.status } })
 }
-const CreateMember = z.strictObject({ provider: z.string().max(64).optional(), slug: Slug, tags: z.array(Tag).max(16).default([]), home: z.enum(["private", "project", "workspace"]), project: z.string().optional(), fresh: z.boolean().optional() }).refine(input => input.home === "project" ? input.project !== undefined : input.project === undefined, "Project home requires its project id")
+const CreateMember = z
+  .strictObject({
+    provider: z.string().max(64).optional(),
+    kind: KindSchema.optional(),
+    binding: BindingSchema.optional(),
+    injection: InjectionSchema.optional(),
+    slug: Slug,
+    tags: z.array(Tag).max(16).default([]),
+    home: z.enum(["private", "project", "workspace"]),
+    project: z.string().optional(),
+    fresh: z.boolean().optional(),
+  })
+  .refine(input => (input.home === "project" ? input.project !== undefined : input.project === undefined), "Project home requires its project id")
 
 function createIntakeRequest(ctx:VaultContext,p:AccessPrincipal,input:unknown,invocation:WorkspaceInvocationContext){
  const raw=p.kind === "device"?parseOpInput(WorkspaceIntakeCreate,input):parseOpInput(CreateMember,input)
- if("kind" in raw&&mintOnly(raw.kind))throw new VaultError("bad_request",mintOnlyRefusal(raw.kind))
+ if("kind" in raw&&raw.kind!==undefined&&mintOnly(raw.kind))throw new VaultError("bad_request",mintOnlyRefusal(raw.kind))
  const template=raw.provider?getTemplate(raw.provider):null
  if(raw.provider&&!template)throw new VaultError("bad_request","Unknown credential template.")
  // In a managed workspace the platform's defaults apply when an intake is
@@ -219,7 +231,7 @@ function createIntakeRequest(ctx:VaultContext,p:AccessPrincipal,input:unknown,in
  assertWorkloadMayAsk(ctx,p,raw.slug,proposedHome)
  if(p.kind === "device"&&proposedHome.kind === "member")assertItemRight(ctx,invocation,{type:"credential.create"},{destinationHome:proposedHome})
  assertNameBudget(ctx,p)
- const rotationOnly=p.kind === "member"&&!raw.provider
+ const rotationOnly=p.kind === "member"&&!raw.provider&&!("kind" in raw&&raw.kind!==undefined)
  let target:CheckedCredential|null=null
  if(checkedCredential(ctx,raw.slug)){
   try{target=visibleCredential(ctx,p,raw.slug,undefined,invocation)}catch(error){if(error instanceof VaultError&&error.code === "not_found"){if(rotationOnly)throw missingCredential(raw.slug);assertItemRight(ctx,invocation,{type:"credential.create"},{destinationHome:proposedHome});unavailableName(ctx,p)}throw error}
@@ -227,10 +239,11 @@ function createIntakeRequest(ctx:VaultContext,p:AccessPrincipal,input:unknown,in
  if(rotationOnly&&!target)throw missingCredential(raw.slug)
  assertItemRight(ctx,invocation,target?{type:"credential.rotate"}:{type:"credential.create"},target?{credential:target.id}:{destinationHome:proposedHome})
  if(target&&raw.provider!==undefined&&raw.provider!==target.provider)throw new VaultError("conflict","Rotation keeps the credential provider.")
- const kind=target?.kind??template?.kind??("kind" in raw?raw.kind:null)
- if(!kind)throw new VaultError("bad_request","Choose a built-in template.")
+ if(p.kind === "member"&&target&&(("binding" in raw&&raw.binding!==undefined)||("injection" in raw&&raw.injection!==undefined)))throw new VaultError("conflict","Rotation keeps the credential destination and injection.")
+ const kind=target?.kind??template?.kind??("kind" in raw&&raw.kind!==undefined?raw.kind:null)
+ if(!kind)throw new VaultError("bad_request","Choose a built-in template or a credential kind.")
  if(mintOnly(kind))throw new VaultError("bad_request",mintOnlyRefusal(kind))
- if("kind" in raw&&raw.kind!==kind)throw new VaultError("bad_request","The credential kind does not match its template.")
+ if("kind" in raw&&raw.kind!==undefined&&raw.kind!==kind)throw new VaultError("bad_request","The credential kind does not match its template.")
  const home=p.kind === "member"&&target?target.home:proposedHome
  if(home.kind === "member")assertItemRight(ctx,invocation,{type:"credential.create"},{destinationHome:home})
  if(target&&canonicalJson(target.home)!==canonicalJson(home))throw new VaultError("conflict","Rotation keeps the credential home.")

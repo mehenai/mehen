@@ -672,3 +672,64 @@ describe("a replaced value kept and restored", () => {
     })
   })
 })
+
+describe("member browser intakes for custom hosts and lease-only secrets", () => {
+  it("allows a member to create custom-host api-key and lease-only database-url/generic intakes, and refuses unsafe combinations", async () => {
+    const { workspaceIntakeOps } = await import("../src/vault/areas/intake-workspace.ts")
+    const { LEASE_ONLY_HOST } = await import("@mehen/protocol")
+    const { seedCredential } = await import("./credentials-test-support.ts")
+    const f = await credentialsFixture()
+    await inAccess(f.tenant, async (ctx) => {
+      const p = memberPrincipal(ctx)
+      const inv = memberInvocation(ctx)
+
+      // Custom-host API key with explicit header injection.
+      const custom = await workspaceIntakeOps["intake.createByMember"].handler(
+        ctx,
+        p,
+        {
+          kind: "api-key",
+          slug: "internal-api",
+          home: "private",
+          binding: { hosts: ["api.internal.example"], schemes: ["https"] },
+          injection: { in: "header", name: "X-API-Key", format: "{key}" },
+        },
+        inv,
+      )
+      expect(custom.intake).toMatch(/^int_/)
+      const customView = await workspaceIntakeOps["intake.view"].handler(ctx, p, { intake: custom.intake }, inv)
+      expect(customView.binding?.value.hosts).toEqual(["api.internal.example"])
+      expect(customView.kind).toBe("api-key")
+
+      // Lease-only database-url and generic secrets need no host.
+      const db = await workspaceIntakeOps["intake.createByMember"].handler(ctx, p, { kind: "database-url", slug: "app-db", home: "private" }, inv)
+      const dbView = await workspaceIntakeOps["intake.view"].handler(ctx, p, { intake: db.intake }, inv)
+      expect(dbView.binding?.value.hosts).toEqual([LEASE_ONLY_HOST])
+      const generic = await workspaceIntakeOps["intake.createByMember"].handler(ctx, p, { kind: "generic", slug: "jwt-secret", home: "private" }, inv)
+      expect(generic.intake).toMatch(/^int_/)
+
+      // Refusal: api-key without a host is never lease-only.
+      await expect(
+        Promise.resolve().then(() => workspaceIntakeOps["intake.createByMember"].handler(ctx, p, { kind: "api-key", slug: "no-host-key", home: "private" }, inv)),
+      ).rejects.toMatchObject({ code: "bad_request" })
+
+      // Refusal: mint-only kind cannot be created via intake.
+      await expect(
+        Promise.resolve().then(() => workspaceIntakeOps["intake.createByMember"].handler(ctx, p, { kind: "oauth-connection", slug: "bad-oauth", home: "private" }, inv)),
+      ).rejects.toMatchObject({ code: "bad_request" })
+
+      // Refusal: rotating an existing credential cannot change its binding or injection.
+      const item = await seedCredential(ctx, "kept-key")
+      await expect(
+        Promise.resolve().then(() =>
+          workspaceIntakeOps["intake.createByMember"].handler(
+            ctx,
+            p,
+            { slug: item.slug, home: "workspace", binding: { hosts: ["evil.example"], schemes: ["https"] } },
+            inv,
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "conflict" })
+    })
+  })
+})

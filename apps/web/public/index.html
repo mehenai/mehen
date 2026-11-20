@@ -231,7 +231,7 @@ STRIPE_SECRET_KEY=<span class="ph">sk_live_jvph0123456789abcdefghijklmn</span></
     <header class="section-head">
       <p class="eyebrow">The guard hooks</p>
       <h2>Agents read files. The guard checks first.</h2>
-      <p class="lede"><code>mehen up</code> installs guard hooks in Claude Code, pi, Cursor and Codex that stop an agent reading <code>.env</code> files, key files and CLI logins, or pasting a key into a command or a file, and tell it what to use instead. They answer on the machine in milliseconds, with no network. <code>mehen guard warn</code> only warns; <code>mehen guard off</code> turns them off.</p>
+      <p class="lede"><code>mehen up</code> installs guard hooks in Claude Code, pi, Cursor and Codex that check for <code>.env</code> files, key files, CLI logins and keys pasted into commands or files, and tell the agent what to use instead. They answer on the machine in milliseconds, with no network. A fresh <code>mehen up</code> starts in <code>warn</code> mode so existing <code>.env</code> repos keep working; run <code>mehen guard block</code> once your keys are in the vault, or <code>mehen guard off</code> to turn them off.</p>
     </header>
     <div class="code-grid">
       <figure class="term">
@@ -251,9 +251,12 @@ claude-code      guard added
                  restart Claude Code to pick it up
 pi               guard added
                  restart pi (or /reload) to pick it up
+cursor           guard added
+codex            guard added
+                 open /hooks in Codex and trust Mehen's two hooks
 
-<span class="p">$</span> mehen guard warn
-Guard: warn</code></pre>
+<span class="p">$</span> mehen guard block
+Guard: block</code></pre>
       </figure>
     </div>
     <p class="after-steps">The hooks are not the security boundary; the vault's bindings are. They keep an agent from handling a key by accident or because a page told it to. <a href="https://docs.mehen.dev/guides/guard">The guard hooks</a>.</p>
@@ -277,7 +280,7 @@ Guard: warn</code></pre>
       <li class="card step">
         <span class="num">Another machine you own</span>
         <h3>mehen serve</h3>
-        <p>A box at home or on your tailnet, behind TLS from Tailscale serve or Caddy. Your laptops enrol with <code>MEHEN_VAULT_URL</code>, and the vault's files stay off the machines your agents run on. <a href="https://docs.mehen.dev/start/another-machine">Run it on another machine</a>.</p>
+        <p>A box at home or on your tailnet, behind TLS from Tailscale serve, Caddy or the repository's <code>docker compose</code> setup. Your laptops enrol with <code>MEHEN_VAULT_URL</code>, and the vault's files stay off the machines your agents run on. <a href="https://docs.mehen.dev/start/another-machine">Run it on another machine</a>.</p>
       </li>
       <li class="card step" id="cloud">
         <span class="num">Mehen Cloud, for teams</span>

@@ -18,6 +18,7 @@ import { homeDir } from "../config.ts"
 import { readEnrolmentRecord } from "../enrolment-record.ts"
 import { CliError, usageError } from "../errors.ts"
 import { ensureSafeDirectory, ensureSafeRoot, resolveHome } from "../home.ts"
+import { GUARD_LEVELS, type GuardLevel } from "../hook/index.ts"
 import { selfExecutable } from "../install-state.ts"
 import { LOCAL_VAULT_RECORD, keyringAdvice, keyringHost } from "../local-vault.ts"
 import { printJson, printLine } from "../output.ts"
@@ -25,7 +26,7 @@ import { type Segment, type Text, colourEnabled, styler } from "../tty.ts"
 import { openUrl } from "./browser.ts"
 import { type ServiceKind, ServiceError, installService, removeService, serviceEnvironment, serviceKind } from "./service.ts"
 
-const USAGE = "mehen up [--port <port>] [--data <dir>] [--no-agents] [--timeout <seconds>] | mehen up --remove"
+const USAGE = "mehen up [--port <port>] [--data <dir>] [--guard <warn|block|off>] [--no-agents] [--timeout <seconds>] | mehen up --remove"
 const RECORD_FILE = LOCAL_VAULT_RECORD
 const POLL_MS = 1000
 const DEFAULT_TIMEOUT_SECONDS = 900
@@ -150,7 +151,33 @@ export function agentLines(setup: Record<string, unknown> | null, guard: Record<
   const lines = wired.map((a) => {
     return a.ok ? `  ${a.name}: wired${guardNote(a.name, guards.get(a.name), guard !== null, guard?.level)}` : `  ${a.name}: not wired (${a.reason ?? "see mehen setup"})`
   })
+  const hasInstalledGuard = wired.some((a) => {
+    if (!a.ok || !GUARDED.has(a.name)) return false
+    const g = guards.get(a.name)
+    return g !== undefined && (g.status === "added" || g.status === "updated" || g.status === "unchanged")
+  })
+  if (hasInstalledGuard && guard?.level === "warn") {
+    lines.push("The guard starts in warn mode so existing .env files keep working; run `mehen guard block` once your keys are in the vault.")
+  }
   return `Agents (restart them to pick Mehen up):\n${lines.join("\n")}`
+}
+
+export function parseUpGuard(raw: string | null): GuardLevel | null {
+  if (raw === null) return null
+  if (!(GUARD_LEVELS as readonly string[]).includes(raw)) throw usageError(`--guard takes ${GUARD_LEVELS.join(", ")}, not ${JSON.stringify(raw)}.`, USAGE)
+  return raw as GuardLevel
+}
+
+// A fresh `mehen up` starts the guard at warn so existing .env repos keep
+// working until the person moves their keys in. An explicit --guard sets the
+// level; otherwise an existing guard.json (such as `mehen guard block`) is
+// left alone on re-runs.
+export function ensureUpGuardLevel(root: string, requested: GuardLevel | null): GuardLevel | null {
+  const path = join(root, "guard.json")
+  const level = requested ?? (existsSync(path) ? null : "warn")
+  if (level === null) return null
+  writeFileSync(path, `${JSON.stringify({ level })}\n`, { mode: 0o600 })
+  return level
 }
 
 // What a person at the terminal needs for the enrolment page: the link, and
@@ -213,11 +240,12 @@ async function remove(env: Env, json: boolean, root: string): Promise<number> {
 
 export const upCommand: Command = {
   summary: "set up Mehen on this machine in one go: the local vault, your passkey, this machine and your agents (run it again to resume)",
-  spec: { usage: USAGE, flags: { port: { type: "string" }, data: { type: "string" }, "no-agents": { type: "boolean" }, timeout: { type: "string" }, remove: { type: "boolean" } }, positionals: { min: 0, max: 0 } },
-  examples: [["up"], ["up", "--json"], ["up", "--no-agents"], ["up", "--remove"]],
+  spec: { usage: USAGE, flags: { port: { type: "string" }, data: { type: "string" }, guard: { type: "string" }, "no-agents": { type: "boolean" }, timeout: { type: "string" }, remove: { type: "boolean" } }, positionals: { min: 0, max: 0 } },
+  examples: [["up"], ["up", "--guard", "block"], ["up", "--json"], ["up", "--no-agents"], ["up", "--remove"]],
   notes: [
     `The vault answers at http://localhost:${DEFAULT_PORT} on this machine only, and starts again when the machine does.`,
     "A person makes a passkey on the page it opens; everything after that happens here.",
+    "On a fresh machine with no saved guard level, the guard hooks start in warn mode so existing .env repos keep working; pass --guard block to block immediately, or run `mehen guard block` once your keys are in the vault.",
     "--json writes one JSON object per line: event vault, ask (a link a person must open), workspace, machine, agents, then done.",
     "--remove stops the vault and removes its service; the data stays.",
   ],
@@ -225,6 +253,7 @@ export const upCommand: Command = {
     const { root, source } = resolveHome(env)
     ensureSafeRoot(root)
     if (args.bool("remove")) return remove(env, json, root)
+    const requestedGuard = parseUpGuard(args.string("guard"))
 
     let config
     let savedService: string | null = null
@@ -328,11 +357,15 @@ export const upCommand: Command = {
     out.event("machine", { device: machine?.device ?? null, name }, [`This machine: ${name}`])
 
     // 4. The agents, where an installed mehen can register itself.
+    if (requestedGuard !== null) ensureUpGuardLevel(root, requestedGuard)
     if (args.bool("no-agents")) out.event("agents", { skipped: "no-agents" }, null)
     else if (selfExecutable(env) === null) out.event("agents", { skipped: "source" }, "Agents: run `mehen setup` with an installed mehen to wire them.")
     else {
       const setup = await self(command, ["setup", "--json"], childEnv)
       const body = lastJson(setup.out)
+      // Start fresh installs in warn mode so existing .env repos keep working
+      // until the person moves their keys into the vault.
+      ensureUpGuardLevel(root, requestedGuard)
       // The guard hooks, where an agent runs them: Claude Code, pi, Cursor and Codex.
       const guard = await self(command, ["guard", "install", "--json"], childEnv)
       const guarded = guard.code === 0 ? lastJson(guard.out) : null

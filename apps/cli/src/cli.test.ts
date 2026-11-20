@@ -216,7 +216,7 @@ test("run, env and init refuse a bad line as a usage error with next before open
     [["env"], "mehen env needs a subcommand: ls, check or set.", "mehen env --help"],
     [["env", "bogus"], "Unknown subcommand bogus; use ls, check or set.", "mehen env --help"],
     [["env", "set", "DATABASE_URL", "--env", "dev", "--item", "db", "--plain", "x"], "Pass --item or --plain, not both.", "mehen env --help"],
-    [["init", "stray"], "Unexpected argument stray. Usage: mehen init [--slug <slug>] [--env <name>]... [--json]", "mehen init --help"],
+    [["init", "stray"], "Unexpected argument stray. Usage: mehen init [--slug <slug>] [--env <name>]... [--local] [--json]", "mehen init --help"],
     [["init", "--slug", "Bad Slug"], "Bad Slug is not a valid slug; pass --slug <lower-case-name>.", "mehen init --help"],
   ]
   for (const state of ["unenrolled", "enrolled"]) {

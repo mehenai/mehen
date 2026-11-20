@@ -421,4 +421,20 @@ describe("scan", () => {
     const result = await scan(options(home, { excludeDirs: [join(home, "secrets-link"), fenced] }))
     expect(result.entries.map((e) => e.path.slice(home.length))).toEqual(["/code/billing-api/.env", "/code/billing-api/.env", "/code/billing-api/.env"])
   })
+
+  it("scans a single regular file passed as a root, and skips a symlinked root", async () => {
+    const home = machine()
+    const envPath = join(home, "code", "billing-api", ".env")
+    const linkPath = join(home, "code", "billing-api", ".env.link")
+    symlinkSync(envPath, linkPath)
+
+    const single = await scan(options(home, { roots: [{ path: envPath, depth: 0 }], defaults: false }))
+    expect(single.files).toBe(1)
+    expect(single.entries.every((e) => e.path === envPath)).toBe(true)
+    expect(JSON.stringify(single)).not.toContain("SENTINEL")
+
+    const linked = await scan(options(home, { roots: [{ path: linkPath, depth: 0 }], defaults: false }))
+    expect(linked.files).toBe(0)
+    expect(linked.skipped).toContainEqual({ path: linkPath, why: "a symlink" })
+  })
 })

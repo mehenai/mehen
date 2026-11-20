@@ -18,7 +18,9 @@ Mehen lets an agent use your API keys without ever receiving them. The agent ask
 curl -fsSL https://mehen.dev/install | sh && mehen up
 ```
 
-`mehen up` starts a vault on this machine at `http://localhost:7787`, opens a page where you make a passkey and your workspace, enrols this machine and wires your agents, with guard hooks that stop them reading `.env` files.
+Or, with Node.js: `npx @mehenai/cli up` (or `npm create mehen`).
+
+`mehen up` starts a vault on this machine at `http://localhost:7787`, opens a page where you make a passkey and your workspace, enrols this machine and wires your agents, with guard hooks that stop them reading `.env` files. On one machine it keeps keys out of model context, transcripts, logs, shell history, `.env` files and unbound hosts; to move the vault's files off the agent's machine too, [run it on another machine](start/another-machine.md).
 
 [Start here](start.md)
 

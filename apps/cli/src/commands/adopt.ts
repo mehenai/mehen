@@ -29,7 +29,7 @@ import { type VerifyReport, verifyPlan } from "../adopt/verify.ts"
 import { type AdoptInventory, type InventoryBatch, batchRows, inventoryItems, inventoryLines } from "../adopt/inventory.ts"
 import { type AppliedBatch, ComparedSchema, LEFT_ASIDE, NOT_INDEXED, QUARANTINE_DIR, type RetireInputs, type RetireReport, assessRetire, planFiles, quarantine, retireFailed, retireReport, unfinishedMoves, unretire } from "../adopt/retire.ts"
 import { readRegularFile } from "../backup/files.ts"
-import { requireSnapshot } from "../backup/guard.ts"
+import { requireSnapshot, snapshotCommand } from "../backup/guard.ts"
 import { readSnapshotRecords } from "../backup/state.ts"
 import { resolveHome } from "../home.ts"
 import { readRunLog, runLogPath } from "../run/run-log.ts"
@@ -67,6 +67,7 @@ type FlagName = "root" | "no-defaults" | "depth" | "include" | "exclude" | "out"
 
 // `positionals`: how many, or "paths" for any number of file paths.
 const SUBCOMMANDS: Record<string, { flags: FlagName[]; positionals: number | "paths" }> = {
+  file: { flags: ["out", "home", "per-project"], positionals: 1 },
   scan: { flags: ["root", "no-defaults", "depth", "include", "exclude", "out"], positionals: 0 },
   plan: { flags: ["scan", "out", "home", "check", "plan", "per-project"], positionals: 0 },
   submit: { flags: ["plan", "join", "snapshot", "reason", "wait", "timeout"], positionals: 0 },
@@ -118,6 +119,99 @@ async function outFlag(args: ParsedArgs): Promise<string | null> {
   return path
 }
 
+// ---------------------------------------------------------------- file
+
+// Scan and plan a single credential file (such as .env) in one step without
+// walking the rest of the machine. Keeps the same OutputGuard, sealing and
+// snapshot requirements as the full adopt workflow.
+async function runFile(fileArg: string, args: ParsedArgs, env: Env, out: AdoptOutput): Promise<number> {
+  const candidate = resolve(fileArg)
+  let info: import("node:fs").Stats
+  try {
+    info = await lstat(candidate)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    throw new CliError("not_found", `${candidate} cannot be read (${code ?? "missing"}).`, { command: HELP, say: "Give the path to an existing .env or credential file." })
+  }
+  if (info.isSymbolicLink()) throw usageError(`${candidate} is a symlink; adopt reads regular files only.`, HELP)
+  if (!info.isFile()) throw usageError(`${candidate} is not a file; use \`mehen adopt scan --root ${candidate} --no-defaults\` for a folder.`, HELP)
+  const resolved = await realpath(candidate)
+  if (sourceType(resolved) === null) throw usageError(`${resolved} is not a supported credential file (.env, .env.*, .dev.vars, .envrc, or a file under .local-secrets).`, HELP)
+
+  const dir = adoptDir(env)
+  const outPath = await outFlag(args)
+  const homes = await parseHomes(args)
+  const { result: scan, path: scanPath } = await scanToFile(env, { roots: [resolved], defaults: false, depth: 0, include: [], exclude: [], out: null }, out.guard)
+  const planned = await planFromScan(scan, homes, args.bool("per-project"), outPath ?? join(dir, PLAN_FILE), env, out)
+  const snapCmd = snapshotCommand(planned.path)
+  const submitCmd = `mehen adopt submit --plan ${planned.path} --wait`
+  const applyCmd = `mehen adopt apply --plan ${planned.path}`
+  if (out.json) {
+    out.result({
+      file: resolved,
+      scan: scanPath,
+      plan: planned.path,
+      workspace: planned.workspace,
+      ...planned.counts,
+      items: planned.plan.items.map((item) => ({ ref: item.ref, slug: item.slug, kind: item.kind, provider: item.provider, home: item.home, include: item.include })),
+      folders: planned.plan.folders,
+      check: planned.check,
+      connectors: planned.plan.connectors ?? [],
+      sharedValues: planned.sharedValues,
+      next: { snapshot: snapCmd, submit: submitCmd, apply: applyCmd },
+    })
+    return EXIT.ok
+  }
+  for (const error of scan.errors.slice(0, 20)) out.line(`${error.path}:${error.line}: ${error.why}`)
+  out.line(`planned ${planned.counts.items} item${planned.counts.items === 1 ? "" : "s"} (${planned.counts.included} to upload${comparesNote(planned.check)}${batchesNote(planned.check)}) from ${resolved} for workspace ${planned.workspace}; wrote ${planned.path}`)
+  if (planned.plan.items.length > 0) {
+    const rows: Text[][] = [
+      ["ITEM", "KIND", "PROVIDER", "HOME", "INCLUDE"],
+      ...planned.plan.items.map((item) => [item.slug, item.kind, item.provider ?? "-", item.home.kind === "project" ? `project:${item.home.project}` : item.home.kind, item.include ? "yes" : "no"]),
+    ]
+    for (const line of table(rows)) out.line(line)
+  }
+  printCheck(planned.check, out)
+  for (const line of connectorLines(planned.plan)) out.line(line)
+  if (planned.sharedValues.why) out.line(planned.sharedValues.why)
+  out.line(`next 1:  ${snapCmd}`)
+  out.line(`next 2:  ${submitCmd}`)
+  out.line(`next 3:  ${applyCmd}`)
+  return EXIT.ok
+}
+
+async function parseHomes(args: ParsedArgs): Promise<Map<string, FolderHome>> {
+  const homes = new Map<string, FolderHome>()
+  for (const text of args.list("home")) {
+    const parsed = parseFolderHome(text)
+    if (!parsed) throw usageError(`--home ${JSON.stringify(text)} is not <folder>=private|workspace|project:<slug>|skip.`, HELP)
+    // The scan holds real paths; a folder named through a symlink is matched by its real path.
+    const folder = resolve(parsed.folder)
+    homes.set(await realpath(folder).catch(() => folder), parsed.home)
+  }
+  return homes
+}
+
+async function planFromScan(scan: Awaited<ReturnType<typeof readScan>>, homes: Map<string, FolderHome>, perProject: boolean, path: string, env: Env, out: AdoptOutput) {
+  const dir = adoptDir(env)
+  const unmatched = unmatchedHomes(scan, homes)
+  if (unmatched.length) throw usageError(`--home ${unmatched.join(", ")}: no folder the scan found is there or below it, so it would change nothing.`, HELP)
+  const session = await openSession(env)
+  const repos = [...new Map(scan.entries.flatMap((e) => (e.repo ? [[e.repo.root, e.repo.remote] as const] : []))).entries()].map(([root, remote]) => ({ root, remote }))
+  const facts = await vaultFacts(session.api, repos, [], { ownerIsMember: session.config.owner?.kind === "member" })
+  const workspace = session.config.workspaceSlug ?? session.config.tenant
+  // Only an owner's or admin's machine may store a workspace credential.
+  const mayShare = facts.ownerRole === "owner" || facts.ownerRole === "admin"
+  const { storedSlugs, unappliedSlugs } = await storedSlugsFor(session.api, dir, workspace)
+  const context: PlanContext = { workspace, vault: session.vaultUrl, machine: machineName(), home: homeDir(env), visibleItems: facts.visibleItems, homes, existing: facts.existing, projectMismatch: facts.projectMismatch, storedSlugs, unappliedSlugs, sharedValues: mayShare && !perProject ? "workspace" : "per-project" }
+  const plan = buildPlan(scan, context)
+  const check = checkPlan(plan, { protectedEnvs: facts.protectedEnvs, canCreateProjects: facts.canCreateProjects, boundVars: facts.boundVars, unappliedSlugs, projectMismatch: [...facts.projectMismatch.values()] })
+  const keptPerProject = !mayShare && !perProject && sharedIfAllowed(scan, context) > 0
+  await writePrivateFile(path, `${JSON.stringify(plan, null, 2)}\n`, out.guard)
+  const counts = { items: plan.items.length, included: check.included, repos: activeRepos(plan).length, services: activeServices(plan).length, possiblyStale: plan.possiblyStale.length, storeOnly: plan.storeOnly.length, liveKeys: check.liveKeys.length }
+  return { path, workspace, plan, check, counts, sharedValues: { home: context.sharedValues, why: keptPerProject ? SHARED_KEPT_PER_PROJECT : null } }
+}
+
 // ---------------------------------------------------------------- scan
 
 async function runScan(args: ParsedArgs, env: Env, out: AdoptOutput): Promise<number> {
@@ -145,42 +239,20 @@ async function runPlan(args: ParsedArgs, env: Env, out: AdoptOutput): Promise<nu
   }
   if (given(args, "plan")) throw usageError("--plan goes with --check; to write the plan elsewhere use --out.", HELP)
   const outPath = await outFlag(args)
-  const homes = new Map<string, FolderHome>()
-  for (const text of args.list("home")) {
-    const parsed = parseFolderHome(text)
-    if (!parsed) throw usageError(`--home ${JSON.stringify(text)} is not <folder>=private|workspace|project:<slug>|skip.`, HELP)
-    // The scan holds real paths; a folder named through a symlink is matched by its real path.
-    const folder = resolve(parsed.folder)
-    homes.set(await realpath(folder).catch(() => folder), parsed.home)
-  }
+  const homes = await parseHomes(args)
   const scanPath = pathFlag(args, "scan", join(dir, SCAN_FILE))
   const scan = await readScan(scanPath)
-  const unmatched = unmatchedHomes(scan, homes)
-  if (unmatched.length) throw usageError(`--home ${unmatched.join(", ")}: no folder the scan found is there or below it, so it would change nothing.`, HELP)
-  const session = await openSession(env)
-  const repos = [...new Map(scan.entries.flatMap((e) => (e.repo ? [[e.repo.root, e.repo.remote] as const] : []))).entries()].map(([root, remote]) => ({ root, remote }))
-  const facts = await vaultFacts(session.api, repos, [], { ownerIsMember: session.config.owner?.kind === "member" })
-  const workspace = session.config.workspaceSlug ?? session.config.tenant
-  // Only an owner's or admin's machine may store a workspace credential.
-  const mayShare = facts.ownerRole === "owner" || facts.ownerRole === "admin"
-  const { storedSlugs, unappliedSlugs } = await storedSlugsFor(session.api, dir, workspace)
-  const context: PlanContext = { workspace, vault: session.vaultUrl, machine: machineName(), home: homeDir(env), visibleItems: facts.visibleItems, homes, existing: facts.existing, projectMismatch: facts.projectMismatch, storedSlugs, unappliedSlugs, sharedValues: mayShare && !args.bool("per-project") ? "workspace" : "per-project" }
-  const plan = buildPlan(scan, context)
-  const check = checkPlan(plan, { protectedEnvs: facts.protectedEnvs, canCreateProjects: facts.canCreateProjects, boundVars: facts.boundVars, unappliedSlugs, projectMismatch: [...facts.projectMismatch.values()] })
-  const keptPerProject = !mayShare && !args.bool("per-project") && sharedIfAllowed(scan, context) > 0
-  const path = outPath ?? join(dir, PLAN_FILE)
-  await writePrivateFile(path, `${JSON.stringify(plan, null, 2)}\n`, out.guard)
-  const counts = { items: plan.items.length, included: check.included, repos: activeRepos(plan).length, services: activeServices(plan).length, possiblyStale: plan.possiblyStale.length, storeOnly: plan.storeOnly.length, liveKeys: check.liveKeys.length }
+  const planned = await planFromScan(scan, homes, args.bool("per-project"), outPath ?? join(dir, PLAN_FILE), env, out)
   if (out.json) {
-    out.result({ plan: path, workspace, ...counts, folders: plan.folders, check, connectors: plan.connectors ?? [], sharedValues: { home: context.sharedValues, why: keptPerProject ? SHARED_KEPT_PER_PROJECT : null } })
+    out.result({ plan: planned.path, workspace: planned.workspace, ...planned.counts, folders: planned.plan.folders, check: planned.check, connectors: planned.plan.connectors ?? [], sharedValues: planned.sharedValues })
     return EXIT.ok
   }
-  out.line(`planned ${counts.items} items (${counts.included} to upload${comparesNote(check)}${batchesNote(check)}) for workspace ${workspace} from ${Object.keys(plan.sources).length} names in ${plan.folders.length} folders, ${counts.repos} repos and ${counts.services} services; ${counts.possiblyStale} possibly stale (check before revoking at the provider), ${counts.storeOnly} stored only, ${counts.liveKeys} live ${counts.liveKeys === 1 ? "key" : "keys"} held back; wrote ${path}`)
-  const rows: Text[][] = [["FOLDER", "HOME", "ITEMS"], ...plan.folders.map((f) => [f.path, f.home === "project" ? `project:${f.project ?? "?"}` : f.home, String(f.items)])]
+  out.line(`planned ${planned.counts.items} items (${planned.counts.included} to upload${comparesNote(planned.check)}${batchesNote(planned.check)}) for workspace ${planned.workspace} from ${Object.keys(planned.plan.sources).length} names in ${planned.plan.folders.length} folders, ${planned.counts.repos} repos and ${planned.counts.services} services; ${planned.counts.possiblyStale} possibly stale (check before revoking at the provider), ${planned.counts.storeOnly} stored only, ${planned.counts.liveKeys} live ${planned.counts.liveKeys === 1 ? "key" : "keys"} held back; wrote ${planned.path}`)
+  const rows: Text[][] = [["FOLDER", "HOME", "ITEMS"], ...planned.plan.folders.map((f) => [f.path, f.home === "project" ? `project:${f.project ?? "?"}` : f.home, String(f.items)])]
   for (const line of table(rows)) out.line(line)
-  printCheck(check, out)
-  for (const line of connectorLines(plan)) out.line(line)
-  if (keptPerProject) out.line(SHARED_KEPT_PER_PROJECT)
+  printCheck(planned.check, out)
+  for (const line of connectorLines(planned.plan)) out.line(line)
+  if (planned.sharedValues.why) out.line(planned.sharedValues.why)
   out.line("then:    review the plan; change a folder with --home <folder>=private|workspace|project:<slug>|skip and plan again, or edit the file and run mehen adopt plan --check")
   return EXIT.ok
 }
@@ -654,9 +726,9 @@ export function printInventory(inventory: AdoptInventory, out: AdoptOutput): voi
 // ---------------------------------------------------------------- the command
 
 export const adoptCommand: Command = {
-  summary: "adopt the credentials already on this machine (mehen adopt scan|plan|submit|status|cancel|apply|verify|retire|unretire|inventory)",
+  summary: "adopt the credentials already on this machine (mehen adopt file|scan|plan|submit|status|cancel|apply|verify|retire|unretire|inventory)",
   spec: {
-    usage: "mehen adopt scan [--root <dir>]... [--no-defaults] [--depth <n>] [--include <glob>]... [--exclude <glob>]... [--out <path>] | plan [--scan <path>] [--home <folder>=<home>]... [--per-project] [--out <path>] | plan --check [--plan <path>] | submit [--plan <path>] [--join <adp_id>]... [--snapshot <snp_id>] [--reason <text>] [--wait] [--timeout <duration>] | status <adp_id> | cancel <adp_id> | apply [--plan <path>] [--adoption <adp_id>] [--repo <dir>]... [--env <env>] [--dry-run] | verify [--plan <path>] [--adoption <adp_id>] [--repo <dir>]... | retire [--plan <path>] [--repo <dir>]... [--path <file>]... [--compared <compare.json>] [--min-runs <n>] [--min-days <n>] [--yes] | unretire (<path>... | --all) | inventory [--plan <path>]",
+    usage: "mehen adopt file <path> [--home <folder>=<home>]... [--per-project] [--out <path>] | scan [--root <dir>]... [--no-defaults] [--depth <n>] [--include <glob>]... [--exclude <glob>]... [--out <path>] | plan [--scan <path>] [--home <folder>=<home>]... [--per-project] [--out <path>] | plan --check [--plan <path>] | submit [--plan <path>] [--join <adp_id>]... [--snapshot <snp_id>] [--reason <text>] [--wait] [--timeout <duration>] | status <adp_id> | cancel <adp_id> | apply [--plan <path>] [--adoption <adp_id>] [--repo <dir>]... [--env <env>] [--dry-run] | verify [--plan <path>] [--adoption <adp_id>] [--repo <dir>]... | retire [--plan <path>] [--repo <dir>]... [--path <file>]... [--compared <compare.json>] [--min-runs <n>] [--min-days <n>] [--yes] | unretire (<path>... | --all) | inventory [--plan <path>]",
     flags: {
       root: { type: "list" },
       "no-defaults": { type: "boolean" },
@@ -688,6 +760,7 @@ export const adoptCommand: Command = {
     positionals: { min: 1, max: 1 + MAX_UNRETIRE_PATHS },
   },
   examples: [
+    ["adopt", "file", ".env"],
     ["adopt", "scan"],
     ["adopt", "scan", "--root", "~/code/billing-api", "--no-defaults", "--json"],
     ["adopt", "plan", "--home", "/Users/sam/.local-secrets=private"],
@@ -710,6 +783,7 @@ export const adoptCommand: Command = {
     ["adopt", "inventory", "--workspace", "acme", "--json"],
   ],
   notes: [
+    "file <path> scans and plans one credential file (such as .env) in one step, without walking the rest of the machine, and prints the snapshot, submit and apply commands for that plan.",
     "scan and plan print names, paths, kinds and counts, never a value; the files they write are 0600 under the mehen config root.",
     "No adopt subcommand rewrites or deletes a source file. Only retire --yes moves one, into a quarantine folder under the mehen root, and unretire puts it back.",
     "plan makes a value equal in two or more projects one workspace credential, which every member's machine may use, when this machine's owner is an owner or admin; --per-project keeps one item per project instead. A private home, a folder given a home with --home, a name already in the vault, a live key and a value with any copy in a protected environment are never merged; a protected value stays one item per project.",
@@ -734,9 +808,10 @@ export const adoptCommand: Command = {
       const [sub, ...rest] = args.positionals
       const spec = sub ? SUBCOMMANDS[sub] : undefined
       if (!sub || !spec) throw usageError(`Unknown adopt step ${JSON.stringify(sub ?? "")}; use one of ${Object.keys(SUBCOMMANDS).join(", ")}.`, HELP)
-      if (spec.positionals === "paths" ? rest.length > MAX_UNRETIRE_PATHS : rest.length !== spec.positionals) throw usageError(`mehen adopt ${sub} takes ${spec.positionals === "paths" ? `at most ${MAX_UNRETIRE_PATHS} paths` : spec.positionals === 0 ? "no other arguments" : "an adp_ id"}.`, HELP)
+      if (spec.positionals === "paths" ? rest.length > MAX_UNRETIRE_PATHS : rest.length !== spec.positionals) throw usageError(`mehen adopt ${sub} takes ${spec.positionals === "paths" ? `at most ${MAX_UNRETIRE_PATHS} paths` : spec.positionals === 0 ? "no other arguments" : sub === "file" ? "one file path" : "an adp_ id"}.`, HELP)
       const stray = ALL_FLAGS.filter((f) => given(args, f) && !spec.flags.includes(f))
       if (stray.length) throw usageError(`mehen adopt ${sub} does not take ${stray.map((f) => `--${f}`).join(", ")}.`, HELP)
+      if (sub === "file") return await runFile(rest[0] as string, args, env, out)
       if (sub === "scan") return await runScan(args, env, out)
       if (sub === "plan") return await runPlan(args, env, out)
       if (sub === "submit") return await runSubmit(args, env, out)

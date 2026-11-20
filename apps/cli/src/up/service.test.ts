@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { CliError } from "../errors.ts"
 import { errorJson, errorLines } from "../output.ts"
@@ -7,7 +7,7 @@ import { tempDir } from "../testing/run-mehen.ts"
 import { plainText, segments, styler } from "../tty.ts"
 import { STOP_WAIT_MS, isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, defaultRunner, installService, serviceEnvironment, systemdState, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
 import { openerFor } from "./browser.ts"
-import { agentLines, custodyLine, enrolContext, enrolLines, textLines, timedOut } from "./index.ts"
+import { agentLines, custodyLine, enrolContext, enrolLines, ensureUpGuardLevel, parseUpGuard, textLines, timedOut } from "./index.ts"
 import { keyringAdvice } from "../local-vault.ts"
 
 const plan = { kind: "launchd" as const, command: ["/Users/a/.local/bin/mehen", "serve", "--port", "7787", "--data", "/Users/a/Library/Application Support/Mehen/vault"], dataDir: "/Users/a/Library/Application Support/Mehen/vault", home: "/Users/a", logFile: "/Users/a/Library/Application Support/Mehen/vault/serve.log" }
@@ -440,7 +440,41 @@ describe("review fixes: the agent lines and the level", () => {
     const agents = [{ agent: "cursor", status: "unchanged" }, { agent: "codex", status: "unchanged" }]
     expect(agentLines(setup, { agents, level: "block" })).toContain("  cursor: wired, guard on")
     expect(agentLines(setup, { agents, level: "warn" })).toContain("  cursor: wired, guard installed, warn only")
+    expect(agentLines(setup, { agents, level: "warn" })).toContain("mehen guard block")
+    expect(agentLines(setup, { agents, level: "block" })).not.toContain("warn mode")
     expect(agentLines(setup, { agents, level: "off" })).toContain("  cursor: wired, guard installed, guard off")
     expect(agentLines(setup, { agents, level: "off" })).toContain("  codex: wired, guard installed, guard off")
+    expect(agentLines(setup, { agents, level: "off" })).not.toContain("warn mode")
+  })
+})
+
+describe("mehen up guard defaults", () => {
+  test("parseUpGuard accepts warn, block and off, and refuses anything else", () => {
+    expect(parseUpGuard(null)).toBeNull()
+    expect(parseUpGuard("warn")).toBe("warn")
+    expect(parseUpGuard("block")).toBe("block")
+    expect(parseUpGuard("off")).toBe("off")
+    expect(() => parseUpGuard("strict")).toThrow(CliError)
+  })
+
+  test("a fresh home starts at warn; re-runs keep an existing choice; explicit --guard overrides", async () => {
+    const dir = await tempDir()
+    try {
+      expect(ensureUpGuardLevel(dir.path, null)).toBe("warn")
+      const path = join(dir.path, "guard.json")
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "warn" })
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+
+      // Re-running with a saved choice leaves it alone.
+      writeFileSync(path, '{"level":"block"}\n', { mode: 0o600 })
+      expect(ensureUpGuardLevel(dir.path, null)).toBeNull()
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "block" })
+
+      // Explicit --guard overrides.
+      expect(ensureUpGuardLevel(dir.path, "off")).toBe("off")
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "off" })
+    } finally {
+      await dir.remove()
+    }
   })
 })

@@ -1,0 +1,60 @@
+# Self-hosted Mehen vault on a server you own.
+#
+# With an existing reverse proxy (Tailscale serve, host Caddy, Nginx):
+#   MEHEN_SERVE_ORIGIN=https://vault.example.com docker compose up -d
+#
+# With bundled automatic HTTPS via Caddy (ports 80 and 443 open to this host):
+#   MEHEN_SERVE_ORIGIN=https://vault.example.com docker compose --profile caddy up -d
+#
+# Read the one-time sign-up code once running:
+#   docker compose exec mehen cat /data/vault/bootstrap
+
+services:
+  mehen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      MEHEN_SERVE_ORIGIN: ${MEHEN_SERVE_ORIGIN:?Set MEHEN_SERVE_ORIGIN to the https origin, e.g. https://vault.example.com}
+      MEHEN_SERVE_HOST: 0.0.0.0
+      MEHEN_SERVE_PORT: 7787
+      MEHEN_SERVE_DATA: /data/vault
+    ports:
+      - "127.0.0.1:7787:7787"
+    volumes:
+      - mehen-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2-alpine
+    profiles:
+      - caddy
+    restart: unless-stopped
+    depends_on:
+      mehen:
+        condition: service_healthy
+    command:
+      - caddy
+      - reverse-proxy
+      - --from
+      - ${MEHEN_SERVE_ORIGIN:?Set MEHEN_SERVE_ORIGIN to the https origin, e.g. https://vault.example.com}
+      - --to
+      - mehen:7787
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  mehen-data:
+  caddy-data:
+  caddy-config:

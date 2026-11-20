@@ -297,4 +297,44 @@ describe("mehen init", () => {
     expect(slugFrom("123-app")).toBe("app")
     expect(slugFrom("--")).toBe("")
   })
+
+  test("--local writes uncommitted mehen.local.toml, warns unless gitignored, and refuses if either manifest exists", async () => {
+    const repo = tempDir("mehen-init-local-")
+    try {
+      git(repo, "init", "-q")
+      git(repo, "remote", "add", "origin", "git@github.com:Example/My_Repo.git")
+      const api = projectApi()
+      const deps = fakeDeps(api, repo)
+      expect(await initCommand(["--local", "--json"], deps)).toBe(EXIT.ok)
+      const report = JSON.parse(deps.out.text()) as { path: string; local?: true; warning?: string; next: { say: string } }
+      expect(report.path).toBe(join(repo, "mehen.local.toml"))
+      expect(report.local).toBe(true)
+      expect(report.warning).toContain("mehen.local.toml is not ignored by git")
+      expect(report.next.say).toContain("do not commit it")
+      expect(existsSync(join(repo, "mehen.toml"))).toBe(false)
+      expect(readFileSync(join(repo, "mehen.local.toml"), "utf8")).toContain("do not commit")
+
+      // Refuses plain mehen init when mehen.local.toml already exists, so both never coexist.
+      const second = fakeDeps(projectApi(), repo)
+      expect(await initCommand([], second)).toBe(EXIT.error)
+      expect(second.err.text()).toContain("mehen.local.toml already exists")
+
+      // When mehen.local.toml is ignored by git, no ignore warning is printed.
+      const ignored = tempDir("mehen-init-local-ignored-")
+      try {
+        git(ignored, "init", "-q")
+        git(ignored, "remote", "add", "origin", "git@github.com:Example/My_Repo.git")
+        writeFileSync(join(ignored, ".gitignore"), "mehen.local.toml\n")
+        const boundDeps = fakeDeps(projectApi(BOUND), ignored)
+        expect(await initCommand(["--local", "--json"], boundDeps)).toBe(EXIT.ok)
+        const boundReport = JSON.parse(boundDeps.out.text()) as { path: string; local?: true; bound?: true; warning?: string }
+        expect(boundReport).toMatchObject({ path: join(ignored, "mehen.local.toml"), local: true, bound: true })
+        expect(boundReport.warning).toBeUndefined()
+      } finally {
+        removeDir(ignored)
+      }
+    } finally {
+      removeDir(repo)
+    }
+  })
 })

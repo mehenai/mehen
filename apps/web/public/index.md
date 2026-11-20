@@ -35,3 +35,5 @@ setup.md says when to install and how to check for an existing `mehen` first. Th
 ```sh
 curl -fsSL https://mehen.dev/install | sh
 ```
+
+Or, with Node.js: `npx @mehenai/cli up` (or `npm create mehen`), which runs the same signed installer the first time.

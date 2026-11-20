@@ -17,6 +17,10 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 The next `mehen` release saves a request the vault holds for approval on the machine that sent it, for an hour, and sends it again once a person approves: `mehen fetch --resume <apr_id>`, `mehen wait <apr_id> --execute`, or through MCP `vault_fetch` with `approval` alone and `vault_wait` with `execute`. Each approval is replayed once, through the same checks as a fresh request; a push is never replayed. The vault is unchanged. See [Approvals](guides/approvals.md) and the CLI's release notes below.
 
+### 20 November 2026: custom credentials in the web UI, `mehen.local.toml`, `mehen adopt file`, Docker self-hosting and `mehen` 0.4.2
+
+**Add a credential** in the web app now includes **Other API (custom host)** (with destination host and optional header name), **Database URL** and **Other secret** (lease-only for `mehen run`), so humans can add non-template keys and program secrets directly in the browser under the same binding, injection and passkey checks. The repository now ships a hardened `Dockerfile` and `compose.yaml` (with an optional Caddy TLS profile) for self-hosting `mehen serve`. In `mehen` 0.4.2, a fresh `mehen up` starts guard hooks in `warn` mode (`--guard block` blocks immediately), `mehen init --local` writes an uncommitted `mehen.local.toml` for solo adoption in shared repos, and `mehen adopt file <path>` scans and plans one `.env` file in a single step.
+
 ### 20 November 2026: agents see six Mehen tools by default
 
 The next `mehen` release serves six MCP tools by default (`vault_status`, `vault_list`, `vault_request`, `vault_fetch`, `vault_env` and `vault_wait`), a quarter of the tool list a host puts in front of the model in every conversation, and the skill becomes a short sheet that sends an agent to `mehen guide <topic>` for the rest. Every other tool is in an opt-in toolset; `mehen setup --toolsets all`, which writes `MEHEN_MCP_TOOLSETS=all` into each agent's `mehen` entry, restores the full list after a restart. See [MCP tools](reference/mcp.md) and the CLI's release notes below.
