@@ -442,6 +442,27 @@ class Parser {
       }
     }
     if (depth > 0) nodes.push({ kind: "unknown", why: "an unclosed $((", runs: true })
+    // Arithmetic reads a variable by its bare name, so every name in it
+    // counts as one the word expands.
+    for (const name of s.slice(this.i + 3, j).match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) word.vars.push(name)
+    this.i = j
+    word.dynamic = true
+  }
+
+  // $[ ... ]: bash's old spelling of arithmetic, read to its matching ].
+  private legacyArithmetic(word: Word, nodes: ShellNode[]): void {
+    const s = this.s
+    nodes.push({ kind: "unknown", why: "arithmetic" })
+    let depth = 1
+    let j = this.i + 2
+    for (; j < s.length && depth > 0; j++) {
+      const c = s[j] as string
+      if (c === "[") depth++
+      else if (c === "]") depth--
+      else if (c === "`" || (c === "$" && s[j + 1] === "(")) nodes.push({ kind: "unknown", why: "a command substitution inside $[ ]", runs: true })
+    }
+    if (depth > 0) nodes.push({ kind: "unknown", why: "an unclosed $[", runs: true })
+    for (const name of s.slice(this.i + 2, j).match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) word.vars.push(name)
     this.i = j
     word.dynamic = true
   }
@@ -456,6 +477,7 @@ class Parser {
       word.dynamic = true
       return
     }
+    if (next === "[") return this.legacyArithmetic(word, nodes)
     if (next === "{") {
       // ${NAME} alone is in the grammar; anything with an operator is not,
       // and one that holds a command substitution runs a command the

@@ -10,7 +10,7 @@ import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path"
 import { loginFiles, sourceType } from "../adopt/sources.ts"
 import { KEY_VARIABLE, type Op, type ShellNode, type Word, literal, parseShell } from "./shell.ts"
-import { OPTION_SPECS, fileCandidates, parseOptions } from "./options.ts"
+import { OPTION_SPECS, parseOptions } from "./options.ts"
 
 export type Finding = { rule: "secret-file" | "secret-in-command" | "secret-in-write"; reason: string; path?: string }
 
@@ -297,6 +297,13 @@ function folderChange(program: string, args: Word[], state: State, home: string,
   const options = words.join("")
   const known = program === "cd" ? /^-[LPe@]+$/ : /^-n$/
   if (words.some((w) => !known.test(w))) {
+    state.cwds = apart ? union(before, null) : null
+    return
+  }
+  // More than one folder: bash refuses it, an older bash takes the first
+  // and zsh reads two as a substitution, so the folder is not known.
+  if (operands.length > 1) {
+    if (program === "pushd") state.stack.push(null)
     state.cwds = apart ? union(before, null) : null
     return
   }
@@ -735,6 +742,46 @@ function expandWord(word: Word, cwd: string, shownAs: string): Matches {
   return { texts, unmatched }
 }
 
+// What an option word might name as a file, for programs whose options the
+// guard does not list (git, curl, rsync, an editor): the word itself, as the
+// shell expands it, and in each word a brace makes, the value after `=`, a
+// value attached to a short option, each also without a leading @ (curl -d
+// @file, a response file). A `key=value` word counts its value too (git -c
+// include.path=file, curl -F name=@file). A part keeps the word's globs, so
+// it is judged as the files it could match as well as its own spelling.
+function fileCandidates(word: Word): Word[] {
+  if (word.dynamic || word.process) return []
+  const found: Word[] = [word]
+  const braces = word.brace ? braceExpand(word.pattern) : { words: [word.pattern] }
+  // A brace the guard will not expand is refused when the word is judged.
+  if ("refuse" in braces) return found
+  const seen = new Set<string>()
+  for (const pattern of braces.words) {
+    const parts: string[] = []
+    const eq = unescapedIndex(pattern, "=")
+    if (eq !== -1) parts.push(pattern.slice(eq + 1))
+    if (/^-[A-Za-z]./.test(pattern) && !pattern.startsWith("--")) parts.push(pattern.slice(2))
+    for (const part of [...parts]) if (part.startsWith("@")) parts.push(part.slice(1))
+    if (pattern.startsWith("@")) parts.push(pattern.slice(1))
+    for (const part of parts) {
+      const text = unescapePattern(part)
+      if (text === "" || text === "-" || seen.has(part)) continue
+      seen.add(part)
+      found.push({ text, dynamic: false, glob: word.glob && hasGlob(part), brace: false, pattern: part, vars: [] })
+    }
+  }
+  return found
+}
+
+function unescapedIndex(pattern: string, char: string): number {
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]
+    if (c === "\\") i++
+    else if (c === char) return i
+  }
+  return -1
+}
+
 // ---- find feeding a reader --------------------------------------------------
 //
 // The one form the guard follows: `find [-H|-P] <start>... <tests>...
@@ -1105,11 +1152,18 @@ function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
         let j = 0
         let lookup = false
         while (j < rest.length && !(rest[j] as Word).dynamic && (rest[j] as Word).text.startsWith("-")) {
-          if ((rest[j] as Word).text === "--") {
+          const text = (rest[j] as Word).text
+          if (text === "--") {
             j++
             break
           }
-          if (/[vV]/.test((rest[j] as Word).text)) lookup = true
+          // command takes only -p, -v and -V; with any other option it runs
+          // nothing, so what follows is not run as a command.
+          if (!/^-[pvV]+$/.test(text)) {
+            outside(ctx, `command ${text}`)
+            return out
+          }
+          if (/[vV]/.test(text)) lookup = true
           j++
         }
         if (lookup) return out
@@ -1372,6 +1426,10 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
   if (program === "coproc") return outside(ctx, "a coprocess", true)
   if (program === "source" || program === ".") outside(ctx, `\`${program}\``)
   if (program === "set" && args.some((a) => !a.dynamic && /^[-+][A-Za-z]*[of]/.test(a.text))) outside(ctx, "set -o or set -f")
+  // let evaluates arithmetic, which reads variables by bare name; a name
+  // reference (declare -n) makes one variable another under a new name.
+  if (program === "let") outside(ctx, "let")
+  if (["declare", "typeset", "local"].includes(program) && args.some((a) => !a.dynamic && /^-[A-Za-z]*n/.test(a.text))) outside(ctx, `${program} -n`)
   if (["export", "declare", "typeset", "readonly", "local", "unset"].includes(program)) {
     const special = args.map((a) => ASSIGNED.exec(a.text)?.[1] ?? a.text).find((n) => SPECIAL_VARIABLES.has(n))
     if (special) outside(ctx, `an assignment to ${special}`)
@@ -1648,6 +1706,9 @@ function anyWordReads(ctx: Context): boolean {
     for (const [i, word] of words.entries()) {
       if (word.vars.some((v) => KEY_VARIABLE.test(v))) return true
       if (word.dynamic || word.process) continue
+      // A key variable named bare, as arithmetic, let, a name reference or
+      // an indirect ${!name} read it.
+      if ((word.text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).some((name) => KEY_VARIABLE.test(name))) return true
       const text = word.text
       const program = basename(text)
       if (isReader(program) || program in INTERPRETERS || program === "printenv") return true

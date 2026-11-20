@@ -2,7 +2,9 @@
 // option takes a value, and whether that value is a file the program reads.
 // An option not listed is outside the grammar; since these programs read
 // files, a line that uses one is refused. Taken from each program's GNU
-// manual (coreutils, grep, sed, gawk, diffutils, binutils) and jq's.
+// manual (coreutils, grep, sed, gawk, diffutils, binutils) and jq's, and
+// checked against the BSD and macOS manuals: an option that takes a value
+// on one and none on the other (sed -l) is left out, so it refuses.
 
 import { type Word, literal } from "./shell.ts"
 
@@ -16,7 +18,9 @@ export type Arity = "flag" | "value" | "file" | "optional" | "program" | "progra
 export type OptionSpec = {
   short: Record<string, Arity>
   long: Record<string, Arity>
-  // -NUM, and +NUM, as head, tail and diff take them.
+  // -NUM, as head, tail and diff take it. A +NUM word is a file operand
+  // (tail and uniq once took it as an option, and still may, but it names a
+  // file to every one of them when one exists).
   digits?: boolean
   // What the operands are: files read; a program, then files; nothing
   // read; files read except the last, which is written (cp).
@@ -73,7 +77,7 @@ export const OPTION_SPECS: Record<string, OptionSpec> = {
   uniq: spec({ ...arities("cdDiuz", "flag"), ...arities("fsw", "value") }, { ...names("count repeated ignore-case unique zero-terminated", "flag"), ...names("all-repeated group", "optional"), ...names("skip-fields skip-chars check-chars", "value") }, "files", true),
   cut: spec({ ...arities("nsz", "flag"), ...arities("bcdf", "value") }, { ...names("complement only-delimited zero-terminated", "flag"), ...names("bytes characters delimiter fields output-delimiter", "value") }, "files"),
   diff: spec(
-    { ...arities("abBdeEfilnNpqrsStTuvwyZH", "flag"), ...arities("CUDIFxW", "value"), X: "file" },
+    { ...arities("abBdeEfilnNpqrstTuvwyZH", "flag"), ...arities("CUDIFxWS", "value"), X: "file" },
     {
       ...names("normal brief report-identical-files ed rcs side-by-side left-column suppress-common-lines show-c-function expand-tabs initial-tab suppress-blank-empty new-file unidirectional-new-file ignore-case ignore-tab-expansion ignore-trailing-space ignore-space-change ignore-all-space ignore-blank-lines text strip-trailing-cr recursive minimal speed-large-files no-dereference", "flag"),
       ...names("context unified color", "optional"),
@@ -85,7 +89,7 @@ export const OPTION_SPECS: Record<string, OptionSpec> = {
   ),
   cmp: spec({ ...arities("bls", "flag"), ...arities("in", "value") }, { ...names("print-bytes verbose quiet silent", "flag"), ...names("ignore-initial bytes", "value") }, "files"),
   od: spec({ ...arities("bcdfilosxv", "flag"), ...arities("AjNSt", "value"), w: "optional" }, { ...names("output-duplicates traditional", "flag"), ...names("strings width", "optional"), ...names("address-radix skip-bytes read-bytes format endian", "value") }, "files"),
-  hexdump: spec({ ...arities("bcCdovxL", "flag"), ...arities("ens", "value"), f: "file" }, { ...names("one-byte-octal one-byte-char canonical two-bytes-decimal two-bytes-octal two-bytes-hex no-squeezing", "flag"), color: "optional", ...names("format length skip", "value"), "format-file": "file" }, "files"),
+  hexdump: spec({ ...arities("bcCdovx", "flag"), ...arities("ens", "value"), f: "file", L: "optional" }, { ...names("one-byte-octal one-byte-char canonical two-bytes-decimal two-bytes-octal two-bytes-hex no-squeezing", "flag"), color: "optional", ...names("format length skip", "value"), "format-file": "file" }, "files"),
   base64: spec({ ...arities("di", "flag"), w: "value" }, { ...names("decode ignore-garbage", "flag"), wrap: "value" }, "files"),
   strings: spec({ ...arities("adfow", "flag"), ...arities("ntTesU", "value") }, { ...names("all data print-file-name include-all-whitespace", "flag"), ...names("bytes radix target encoding output-separator unicode", "value") }, "files", true),
   tr: spec(arities("cCdst", "flag"), names("complement delete squeeze-repeats truncate-set1", "flag"), "none"),
@@ -99,7 +103,7 @@ export const OPTION_SPECS: Record<string, OptionSpec> = {
     "sources",
   ),
   sed: spec(
-    { ...arities("nrEsuz", "flag"), i: "optional", l: "value", e: "program", f: "programFile" },
+    { ...arities("nrEsuz", "flag"), i: "optional", e: "program", f: "programFile" },
     { ...names("null-data zero-terminated quiet silent posix regexp-extended separate sandbox unbuffered debug follow-symlinks", "flag"), "in-place": "optional", "line-length": "value", expression: "program", file: "programFile" },
     "program-then-files",
   ),
@@ -137,7 +141,7 @@ export function parseOptions(spec: OptionSpec, args: Word[]): ParsedOptions {
   for (let i = 0; i < args.length; i++) {
     const word = args[i] as Word
     const text = word.text
-    if (ended || rest || word.dynamic || word.process || text === "-" || !(text.startsWith("-") || (spec.digits && /^\+\d+$/.test(text)))) {
+    if (ended || rest || word.dynamic || word.process || text === "-" || !text.startsWith("-")) {
       out.operands.push(word)
       continue
     }
@@ -145,7 +149,7 @@ export function parseOptions(spec: OptionSpec, args: Word[]): ParsedOptions {
       ended = true
       continue
     }
-    if (spec.digits && /^[-+]\d+$/.test(text)) continue
+    if (spec.digits && /^-\d+$/.test(text)) continue
     if (text.startsWith("--")) {
       const eq = text.indexOf("=")
       const name = text.slice(2, eq === -1 ? undefined : eq)
@@ -186,19 +190,4 @@ export function parseOptions(spec: OptionSpec, args: Word[]): ParsedOptions {
     }
   }
   return out
-}
-
-// What an option word might name as a file, for programs whose options the
-// guard does not list (git, curl, rsync, an editor): the word itself, the
-// value after `=`, a value attached to a short option, each also without a
-// leading @ (curl -d @file, a response file). A `key=value` word counts
-// its value too (git -c include.path=file, curl -F name=@file).
-export function fileCandidates(word: Word): Word[] {
-  if (word.dynamic || word.process) return []
-  const text = word.text
-  const found = [text]
-  if (text.includes("=")) found.push(text.slice(text.indexOf("=") + 1))
-  if (/^-[A-Za-z]./.test(text) && !text.startsWith("--")) found.push(text.slice(2))
-  for (const candidate of [...found]) if (candidate.startsWith("@")) found.push(candidate.slice(1))
-  return [...new Set(found)].filter((c) => c !== "" && c !== "-").map((c) => literal(c))
 }
