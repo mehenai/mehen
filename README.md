@@ -28,8 +28,8 @@ The guard hooks, `mehen guard install`, add a pre-tool check to Claude Code, pi,
 
 | | Command | For |
 | --- | --- | --- |
-| This machine | `mehen up` | You, with the vault beside your agents on `localhost`, started again at login. |
-| Another machine you own | `mehen serve --origin https://<name>` | A box at home or on your tailnet, behind TLS from Tailscale serve or Caddy. Agent machines enrol with `MEHEN_VAULT_URL=https://<name>`. |
+| This machine | `mehen up` | You, with the vault beside your agents on `localhost`, started again at login. Keeps keys out of context, transcripts, logs, shell history, `.env` files and unbound hosts. |
+| Another machine you own | `mehen serve --origin https://<name>` | A box at home or on your tailnet, behind TLS from Tailscale serve or Caddy. Moves the vault's files off the agent's machine too. Agent machines enrol with `MEHEN_VAULT_URL=https://<name>`. |
 | Mehen Cloud | `https://app.mehen.dev` | Teams: shared workspaces, members and roles, approvals from a phone. Invite only for now; write to hello@mehen.dev. |
 
 The engine is the same in all three. One machine can be enrolled in a local vault and a Cloud workspace at once, with one key per vault and workspace. [Local or Cloud](https://docs.mehen.dev/start/local-or-cloud) compares them.
@@ -49,7 +49,7 @@ The [threat model](https://docs.mehen.dev/security/threat-model) goes attacker b
 
 ## Platforms
 
-The `mehen` command line runs on macOS, and on Linux with glibc (WSL included), on arm64 and x64. Windows and musl-based Linux are not supported yet. An npm package is coming; until then, install with the script above, which checks the binary's SHA-256. The npm package called `mehen` is an unrelated tool.
+The `mehen` command line runs on macOS, and on Linux with glibc (WSL included), on arm64 and x64. Windows and musl-based Linux are not supported yet. Install with the script above or through npm (`npx @mehenai/cli up` or `npm create mehen`), both of which run the same signed installer and check the binary's SHA-256. Mehen is not on Homebrew, and the unscoped npm package called `mehen` is an unrelated tool.
 
 ## Repository layout
 
