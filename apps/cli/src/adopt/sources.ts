@@ -206,15 +206,32 @@ export async function readSource(path: string): Promise<ReadResult> {
 export type WalkSkip = { path: string; why: string }
 
 // Every candidate file under a root, as a real path inside that root. A
-// symlinked file is followed only when it resolves inside the root and its
+// regular file given directly as the root is accepted if it passes `accept`
+// and is not excluded; a symlinked root is never followed. Inside a directory,
+// a symlinked file is followed only when it resolves inside the root and its
 // target is not excluded; a symlinked directory is never entered.
 export async function walkRoot(root: ScanRoot, accept: (path: string) => boolean, excluded: (path: string) => boolean, skipped: WalkSkip[]): Promise<string[]> {
+  let info: import("node:fs").Stats
+  try {
+    info = await lstat(root.path)
+  } catch {
+    return []
+  }
+  if (info.isSymbolicLink()) {
+    skipped.push({ path: root.path, why: "a symlink" })
+    return []
+  }
   let top: string
   try {
     top = await realpath(root.path)
   } catch {
     return []
   }
+  if (info.isFile()) {
+    if (excluded(top)) return []
+    return accept(top) ? [top] : []
+  }
+  if (!info.isDirectory()) return []
   const found: string[] = []
   const visit = async (dir: string, depth: number): Promise<void> => {
     let entries: import("node:fs").Dirent[]
