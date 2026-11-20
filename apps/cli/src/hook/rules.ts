@@ -404,22 +404,60 @@ function lnPairs(ln: LnArgs, cwd: string): { target: Word; link: string }[] {
 type GlobMatcher = { test(text: string): boolean }
 type GlobToken = { kind: "star" } | { kind: "one"; test: (c: string) => boolean }
 
+// POSIX classes as the C locale has them. A character past ASCII is in
+// every class, and a class name fnmatch does not know matches anything,
+// so the guard never matches fewer files than the program would.
+const POSIX_CLASSES: Record<string, RegExp> = {
+  alpha: /[A-Za-z]/,
+  digit: /[0-9]/,
+  alnum: /[A-Za-z0-9]/,
+  upper: /[A-Z]/,
+  lower: /[a-z]/,
+  space: /[ \t\n\r\f\v]/,
+  blank: /[ \t]/,
+  punct: /[!-\/:-@[-`{-~]/,
+  xdigit: /[0-9A-Fa-f]/,
+  print: /[ -~]/,
+  graph: /[!-~]/,
+  cntrl: /[\x00-\x1f\x7f]/,
+}
+
+// Where a [:name:], [=c=] or [.c.] that opens at `at` ends (just past its
+// closing bracket), or -1 when none opens there.
+function posixEnd(text: string, at: number): number {
+  const kind = text[at + 1]
+  if (text[at] !== "[" || (kind !== ":" && kind !== "=" && kind !== ".")) return -1
+  const end = text.indexOf(`${kind}]`, at + 2)
+  return end === -1 ? -1 : end + 2
+}
+
 function globClass(body: string, ignoreCase: boolean): (c: string) => boolean {
   const negate = body.startsWith("!") || body.startsWith("^")
   const items: [string, string][] = []
+  const classes: ((c: string) => boolean)[] = []
   const set = negate ? body.slice(1) : body
   // \ makes the next character a plain member, as fnmatch reads it.
   const member = (k: number): [string, number] => (set[k] === "\\" && k + 1 < set.length ? [set[k + 1] as string, k + 1] : [set[k] as string, k])
   for (let k = 0; k < set.length; k++) {
+    const end = posixEnd(set, k)
+    if (end !== -1) {
+      const name = set.slice(k + 2, end - 2)
+      const known = set[k + 1] === ":" ? POSIX_CLASSES[name] : undefined
+      if (known) classes.push((c) => c.charCodeAt(0) > 0x7f || known.test(c))
+      else if (set[k + 1] !== ":" && name.length === 1) items.push([name, name])
+      else classes.push(() => true)
+      k = end - 1
+      continue
+    }
     const [lo, at] = member(k)
     k = at
     if (set[k + 1] === "-" && k + 2 < set.length) {
-      const [hi, end] = member(k + 2)
+      const [hi, end2] = member(k + 2)
       items.push([lo, hi])
-      k = end
+      k = end2
     } else items.push([lo, lo])
   }
-  const inSet = (c: string) => items.some(([lo, hi]) => c >= lo && c <= hi)
+  const inSet = (c: string) => items.some(([lo, hi]) => c >= lo && c <= hi) || classes.some((test) => test(c))
   return (c) => (ignoreCase ? inSet(c.toLowerCase()) || inSet(c.toUpperCase()) : inSet(c)) !== negate
 }
 
@@ -437,12 +475,15 @@ function globMatcher(glob: string, ignoreCase = false): GlobMatcher {
       if (tokens.at(-1)?.kind !== "star") tokens.push({ kind: "star" })
     } else if (ch === "?") tokens.push({ kind: "one", test: () => true })
     else if (ch === "[") {
-      // A ] first in the set, after any ! or ^, or escaped with \, is a
-      // member, not its end.
+      // A ] first in the set (after any ! or ^), an escaped one, or one that
+      // closes a [:class:] is part of the set, not its end.
       let close = i + 1
       if (glob[close] === "!" || glob[close] === "^") close++
       if (glob[close] === "]") close++
-      for (; close < glob.length && glob[close] !== "]"; close++) if (glob[close] === "\\") close++
+      while (close < glob.length && glob[close] !== "]") {
+        const posix = posixEnd(glob, close)
+        close = posix !== -1 ? posix : close + (glob[close] === "\\" ? 2 : 1)
+      }
       if (close >= glob.length) close = -1
       if (close === -1) tokens.push(literal("["))
       else {

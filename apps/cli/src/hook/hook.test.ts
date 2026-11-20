@@ -1087,6 +1087,11 @@ describe("sixth review: reproductions", () => {
     for (const command of ["cat README.[m]d", "cat [!.]*"]) none("proj", command)
   })
 
+  test("a POSIX class inside a bracket set is matched as fnmatch matches it, in grep --include and find -name", () => {
+    for (const command of ["find . -name '.e[][:alpha:]]v' -exec cat {} +", "find . -name '.e[!][:digit:]]v' -exec cat {} +", "grep -r --include='.e[][:alpha:]]v' x .", "grep -r --include='.e[[:alpha:]]v' x .", "grep -r --include='.e[[:nonsense:]]v' x ."]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["grep -r --include='.e[[:digit:]]v' x .", "grep -r --include='*.[[:alpha:]]d' x ."]) none("proj", command)
+  })
+
   test("braces are expanded before options are read, as the shell does", () => {
     for (const command of ["grep -f.{e..e}nv README.md", "grep --file=.{e..e}nv README.md", "grep -f.{e,n}nv README.md", "grep x {-f,-x}.env README.md", "sort --files0-from=.{e..e}nv"]) expect(refused("proj", command)).toEqual(yes(command))
     for (const command of ["echo {1..3}", "git add {a,b}.md", "cat {README,a}.md"]) none("proj", command)
