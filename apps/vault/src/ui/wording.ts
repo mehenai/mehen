@@ -89,7 +89,9 @@ export function describeRule(rule: PolicyInput["rules"][number]): string {
           ? " whose body names a remote MCP server or cannot be read"
           : rule.body === "json-webhook"
             ? " whose body names a webhook or cannot be read"
-            : ""
+            : rule.body === "json-public-url"
+              ? " whose body publishes its output at a public URL or cannot be read"
+              : ""
   const note = rule.note ? ` (${rule.note})` : ""
   return `${action} ${methods} requests${paths}${body}${note}`
 }

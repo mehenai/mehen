@@ -14,7 +14,11 @@ import { BEARER, MODEL_CALLS, NAMED_READS, READS, WRITES } from "./shared.ts"
 // calls that server itself, with whatever headers and authorization the
 // request names, and its MCP tools do not honour require_approval. Stored
 // responses are pinned to an approval too, since their tools carry those
-// headers and that authorization. The API key's details, realtime client
+// headers and that authorization. An image or video request, direct or
+// added inline to a batch, whose storage_options publish the output at a
+// permanent unauthenticated URL (public_url anything but false), or that
+// cannot be read, is pinned to an approval; ordinary generation and
+// private storage pass. The API key's details, realtime client
 // secrets and phone numbers are pinned to an approval; every other read
 // asks, as do deletes and anything else.
 // https://api.x.ai/api-docs/openapi.json
@@ -53,6 +57,13 @@ export const xai: Template = {
         paths: ["/v1/responses", "/v1/chat/completions", "/v1/batches/*/requests"],
         body: "json-remote-mcp",
         note: "names a remote MCP server, which xAI calls itself, or cannot be read",
+      },
+      {
+        action: "approve",
+        methods: ["POST"],
+        paths: ["/v1/images/generations", "/v1/images/edits", "/v1/videos/generations", "/v1/videos/edits", "/v1/videos/extensions", "/v1/batches/*/requests"],
+        body: "json-public-url",
+        note: "publishes the output at a permanent public URL, or cannot be read",
       },
       { action: "approve", methods: READS, paths: ["/v1/api-key"], note: "the API key's own details" },
       {
