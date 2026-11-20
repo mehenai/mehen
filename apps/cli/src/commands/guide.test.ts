@@ -59,4 +59,6 @@ test("the rules the skill moved out are in the guide's topics", () => {
   expect(guideSection("mcp")).toContain("--toolsets all")
   expect(guideSection("mcp")).toContain("MEHEN_MCP_TOOLSETS")
   expect(guideSection("updating")).toContain("Never reinstall over an installed `mehen`")
+  // policy-operations.ts ruleEnded: a 409 for a rule that ended asks once.
+  expect(guideSection("asking-less")).toContain("A 409 saying the rule ended: send once more, which asks; never loop.")
 })
