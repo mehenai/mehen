@@ -70,6 +70,29 @@ loginctl enable-linger "$USER"
 
 The second command starts your user's services when the machine boots, before anyone logs in. Give the vault its own user account on that machine if other people or programs use it: anything running as the vault's user can read its files ([the threat model](../security/threat-model.md#a-vault-on-your-own-machine)).
 
+### Or run it in Docker
+
+The repository includes a hardened `Dockerfile` (unprivileged `mehen` user, `0700` data volume) and `compose.yaml` for running `mehen serve` on a server or homelab.
+
+With an existing reverse proxy on the host (Tailscale serve or your own Caddy):
+
+```sh
+git clone https://github.com/mehenai/mehen && cd mehen
+MEHEN_SERVE_ORIGIN=https://vault.example.com docker compose up -d
+```
+
+Or with bundled automatic HTTPS from Caddy (ports 80 and 443 open to the host):
+
+```sh
+MEHEN_SERVE_ORIGIN=https://vault.example.com docker compose --profile caddy up -d
+```
+
+Then read the one-time sign-up code from the container's volume and continue at step 4:
+
+```sh
+docker compose exec mehen cat /data/vault/bootstrap
+```
+
 ## 4. Make your account
 
 While the vault has no account, it keeps a one-time code in the file `bootstrap` in its data folder, readable only by the vault's user. Read it on the vault's machine and open the sign-up page from any device that reaches the vault:
