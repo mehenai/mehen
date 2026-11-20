@@ -441,9 +441,10 @@ function either(a: Membership, b: Membership): Membership {
 }
 
 // One member of a bracket set, starting at `k`: a character (plain, escaped
-// with \\, or a one-character [=c=] or [.c.]), a [:class:], or something the
-// guard cannot read (a longer collating name); `end` is its last index.
-type SetAtom = { kind: "char"; c: string; end: number } | { kind: "class"; test: (c: string) => Membership; end: number }
+// with \\, or a one-character [=c=] or [.c.]), a [:class:], or a name fnmatch
+// would reject (an unknown class, a longer collating name), which makes it
+// fail the whole pattern; `end` is its last index.
+type SetAtom = { kind: "char"; c: string; end: number } | { kind: "class"; test: (c: string) => Membership; end: number } | { kind: "invalid"; end: number }
 
 function setAtom(set: string, k: number): SetAtom {
   const end = posixEnd(set, k)
@@ -451,17 +452,18 @@ function setAtom(set: string, k: number): SetAtom {
     const name = set.slice(k + 2, end - 2)
     if (set[k + 1] !== ":" && name.length === 1) return { kind: "char", c: name, end: end - 1 }
     const known = set[k + 1] === ":" ? POSIX_CLASSES[name] : undefined
-    return { kind: "class", test: known ? (c) => (c.charCodeAt(0) > 0x7f ? null : known.test(c)) : () => null, end: end - 1 }
+    return known ? { kind: "class", test: (c) => (c.charCodeAt(0) > 0x7f ? null : known.test(c)), end: end - 1 } : { kind: "invalid", end: end - 1 }
   }
   if (set[k] === "\\" && k + 1 < set.length) return { kind: "char", c: set[k + 1] as string, end: k + 1 }
   return { kind: "char", c: set[k] as string, end: k }
 }
 
-function globClass(body: string, ignoreCase: boolean, more: boolean): (c: string) => boolean {
+function globClass(body: string, ignoreCase: boolean, more: boolean): { test: (c: string) => boolean; invalid: boolean } {
   const negate = body.startsWith("!") || body.startsWith("^")
   const items: [string, string][] = []
   const classes: ((c: string) => Membership)[] = []
   const set = negate ? body.slice(1) : body
+  let invalid = false
   for (let k = 0; k < set.length; k++) {
     const first = setAtom(set, k)
     k = first.end
@@ -470,21 +472,24 @@ function globClass(body: string, ignoreCase: boolean, more: boolean): (c: string
     if (set[k + 1] === "-" && k + 2 < set.length && set[k + 2] !== "]") {
       const second = setAtom(set, k + 2)
       k = second.end
-      if (first.kind === "char" && second.kind === "char") items.push([first.c, second.c])
+      if (first.kind === "invalid" || second.kind === "invalid") invalid = true
+      else if (first.kind === "char" && second.kind === "char") items.push([first.c, second.c])
       else classes.push(() => null)
       continue
     }
     if (first.kind === "char") items.push([first.c, first.c])
-    else classes.push(first.test)
+    else if (first.kind === "class") classes.push(first.test)
+    else invalid = true
   }
   const inSet = (c: string): Membership => {
     if (items.some(([lo, hi]) => c >= lo && c <= hi)) return true
     return classes.reduce<Membership>((found, test) => either(found, test(c)), false)
   }
-  return (c) => {
+  const test = (c: string) => {
     const found = ignoreCase ? either(inSet(c.toLowerCase()), inSet(c.toUpperCase())) : inSet(c)
     return found === null ? more : found !== negate
   }
+  return { test, invalid }
 }
 
 function globMatcher(glob: string, ignoreCase = false, more = true): GlobMatcher {
@@ -494,6 +499,9 @@ function globMatcher(glob: string, ignoreCase = false, more = true): GlobMatcher
     return { kind: "one", test: (c) => fold(c) === folded }
   }
   const tokens: GlobToken[] = []
+  // A name fnmatch rejects fails the whole pattern, whatever else matches:
+  // the guard then answers as `more` says for every name.
+  let invalid = false
   for (let i = 0; i < glob.length; i++) {
     const ch = glob[i] as string
     if (ch === "\\" && i + 1 < glob.length) tokens.push(literal(glob[++i] as string))
@@ -513,13 +521,16 @@ function globMatcher(glob: string, ignoreCase = false, more = true): GlobMatcher
       if (close >= glob.length) close = -1
       if (close === -1) tokens.push(literal("["))
       else {
-        tokens.push({ kind: "one", test: globClass(glob.slice(i + 1, close), ignoreCase, more) })
+        const set = globClass(glob.slice(i + 1, close), ignoreCase, more)
+        if (set.invalid) invalid = true
+        tokens.push({ kind: "one", test: set.test })
         i = close
       }
     } else tokens.push(literal(ch))
   }
   return {
     test(text: string): boolean {
+      if (invalid) return more
       let t = 0
       let at = 0
       let star = -1

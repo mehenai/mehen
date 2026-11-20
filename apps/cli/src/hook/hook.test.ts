@@ -1103,7 +1103,7 @@ describe("sixth review: reproductions", () => {
   })
 
   test("a class the guard cannot decide never hides a file: an --exclude it cannot decide leaves the file in", () => {
-    for (const command of ["grep -r --exclude='[[:nonsense:]]*' x .", "grep -r --exclude='.e[![:nonsense:]]v' x .", "grep -r --exclude-dir='[[:nonsense:]]*' x ."]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["grep -r --exclude='[[:nonsense:]]*' x .", "grep -r --exclude='.e[![:nonsense:]]v' x .", "grep -r --exclude-dir='[[:nonsense:]]*' x .", "grep -r --exclude='.e[[:nonsense:]n]v' x .", "grep -r --exclude='.e[[.space.]n]v' x ."]) expect(refused("proj", command)).toEqual(yes(command))
     none("proj", "grep -r --exclude='.e[[:alpha:]]v' x .")
   })
 
