@@ -91,7 +91,7 @@ mehen guard block
 mehen guard off
 ```
 
-`block`, the default, stops the call. `warn` lets it through and shows you the card. `off` says nothing. The level is kept in `guard.json` in the Mehen home; `MEHEN_GUARD=warn` (or `block`, `off`) overrides it for one process. `mehen guard` with no argument prints the level in force.
+`block`, the default when you run `mehen guard install` directly, stops the call. `warn` lets it through and shows you the card; a fresh `mehen up` starts here so existing `.env` repos keep working until you move their keys in (pass `mehen up --guard block`, or run `mehen guard block` once ready). `off` says nothing. The level is kept in `guard.json` in the Mehen home; `MEHEN_GUARD=warn` (or `block`, `off`) overrides it for one process. `mehen guard` with no argument prints the level in force.
 
 ## Keep the agent's shell out of the vault, too
 

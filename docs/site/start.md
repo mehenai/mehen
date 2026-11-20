@@ -52,7 +52,7 @@ It enrols this machine in your new workspace, named after its host name, and ope
 
 ### 4. It wires your agents
 
-It registers Mehen with every agent it finds on this machine: an MCP server called `mehen` and the Mehen skill, in Claude Code, Codex, Cursor, pi, Gemini CLI, OpenCode, VS Code and Claude Desktop ([Register mehen with each agent](guides/harnesses.md)). Then it installs the guard hooks in Claude Code, pi, Cursor and Codex, which stop an agent reading `.env` and other key files or pasting a key into a command or a file, and tell it what to use instead ([The guard hooks](guides/guard.md)). Restart each agent so it picks Mehen up. In Codex, open `/hooks` and trust Mehen's two hooks; Codex runs a new or changed hook only once you do. `--no-agents` leaves the agents alone.
+It registers Mehen with every agent it finds on this machine: an MCP server called `mehen` and the Mehen skill, in Claude Code, Codex, Cursor, pi, Gemini CLI, OpenCode, VS Code and Claude Desktop ([Register mehen with each agent](guides/harnesses.md)). Then it installs the guard hooks in Claude Code, pi, Cursor and Codex, which check for `.env` and other key files or keys pasted into commands and files, and tell the agent what to use instead ([The guard hooks](guides/guard.md)). On a fresh machine with no saved guard level, `mehen up` starts the guard in `warn` mode so your existing `.env` repos keep working until you move their keys into Mehen; pass `--guard block` to block immediately, or run `mehen guard block` once your keys are in the vault. Restart each agent so it picks Mehen up. In Codex, open `/hooks` and trust Mehen's two hooks; Codex runs a new or changed hook only once you do. `--no-agents` leaves the agents alone.
 
 ### 5. It says what is next
 
