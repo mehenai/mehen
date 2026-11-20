@@ -1102,8 +1102,8 @@ describe("sixth review: reproductions", () => {
   })
 
   test("a read through another variable, ${!v} with any operator or a name reference, is stopped: the guard cannot name what it reads", () => {
-    for (const command of ['v=OPENAI_API_KEY[0]; printf "%s\\n" "${!v}"', 'declare -n r=OPENAI_API_KEY[0]; printf "%s\\n" "$r"', 'v=${X:-OPENAI_API_KEY}; echo "${!v}"', 'v="OPENAI_""API_KEY"; echo "${!v}"', 'v=OPENAI_API_KEY; printf "%s\\n" "${!v:-fallback}"', 'v=OPENAI_API_KEY; printf "%s\\n" "${!v@Q}"', 'v=OPENAI_API_K\\E\\Y; printf "%s\\n" "${!v}"', "v=$'OPENAI_API_\\x4bEY'; echo \"${!v}\"", 'v=PATH; echo "${!v}"', "declare -n r=PATH; echo $r"]) expect(refused("proj", command)).toEqual(yes(command))
-    for (const command of ['echo "${!OPENAI*}"', 'echo "${!BASH@}"', 'a=(x y); echo "${!a[@]}"', "for i in 1; do X=OPENAI_API_KEY; done"]) none("proj", command)
+    for (const command of ['v=OPENAI_API_KEY[0]; printf "%s\\n" "${!v}"', 'declare -n r=OPENAI_API_KEY[0]; printf "%s\\n" "$r"', 'v=${X:-OPENAI_API_KEY}; echo "${!v}"', 'v="OPENAI_""API_KEY"; echo "${!v}"', 'v=OPENAI_API_KEY; printf "%s\\n" "${!v:-fallback}"', 'v=OPENAI_API_KEY; printf "%s\\n" "${!v@Q}"', 'v=OPENAI_API_K\\E\\Y; printf "%s\\n" "${!v}"', "v=$'OPENAI_API_\\x4bEY'; echo \"${!v}\"", 'v=PATH; echo "${!v}"', "declare -n r=PATH; echo $r", "set -- OPENAI_API_KEY; printf '%s\\n' \"${!1}\"", "echo \"${!#}\""]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ['echo "${!OPENAI*}"', 'echo "${!BASH@}"', 'a=(x y); echo "${!a[@]}"', "for i in 1; do X=OPENAI_API_KEY; done", "sleep 1 & echo ${!}"]) none("proj", command)
   })
 
   test("a class the guard cannot decide never hides a file: an --exclude it cannot decide leaves the file in", () => {

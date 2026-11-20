@@ -1903,15 +1903,17 @@ function anyWordReads(ctx: Context): boolean {
   return false
 }
 
-// Whether the line reads a variable through another, ${!v} with any
-// operator after it (${!v:-x}, ${!v@Q}, ${!v[0]}), whose name is only known
-// when the shell runs: anywhere in the text, quoted or not, so a literal one
-// is stopped too. ${!prefix*}, ${!prefix@}, ${!a[@]} and ${!a[*]} list
-// names or keys, not values, and pass.
+// Whether the line reads a variable through another: ${!v}, ${!1}, ${!#}
+// and the rest, with any operator after (${!v:-x}, ${!v@Q}, ${!v[0]}),
+// whose name is only known when the shell runs. Found anywhere in the
+// text, quoted or not, so a literal one is stopped too. ${!prefix*},
+// ${!prefix@}, ${!a[@]} and ${!a[*]} list names or keys, not values, and
+// ${!} is the last background process's id; those pass.
 function readsIndirectly(command: string): boolean {
-  for (const match of command.matchAll(/\$\{!([A-Za-z_][A-Za-z0-9_]*)/g)) {
-    const rest = command.slice((match.index ?? 0) + match[0].length)
-    if (!/^[*@]\}/.test(rest) && !/^\[[@*]\]\}/.test(rest)) return true
+  for (let at = command.indexOf("${!"); at !== -1; at = command.indexOf("${!", at + 3)) {
+    const rest = command.slice(at + 3)
+    if (rest.startsWith("}") || /^[A-Za-z_][A-Za-z0-9_]*([*@]|\[[@*]\])\}/.test(rest)) continue
+    return true
   }
   return false
 }
