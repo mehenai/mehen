@@ -1,6 +1,6 @@
 {
   "name": "create-mehen",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "npm create mehen: set Mehen up on this machine, so your agent uses your API keys without ever receiving them.",
   "homepage": "https://mehen.dev",
   "repository": { "type": "git", "url": "git+https://github.com/mehenai/mehen.git", "directory": "deploy/npm/create-mehen" },
@@ -11,5 +11,5 @@
   "files": ["bin", "README.md"],
   "engines": { "node": ">=18" },
   "os": ["darwin", "linux"],
-  "dependencies": { "@mehenai/cli": "0.4.1" }
+  "dependencies": { "@mehenai/cli": "0.4.2" }
 }
