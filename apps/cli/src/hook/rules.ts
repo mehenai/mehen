@@ -34,7 +34,7 @@ const SECRET_NAMES = [".env", ".env.local", ".env.production", ".envrc", ".dev.v
 function globMatchesSecret(word: string): boolean {
   const name = basename(word)
   if (!/[*?]/.test(name)) return false
-  const pattern = new RegExp(`^${name.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`)
+  const pattern = globMatcher(name.replace(/[^*?]/g, "\\$&"))
   return SECRET_NAMES.some((candidate) => pattern.test(candidate))
 }
 
@@ -396,26 +396,74 @@ function lnPairs(ln: LnArgs, cwd: string): { target: Word; link: string }[] {
 
 // ---- grep -r -------------------------------------------------------------
 
-// A grep glob as a regular expression over one base name, with \ quoting
-// the next character as GNU grep's --exclude does.
-function globRegex(glob: string): RegExp {
-  let out = ""
+// A grep glob matched against one base name, with \ quoting the next
+// character as GNU grep's --exclude does: `*`, `?` and `[...]` sets (`!` or
+// `^` first negates). Matched without backtracking past the last `*`, so
+// the time is at most the pattern's length times the name's, whatever the
+// pattern holds.
+type GlobMatcher = { test(text: string): boolean }
+type GlobToken = { kind: "star" } | { kind: "one"; test: (c: string) => boolean }
+
+function globClass(body: string, ignoreCase: boolean): (c: string) => boolean {
+  const negate = body.startsWith("!") || body.startsWith("^")
+  const items: [string, string][] = []
+  const set = negate ? body.slice(1) : body
+  for (let k = 0; k < set.length; k++) {
+    const lo = set[k] as string
+    if (set[k + 1] === "-" && k + 2 < set.length) {
+      items.push([lo, set[k + 2] as string])
+      k += 2
+    } else items.push([lo, lo])
+  }
+  const inSet = (c: string) => items.some(([lo, hi]) => c >= lo && c <= hi)
+  return (c) => (ignoreCase ? inSet(c.toLowerCase()) || inSet(c.toUpperCase()) : inSet(c)) !== negate
+}
+
+function globMatcher(glob: string, ignoreCase = false): GlobMatcher {
+  const fold = (c: string) => (ignoreCase ? c.toLowerCase() : c)
+  const literal = (ch: string): GlobToken => {
+    const folded = fold(ch)
+    return { kind: "one", test: (c) => fold(c) === folded }
+  }
+  const tokens: GlobToken[] = []
   for (let i = 0; i < glob.length; i++) {
     const ch = glob[i] as string
-    if (ch === "\\" && i + 1 < glob.length) {
-      out += (glob[++i] as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    } else if (ch === "*") out += ".*"
-    else if (ch === "?") out += "."
+    if (ch === "\\" && i + 1 < glob.length) tokens.push(literal(glob[++i] as string))
+    else if (ch === "*") {
+      if (tokens.at(-1)?.kind !== "star") tokens.push({ kind: "star" })
+    } else if (ch === "?") tokens.push({ kind: "one", test: () => true })
     else if (ch === "[") {
       const close = glob.indexOf("]", i + 2)
-      if (close === -1) out += "\\["
+      if (close === -1) tokens.push(literal("["))
       else {
-        out += `[${glob.slice(i + 1, close).replace(/^!/, "^").replace(/\\/g, "\\\\")}]`
+        tokens.push({ kind: "one", test: globClass(glob.slice(i + 1, close), ignoreCase) })
         i = close
       }
-    } else out += ch.replace(/[.+^${}()|\\]/g, "\\$&")
+    } else tokens.push(literal(ch))
   }
-  return new RegExp(`^${out}$`)
+  return {
+    test(text: string): boolean {
+      let t = 0
+      let at = 0
+      let star = -1
+      let starAt = 0
+      while (at < text.length) {
+        const token = tokens[t]
+        if (token?.kind === "one" && token.test(text[at] as string)) {
+          t++
+          at++
+        } else if (token?.kind === "star") {
+          star = t++
+          starAt = at
+        } else if (star !== -1) {
+          t = star + 1
+          at = ++starAt
+        } else return false
+      }
+      while (tokens[t]?.kind === "star") t++
+      return t === tokens.length
+    },
+  }
 }
 
 // How far the guard walks a recursive grep's folders before it stops and
@@ -429,8 +477,8 @@ export const GREP_WALK_ENTRIES = 10_000
 // is walked.
 export const GREP_WALK_SKIPS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__"])
 
-type GrepFilter = { include: boolean; re: RegExp }
-type GrepArgs = { recursive: boolean; deref: boolean; filters: GrepFilter[]; excludeDirs: RegExp[]; files: Word[]; refuse: string | null }
+type GrepFilter = { include: boolean; re: GlobMatcher }
+type GrepArgs = { recursive: boolean; deref: boolean; filters: GrepFilter[]; excludeDirs: GlobMatcher[]; files: Word[]; refuse: string | null }
 
 const GREP_LONG_VALUE = new Set(["--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--directories", "--devices", "--exclude", "--include", "--exclude-dir", "--exclude-from", "--label", "--binary-files", "--group-separator"])
 const GREP_SHORT_VALUE = "efmABCdD"
@@ -447,8 +495,8 @@ function grepArgs(args: Word[]): GrepArgs {
     // A filter whose glob the shell decides is left out: checking more files
     // than grep reads is the safe side.
     if (value === undefined || value.dynamic) return
-    if (name === "--exclude" || name === "--include") parsed.filters.push({ include: name === "--include", re: globRegex(value.text) })
-    if (name === "--exclude-dir") parsed.excludeDirs.push(globRegex(value.text.replace(/\/+$/, "")))
+    if (name === "--exclude" || name === "--include") parsed.filters.push({ include: name === "--include", re: globMatcher(value.text) })
+    if (name === "--exclude-dir") parsed.excludeDirs.push(globMatcher(value.text.replace(/\/+$/, "")))
   }
   for (let i = 0; i < args.length; i++) {
     const word = args[i] as Word
@@ -701,7 +749,7 @@ function globMatches(pattern: string, cwd: string): string[] | null {
       current = current.map((c) => ({ fs: `${c.fs}${sep}${name}`, text: joinText(c.text, name) }))
       continue
     }
-    const re = globRegex(segment)
+    const re = globMatcher(segment)
     const dots = segment.startsWith(".") || segment.startsWith("\\.")
     const next: { fs: string; text: string }[] = []
     for (const c of current) {
@@ -792,7 +840,7 @@ function unescapedIndex(pattern: string, char: string): number {
 // bounds and skipping grep's folders, and judges every entry the tests
 // select as the reader would open it.
 
-type FindTest = { kind: "name" | "path"; re: RegExp } | { kind: "type"; type: "f" | "d" | "l" }
+type FindTest = { kind: "name" | "path"; re: GlobMatcher } | { kind: "type"; type: "f" | "d" | "l" }
 type FindAction = { kind: "print" | "print0" } | { kind: "exec" | "execdir"; words: Word[]; plus: boolean }
 type FindSpec = { follow: boolean; starts: Word[]; tests: FindTest[]; maxdepth: number | null; mindepth: number; action: FindAction | null }
 
@@ -826,7 +874,7 @@ function parseFind(args: Word[]): FindSpec | { refuse: string } {
       if (value === undefined || value.dynamic) return { refuse: `has a ${text} pattern only the shell knows` }
       if (value.glob || value.brace) return { refuse: `has a ${text} pattern the shell expands first; quote it` }
       if (/\[[^\]]*\[[:=.]/.test(value.text)) return { refuse: `uses a POSIX character class in ${text}, which the guard does not follow` }
-      spec.tests.push({ kind: text.endsWith("name") ? "name" : "path", re: new RegExp(globRegex(value.text).source, text.startsWith("-i") ? "is" : "s") })
+      spec.tests.push({ kind: text.endsWith("name") ? "name" : "path", re: globMatcher(value.text, text.startsWith("-i")) })
       continue
     }
     if ((text === "-type" || text === "-maxdepth" || text === "-mindepth") && (args[i + 1] === undefined || args[i + 1]?.dynamic || args[i + 1]?.glob || args[i + 1]?.brace)) return { refuse: `has a ${text} value only the shell knows` }
@@ -1428,7 +1476,10 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
   if (program === "set" && args.some((a) => !a.dynamic && /^[-+][A-Za-z]*[of]/.test(a.text))) outside(ctx, "set -o or set -f")
   // let evaluates arithmetic, which reads variables by bare name; a name
   // reference (declare -n) makes one variable another under a new name.
-  if (program === "let") outside(ctx, "let")
+  if (program === "let") {
+    outside(ctx, "let")
+    if (args.some((a) => (a.text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).some((name) => KEY_VARIABLE.test(name)))) ctx.reads = true
+  }
   if (["declare", "typeset", "local"].includes(program) && args.some((a) => !a.dynamic && /^-[A-Za-z]*n/.test(a.text))) outside(ctx, `${program} -n`)
   if (["export", "declare", "typeset", "readonly", "local", "unset"].includes(program)) {
     const special = args.map((a) => ASSIGNED.exec(a.text)?.[1] ?? a.text).find((n) => SPECIAL_VARIABLES.has(n))
@@ -1706,10 +1757,11 @@ function anyWordReads(ctx: Context): boolean {
     for (const [i, word] of words.entries()) {
       if (word.vars.some((v) => KEY_VARIABLE.test(v))) return true
       if (word.dynamic || word.process) continue
-      // A key variable named bare, as arithmetic, let, a name reference or
-      // an indirect ${!name} read it.
-      if ((word.text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).some((name) => KEY_VARIABLE.test(name))) return true
+      // A key variable's name given as a value (v=OPENAI_API_KEY), which
+      // ${!v} or a name reference (declare -n) then reads.
       const text = word.text
+      const named = /^[A-Za-z_][A-Za-z0-9_]*=([A-Za-z_][A-Za-z0-9_]*)$/.exec(text)?.[1]
+      if (named !== undefined && KEY_VARIABLE.test(named)) return true
       const program = basename(text)
       if (isReader(program) || program in INTERPRETERS || program === "printenv") return true
       if (PRINTERS.has(program)) {

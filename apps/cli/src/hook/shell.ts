@@ -162,6 +162,15 @@ class Parser {
         }
         continue
       }
+      if (c === "(" && this.s[this.i + 1] === "(" && !words.length) {
+        // (( ... )): an arithmetic command, which reads variables by name.
+        // It runs no program; the word stands for it, with the names it reads.
+        const word: Word = { text: "((", dynamic: false, glob: false, brace: false, pattern: "((", vars: [] }
+        this.arithmetic(word, nodes, 2)
+        word.dynamic = false
+        words.push(word)
+        continue
+      }
       if (c === "(") {
         this.i++
         if (words.length) {
@@ -428,11 +437,11 @@ class Parser {
 
   // $(( ... )): arithmetic, read to its matching )). A command
   // substitution inside it is not followed, and is refused.
-  private arithmetic(word: Word, nodes: ShellNode[]): void {
+  private arithmetic(word: Word, nodes: ShellNode[], open = 3): void {
     const s = this.s
     nodes.push({ kind: "unknown", why: "arithmetic" })
     let depth = 2
-    let j = this.i + 3
+    let j = this.i + open
     for (; j < s.length && depth > 0; j++) {
       const c = s[j] as string
       if (c === "(") depth++
@@ -444,7 +453,7 @@ class Parser {
     if (depth > 0) nodes.push({ kind: "unknown", why: "an unclosed $((", runs: true })
     // Arithmetic reads a variable by its bare name, so every name in it
     // counts as one the word expands.
-    for (const name of s.slice(this.i + 3, j).match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) word.vars.push(name)
+    for (const name of s.slice(this.i + open, j).match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) word.vars.push(name)
     this.i = j
     word.dynamic = true
   }

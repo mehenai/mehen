@@ -1076,6 +1076,22 @@ describe("sixth review: reproductions", () => {
     for (const command of ['echo "$((1 + 2))"', "echo $((n * 2))", "echo $((0x1F))", "echo $[1 + 2]", "let n=n+1", "declare -n r=PATH; echo $r"]) none("proj", command)
   })
 
+  test("a key variable's name as plain text is not a read, even outside the grammar; given as a value or in (( )) it is", () => {
+    for (const command of ['for i in 1 2; do echo "OPENAI_API_KEY"; done', "if true; then echo GITHUB_TOKEN is unset; fi"]) none("proj", command)
+    for (const command of ["(( x = GITHUB_TOKEN )); echo $x", "(( OPENAI_API_KEY ))", 'for i in 1; do v=OPENAI_API_KEY; echo "${!v}"; done']) expect(refused("proj", command)).toEqual(yes(command))
+    none("proj", "(( n = n + 1 ))")
+  })
+
+  test("a glob with many stars is matched in linear time", async () => {
+    await Bun.write(`${home.path}/proj/${"a".repeat(64)}`, "x")
+    const stars = `*${"a*".repeat(16)}b`
+    const started = performance.now()
+    for (const command of [`git add ${stars}`, `cat ${stars}`, `grep -r --include='${stars}' x .`, `find . -name '${stars}' | xargs cat`]) at("proj", command)
+    expect(performance.now() - started).toBeLessThan(1000)
+    none("proj", `cat ${stars}`)
+    expect(refused("proj", `cat ${"*".repeat(40)}.e*v`)).toEqual(yes(`cat ${"*".repeat(40)}.e*v`))
+  })
+
   test("an option whose arity differs between GNU and BSD is not in the allowlist", () => {
     expect(refused("proj", "sed -l p .env")).toEqual(yes("sed -l p .env"))
     expect(refused("proj", "sed -l 80 -n p README.md")).toEqual(yes("sed -l 80 -n p README.md"))
