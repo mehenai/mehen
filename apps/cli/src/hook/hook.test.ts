@@ -1093,8 +1093,8 @@ describe("sixth review: reproductions", () => {
   })
 
   test("line continuations are removed before anything is read, as bash removes them, except where bash keeps them", () => {
-    for (const command of ["v=OPENAI_API_KEY; printf '%s\\n' $\\\n{!v}", "echo $\\\nOPENAI_API_KEY", 'echo "$\\\nOPENAI_API_KEY"', "echo $\\\n{OPENAI_API_KEY}", "echo $OPENAI_\\\nAPI_KEY", "bash -c 'echo $\\\nOPENAI_API_KEY'", "echo \\\\\ncat .env", "cat <<'EOF'\nfoo\\\nEOF\ncat .env", "# x \\\ncat .env"]) expect(refused("proj", command)).toEqual(yes(command))
-    for (const command of ["cat <<EOF\nfoo\\\nEOF\ncat .env\nEOF", "curl -s \\\n  -H 'Accept: json' \\\n  https://example.com", "echo 'a\\\nb'", 'git commit -m "line one \\\nline two"']) none("proj", command)
+    for (const command of ["v=OPENAI_API_KEY; printf '%s\\n' $\\\n{!v}", "echo $\\\nOPENAI_API_KEY", 'echo "$\\\nOPENAI_API_KEY"', "echo $\\\n{OPENAI_API_KEY}", "echo $OPENAI_\\\nAPI_KEY", "bash -c 'echo $\\\nOPENAI_API_KEY'", "echo \\\\\ncat .env", "cat <<'EOF'\nfoo\\\nEOF\ncat .env", "# x \\\ncat .env", "true; \\\n# comment \\\ncat .env", "  \\\n# c \\\ncat .env"]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["cat <<EOF\nfoo\\\nEOF\ncat .env\nEOF", "curl -s \\\n  -H 'Accept: json' \\\n  https://example.com", "echo 'a\\\nb'", 'git commit -m "line one \\\nline two"', "echo a\\\n#b; cat README.md"]) none("proj", command)
   })
 
   test("names from the command line are looked up only among a table's own entries, never Object.prototype's", () => {

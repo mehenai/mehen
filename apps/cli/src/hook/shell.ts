@@ -620,9 +620,13 @@ export function logicalText(s: string): string {
   while (i < s.length) {
     const c = s[i] as string
     if (c === "\\") {
-      if (s[i + 1] !== "\n") out += s.slice(i, i + 2)
+      // A continuation vanishes, so whether a word starts here is as it was
+      // before it; an escaped character is part of a word.
+      if (s[i + 1] !== "\n") {
+        out += s.slice(i, i + 2)
+        wordStart = false
+      }
       i += 2
-      wordStart = false
       continue
     }
     if (c === "'") {
