@@ -4,7 +4,7 @@ import { join } from "node:path"
 import type { RelayRequestInput } from "@mehen/protocol/api"
 import { base64UrlEncode, utf8 } from "@mehen/protocol/bytes"
 import { CliError } from "./errors.ts"
-import { MAX_REPLAY_BODY_BYTES, REPLAY_TTL_SECONDS, SWEEP_BUDGET, claimSavedRequest, neverSent, readSavedRequest, saveHeldRequest, savedRequestPath, withApprovalLock } from "./replay-cache.ts"
+import { MAX_REPLAY_BODY_BYTES, REPLAY_TTL_SECONDS, SWEEP_BUDGET, claimSavedRequest, neverSent, readSavedRequest, replayFs, saveHeldRequest, savedRequestPath, withApprovalLock } from "./replay-cache.ts"
 import { RelayOutcomeUnknownError, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 import { tempDir } from "./testing/run-mehen.ts"
 
@@ -288,4 +288,93 @@ test("one save examines at most the sweep's budget, sweeps at most once a minute
   await saveHeldRequest(env, owner, "apr_newest", request, new Date(now.getTime() + 61_000))
   expect(await left()).toBeLessThan(afterFirst)
   expect((await stat(join(folder, "apr_held.lock"))).isFile()).toBe(true)
+})
+
+// Fault injection: each test swaps one file operation of the cache for one
+// that fails as a full disk or a busy file would, and puts it back after.
+const realFs = { ...replayFs }
+afterEach(() => Object.assign(replayFs, realFs))
+const failing = (code: string) => async () => {
+  throw Object.assign(new Error(`${code}: injected`), { code })
+}
+const folder = () => join(env.MEHEN_HOME as string, "pending-requests")
+const listed = async () => (await readdir(folder())).filter((name) => name !== ".swept").sort()
+
+test("a claim whose marker cannot be written puts the saved request back, and the next resume can claim it", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  replayFs.writeNewFile = failing("ENOSPC")
+  const refused = await refusal(claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner))
+  expect(refused.code).toBe("failed")
+  expect(refused.message).toContain("ENOSPC")
+  expect(await listed()).toEqual(["apr_1.json"])
+  Object.assign(replayFs, realFs)
+  const claimed = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  expect(claimed.request.approval).toBe("apr_1")
+  await claimed.spent()
+})
+
+test("a claim that can neither mark nor put back keeps the request aside and names where it is", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  replayFs.writeNewFile = failing("ENOSPC")
+  let renames = 0
+  replayFs.rename = async (from, to) => {
+    if (++renames > 1) throw Object.assign(new Error("EIO: injected"), { code: "EIO" })
+    return realFs.rename(from, to)
+  }
+  const refused = await refusal(claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner))
+  const aside = (await listed()).find((name) => name.startsWith("apr_1.json.claimed."))
+  expect(aside).toBeDefined()
+  expect(refused.message).toContain(join(folder(), aside as string))
+  expect(refused.next?.say).toContain(`${join(folder(), aside as string)} to ${savedRequestPath(env, "apr_1")}`)
+})
+
+test("a restore whose rename fails keeps the only copy and names it; only a proven stale aside is discarded", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  const claimed = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  replayFs.rename = failing("EIO")
+  const refused = await refusal(claimed.unsent())
+  const aside = (await listed()).find((name) => name.startsWith("apr_1.json.claimed."))
+  expect(aside).toBeDefined()
+  expect(refused.message).toContain(join(folder(), aside as string))
+  expect(refused.next?.say).toContain(savedRequestPath(env, "apr_1"))
+  // A newer saved file proves the aside stale: then, and only then, it goes.
+  Object.assign(replayFs, realFs)
+  await writeFile(savedRequestPath(env, "apr_1"), "{}", { mode: 0o600 })
+  await claimed.unsent()
+  expect((await listed()).some((name) => name.startsWith("apr_1.json.claimed."))).toBe(false)
+})
+
+test("a restore whose marker cannot be removed says so, naming the marker, with the request back at its path", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  const claimed = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  const realUnlink = realFs.unlink
+  replayFs.unlink = async (path) => {
+    if (String(path).endsWith(".spent")) throw Object.assign(new Error("EIO: injected"), { code: "EIO" })
+    return realUnlink(path)
+  }
+  const refused = await refusal(claimed.unsent())
+  expect(refused.message).toContain(join(folder(), "apr_1.spent"))
+  expect(await listed()).toEqual(["apr_1.json", "apr_1.spent"])
+})
+
+test("the sweep re-checks an entry under its approval's lock, so a file saved again since its stat is kept", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  const old = new Date(now.getTime() - 2 * REPLAY_TTL_SECONDS * 1000)
+  await utimes(savedRequestPath(env, "apr_1"), old, old)
+  const later = new Date(now.getTime() + 61_000)
+  await saveHeldRequest(env, owner, "apr_2", request, later, {
+    afterSweepStat: async (path) => {
+      if (path === savedRequestPath(env, "apr_1")) await saveHeldRequest(env, owner, "apr_1", request, later)
+    },
+  })
+  expect(await listed()).toEqual(["apr_1.json", "apr_2.json"])
+})
+
+test("two saves at once sweep once: the sweep lease goes to one, and the other skips", async () => {
+  await mkdir(folder(), { recursive: true, mode: 0o700 })
+  let scans = 0
+  const seams = { onSweep: async () => { scans++; await Bun.sleep(50) } }
+  await Promise.all([saveHeldRequest(env, owner, "apr_a", request, now, seams), saveHeldRequest(env, owner, "apr_b", request, now, seams)])
+  expect(scans).toBe(1)
+  expect(await listed()).toEqual(["apr_a.json", "apr_b.json"])
 })

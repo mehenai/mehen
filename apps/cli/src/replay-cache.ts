@@ -12,7 +12,7 @@
 import { constants } from "node:fs"
 import { lstat, open, opendir, rename, unlink, utimes, writeFile } from "node:fs/promises"
 import { hostname } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { RelayRequest, type RelayRequestInput } from "@mehen/protocol/api"
 import { base64UrlDecode, fromUtf8, utf8 } from "@mehen/protocol/bytes"
 import { z } from "zod"
@@ -23,6 +23,10 @@ import { REPLAY_DIR, assertPrivateDirs, ensureSafeRoot, mkdirPrivate, resolveHom
 import { RelayOutcomeUnknownError, VaultApiError, VaultNetworkError, retrySafeMethod } from "./vault-api.ts"
 
 export { REPLAY_DIR }
+
+// The file operations that move or remove a saved request, a marker or a
+// lock, so a test can make one fail as a full disk or a busy file would.
+export const replayFs = { rename, unlink, writeNewFile }
 
 export const REPLAY_TTL_SECONDS = 3600
 // The vault's own limit on a body a human approves (an approval card shows
@@ -54,6 +58,7 @@ const LOCK_WAIT_MS = 2_000
 export const SWEEP_BUDGET = 256
 const SWEEP_EVERY_MS = 60_000
 const SWEPT_FILE = ".swept"
+const SWEEP_LEASE = ".sweep.lock"
 // A marker or a lock is a short line; anything larger is not mehen's.
 const SMALL_FILE_MAX_BYTES = 512
 const TOKEN = /^[0-9]+\.[0-9]+\.[a-z0-9]+$/
@@ -120,44 +125,63 @@ async function lockOwner(path: string, approval: string): Promise<LockOwner | nu
   throw new CliError("failed", `Refusing ${path}: it is not a lock mehen wrote.`, { say: `Remove ${path} only if no other mehen is saving or sending the request for ${approval}, then run the command again.` })
 }
 
-function lockedError(path: string, approval: string, holder: LockOwner | null, restoring: boolean): CliError {
+function lockedError(path: string, approval: string, holder: LockOwner | null, aside: string | null): CliError {
   const by = holder ? ` (pid ${holder.pid} on ${holder.host})` : ""
-  const what = restoring ? `The request for ${approval} was not sent, but mehen could not put its saved copy back: ${path} is held${by}.` : `${path} is held${by}, so another mehen is saving or sending the request for ${approval}; nothing was changed.`
-  return new CliError("replay_locked", what, { say: `Wait for the other mehen to finish and run this again; if no other mehen is running, delete ${path} and run it again.` })
+  if (aside !== null) {
+    const saved = join(dirname(path), `${approval}.json`)
+    const marker = join(dirname(path), `${approval}.spent`)
+    return new CliError("replay_locked", `The request for ${approval} was not sent, but mehen could not put its saved copy back from ${aside}: ${path} is held${by}.`, {
+      say: `Wait for the other mehen to finish; if no other mehen is running, delete ${path}, rename ${aside} to ${saved} and delete ${marker}, then run the command again.`,
+    })
+  }
+  return new CliError("replay_locked", `${path} is held${by}, so another mehen is saving or sending the request for ${approval}; nothing was changed.`, { say: `Wait for the other mehen to finish and run this again; if no other mehen is running, delete ${path} and run it again.` })
 }
 
-// The approval's lock, taken with an exclusive create and a token written
-// in it; a contender waits about two seconds, then is replay_locked. Only
-// the holder's own token is ever removed.
-export async function withApprovalLock<T>(env: Env, approval: string, work: () => Promise<T>, restoring = false): Promise<T> {
-  const path = lockPath(env, approval)
+// A lock at `path`, taken now or not at all: an exclusive create with a
+// token written in it. Null when another holds it. The release removes it
+// only while it still holds this token.
+async function acquireLock(path: string, approval: string): Promise<(() => Promise<void>) | null> {
   const mine: LockOwner = { token: newToken(), pid: process.pid, host: hostname() }
-  const deadline = Date.now() + LOCK_WAIT_MS
-  for (;;) {
+  try {
+    const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
     try {
-      const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-      try {
-        await handle.writeFile(`${JSON.stringify(mine)}\n`)
-        await handle.sync()
-      } finally {
-        await handle.close()
-      }
-      break
-    } catch (error) {
-      if ((error as { code?: string }).code !== "EEXIST") throw error
-      if (Date.now() >= deadline) throw lockedError(path, approval, await lockOwner(path, approval).catch(() => null), restoring)
-      await Bun.sleep(20)
+      await handle.writeFile(`${JSON.stringify(mine)}\n`)
+      await handle.sync()
+    } finally {
+      await handle.close()
     }
+  } catch (error) {
+    if ((error as { code?: string }).code === "EEXIST") return null
+    throw error
+  }
+  return async () => {
+    const holder = await lockOwner(path, approval).catch(() => null)
+    if (holder?.token === mine.token) await replayFs.unlink(path).catch(() => undefined)
+  }
+}
+
+// The approval's lock; a contender waits about two seconds, then is
+// replay_locked. `aside` is the claimed copy a restore is putting back,
+// named in the refusal so it is never lost.
+export async function withApprovalLock<T>(env: Env, approval: string, work: () => Promise<T>, aside: string | null = null): Promise<T> {
+  const path = lockPath(env, approval)
+  const deadline = Date.now() + LOCK_WAIT_MS
+  let release = await acquireLock(path, approval)
+  while (release === null) {
+    if (Date.now() >= deadline) throw lockedError(path, approval, await lockOwner(path, approval).catch(() => null), aside)
+    await Bun.sleep(20)
+    release = await acquireLock(path, approval)
   }
   try {
     return await work()
   } finally {
-    const holder = await lockOwner(path, approval).catch(() => null)
-    if (holder?.token === mine.token) await unlink(path).catch(() => undefined)
+    await release()
   }
 }
 
-export type SaveSeams = { beforeLock?: () => Promise<void> }
+// Test seams: before a save takes the approval's lock; when a sweep's scan
+// starts; and after the sweep's first look at an entry it would remove.
+export type SaveSeams = { beforeLock?: () => Promise<void>; onSweep?: () => Promise<void>; afterSweepStat?: (path: string) => Promise<void> }
 
 function rebuild(message: string): CliError {
   return new CliError("replay_missing", message, { say: "Build the request again and send it byte for byte from this machine, with the approval id (mehen fetch --approval, or vault_fetch's approval with the full request)." })
@@ -182,14 +206,14 @@ export async function saveHeldRequest(env: Env, owner: ReplayOwner, approval: st
     ensureSafeRoot(root)
     const dir = replayDir(env)
     mkdirPrivate(root, dir)
-    await sweep(dir, now).catch(() => undefined)
+    await sweep(env, dir, now, seams).catch(() => undefined)
     await seams.beforeLock?.()
     const sent = await withApprovalLock(env, approval, async () => {
       if ((await markerOf(env, approval)) !== null) return true
       const path = savedRequestPath(env, approval)
       const temp = `${path}.${process.pid}.${Date.now()}.tmp`
-      await writeNewFile(temp, utf8(`${JSON.stringify(saved)}\n`), { mode: 0o600 })
-      await rename(temp, path)
+      await replayFs.writeNewFile(temp, utf8(`${JSON.stringify(saved)}\n`), { mode: 0o600 })
+      await replayFs.rename(temp, path)
       return false
     })
     if (sent) return { saved: false, reason: "this approval's request was already sent again from this machine, or is being sent, so it is not saved again" }
@@ -202,29 +226,54 @@ export async function saveHeldRequest(env: Env, owner: ReplayOwner, approval: st
 
 // What is past its hour (saved requests, markers, claimed files set aside,
 // temp files) goes when a request is saved: at most once a minute, by the
-// mtime of .swept, and at most SWEEP_BUDGET entries looked at, read one by
-// one. Only this user's regular files are removed, and never a lock.
-async function sweep(dir: string, now: Date): Promise<void> {
+// mtime of .swept, under a lease only one sweep holds (taken without
+// waiting: a save that finds it held skips), and at most SWEEP_BUDGET
+// entries looked at, read one by one. Each removal is decided again under
+// its approval's lock, taken without waiting, so a file saved again since
+// the first look is kept. Only this user's regular files go, never a lock.
+async function sweep(env: Env, dir: string, now: Date, seams: SaveSeams): Promise<void> {
   const swept = join(dir, SWEPT_FILE)
-  const last = await lstat(swept).catch(() => null)
-  if (last !== null && (!last.isFile() || now.getTime() - last.mtimeMs < SWEEP_EVERY_MS)) return
-  if (last === null) await writeFile(swept, "", { mode: 0o600, flag: "wx" }).catch(() => undefined)
-  await utimes(swept, now, now).catch(() => undefined)
-  const cutoff = now.getTime() - REPLAY_TTL_SECONDS * 1000
-  const uid = process.getuid?.() ?? -1
-  const entries = await opendir(dir)
-  let examined = 0
+  const due = async () => {
+    const last = await lstat(swept).catch(() => null)
+    return last === null || (last.isFile() && now.getTime() - last.mtimeMs >= SWEEP_EVERY_MS)
+  }
+  if (!(await due())) return
+  const lease = await acquireLock(join(dir, SWEEP_LEASE), "the sweep").catch(() => null)
+  if (lease === null) return
   try {
-    for await (const entry of entries) {
-      if (++examined > SWEEP_BUDGET) break
-      const name = entry.name
-      if (!name.startsWith("apr_") || name.endsWith(".lock")) continue
-      const path = join(dir, name)
+    if (!(await due())) return
+    await writeFile(swept, "", { mode: 0o600, flag: "wx" }).catch(() => undefined)
+    await utimes(swept, now, now).catch(() => undefined)
+    await seams.onSweep?.()
+    const cutoff = now.getTime() - REPLAY_TTL_SECONDS * 1000
+    const uid = process.getuid?.() ?? -1
+    const stale = async (path: string) => {
       const info = await lstat(path).catch(() => null)
-      if (info !== null && info.isFile() && info.uid === uid && info.mtimeMs < cutoff) await unlink(path).catch(() => undefined)
+      return info !== null && info.isFile() && info.uid === uid && info.mtimeMs < cutoff
+    }
+    const entries = await opendir(dir)
+    let examined = 0
+    try {
+      for await (const entry of entries) {
+        if (++examined > SWEEP_BUDGET) break
+        const approval = /^(apr_[A-Za-z0-9_-]{1,60})\./.exec(entry.name)?.[1]
+        if (approval === undefined || entry.name.endsWith(".lock")) continue
+        const path = join(dir, entry.name)
+        if (!(await stale(path))) continue
+        await seams.afterSweepStat?.(path)
+        const release = await acquireLock(lockPath(env, approval), approval).catch(() => null)
+        if (release === null) continue
+        try {
+          if (await stale(path)) await replayFs.unlink(path).catch(() => undefined)
+        } finally {
+          await release()
+        }
+      }
+    } finally {
+      await entries.close().catch(() => undefined)
     }
   } finally {
-    await entries.close().catch(() => undefined)
+    await lease()
   }
 }
 
@@ -251,7 +300,7 @@ export async function readSavedRequest(env: Env, approval: string, now = new Dat
   const saved = SavedSchema.safeParse(parsed)
   if (!saved.success || saved.data.approval !== approval) throw rebuild(`${path} is not a request mehen saved for ${approval}.`)
   if (now.getTime() - Date.parse(saved.data.createdAt) > REPLAY_TTL_SECONDS * 1000) {
-    await unlink(path).catch(() => undefined)
+    await replayFs.unlink(path).catch(() => undefined)
     throw rebuild(`The saved request for ${approval} expired: mehen keeps one for an hour.`)
   }
   return saved.data
@@ -269,8 +318,11 @@ export function assertSavedBy(saved: SavedRequest, owner: ReplayOwner): void {
 // the approval's lock, so no other call can claim or save it. `spent`
 // removes the file once the request may have reached the vault, keeping
 // the marker for the hour; `unsent` puts it back when it certainly did
-// not, only if the marker is still this claim's and nothing newer is there.
+// not. Every failure along the way leaves the request at its path, or
+// names where it is.
 export type ClaimedRequest = { request: RelayRequestInput; spent(): Promise<void>; unsent(): Promise<void> }
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 // Claims a saved request for sending, right before it is sent: from the
 // enrolment that saved it, and only once. The request comes back with its
@@ -279,34 +331,65 @@ export async function claimSavedRequest(env: Env, saved: SavedRequest, owner: Re
   assertSavedBy(saved, owner)
   const approval = saved.approval
   const path = savedRequestPath(env, approval)
+  const marker = markerPath(env, approval)
   const token = newToken()
   const aside = `${path}.claimed.${token}`
   await withApprovalLock(env, approval, async () => {
     if ((await markerOf(env, approval)) !== null) throw rebuild(`The saved request for ${approval} was sent again already, or is being sent.`)
     try {
-      await rename(path, aside)
-    } catch {
-      throw rebuild(`The saved request for ${approval} was sent again already.`)
+      await replayFs.rename(path, aside)
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") throw rebuild(`The saved request for ${approval} was sent again already.`)
+      throw new CliError("failed", `mehen could not set the saved request for ${approval} aside to send it (${errorText(error)}); nothing was sent, and it is still at ${path}.`, { say: "Fix what the message names, then run the command again." })
     }
-    await writeNewFile(markerPath(env, approval), utf8(token), { mode: 0o600 })
+    try {
+      await replayFs.writeNewFile(marker, utf8(token), { mode: 0o600 })
+    } catch (error) {
+      try {
+        await replayFs.rename(aside, path)
+      } catch (back) {
+        throw new CliError("failed", `mehen could not mark the request for ${approval} as being sent (${errorText(error)}), nor put it back (${errorText(back)}); nothing was sent, and the saved request is at ${aside}.`, {
+          say: `Rename ${aside} to ${path}, then run the command again.`,
+        })
+      }
+      throw new CliError("failed", `mehen could not mark the request for ${approval} as being sent (${errorText(error)}); nothing was sent, and the saved request is back at ${path}.`, { say: "Fix what the message names (free some space, say), then run the command again." })
+    }
   })
   return {
     request: { ...saved.request, approval },
-    spent: () => unlink(aside).catch(() => undefined),
+    spent: () => replayFs.unlink(aside).then(() => undefined, () => undefined),
     unsent: () =>
       withApprovalLock(
         env,
         approval,
         async () => {
-          const mine = (await markerOf(env, approval)) === token
-          const newer = await lstat(path).then(() => true, () => false)
-          if (mine && !newer && (await rename(aside, path).then(() => true, () => false))) {
-            await unlink(markerPath(env, approval)).catch(() => undefined)
+          let mine: boolean
+          let newer: boolean
+          try {
+            mine = (await markerOf(env, approval)) === token
+            newer = await lstat(path).then(() => true, (error: unknown) => (error as { code?: string }).code !== "ENOENT")
+          } catch (error) {
+            throw new CliError("failed", `The request for ${approval} was not sent, but mehen could not check whether to put its saved copy back (${errorText(error)}); it is at ${aside}.`, { say: `Rename ${aside} to ${path} and delete ${marker} once the message's problem is fixed, then run the command again.` })
+          }
+          // Proven stale: another claim owns the approval, or a newer copy is saved.
+          if (!mine || newer) {
+            await replayFs.unlink(aside).catch(() => undefined)
             return
           }
-          await unlink(aside).catch(() => undefined)
+          try {
+            await replayFs.rename(aside, path)
+          } catch (error) {
+            // Swept as past its hour while it was being sent: expired either way.
+            if ((error as { code?: string }).code === "ENOENT") throw rebuild(`The request for ${approval} was not sent, and its saved copy expired meanwhile: mehen keeps one for an hour.`)
+            throw new CliError("failed", `The request for ${approval} was not sent, but mehen could not put its saved copy back (${errorText(error)}); it is at ${aside}.`, { say: `Rename ${aside} to ${path} and delete ${marker}, then run the command again.` })
+          }
+          try {
+            await replayFs.unlink(marker)
+          } catch (error) {
+            throw new CliError("failed", `The request for ${approval} was not sent and is back at ${path}, but mehen could not remove ${marker} (${errorText(error)}), so a resume would take it for sent.`, { say: `Delete ${marker}, then run the command again.` })
+          }
         },
-        true,
+        aside,
       ),
   }
 }
