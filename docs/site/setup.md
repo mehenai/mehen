@@ -80,7 +80,7 @@ Its `agents` line reports `mehen setup` and `mehen guard install` (in `setup` an
 mehen status --json
 ```
 
-It must exit 0 and list the workspace from the `workspace` line with `state: "active"`, on the vault `http://localhost:7787` (or the port you passed). A refusal is not a successful setup: follow its `next` and report it to the human. Tell the human: the workspace, the machine's name, which agents need a restart, that the guard hooks are on (`mehen guard warn` or `mehen guard off` changes that), and the next step from the `done` line: `mehen adopt scan` finds the keys already on this machine, which they bring in with one passkey ([Bring a machine's credentials into Mehen](guides/adopt.md)). From then on you request credentials with `mehen request` or `mehen connect`, they fill the link in, and you use them with `mehen fetch` or `mehen run`. Full rules: https://docs.mehen.dev/skill.md, or `mehen guide`.
+It must exit 0 and list the workspace from the `workspace` line with `state: "active"`, on the vault `http://localhost:7787` (or the port you passed). A refusal is not a successful setup: follow its `next` and report it to the human. Tell the human: the workspace, the machine's name, which agents need a restart, that the guard hooks are installed (on a fresh machine they start in `warn` mode so existing `.env` repos keep working; `mehen guard block` turns blocking on once their keys are in the vault, or `mehen guard off` turns them off), and the next step from the `done` line: `mehen adopt scan` finds the keys already on this machine, which they bring in with one passkey ([Bring a machine's credentials into Mehen](guides/adopt.md)). From then on you request credentials with `mehen request` or `mehen connect`, they fill the link in, and you use them with `mehen fetch` or `mehen run`. Full rules: https://docs.mehen.dev/skill.md, or `mehen guide`.
 
 ## Join a workspace
 
@@ -123,7 +123,7 @@ Then add the guard hooks, which stop an agent reading `.env` and other key files
 mehen guard install --json
 ```
 
-It reports, per agent (`claude-code`, `pi`), `status` `added`, `updated`, `unchanged` or `skipped` with a `reason`; `skipped` for an agent that is not set up for this user is expected. Tell the human the guard is on, and that `mehen guard warn` or `mehen guard off` changes that.
+It reports, per agent (`claude-code`, `pi`, `cursor`, `codex`), `status` `added`, `updated`, `unchanged` or `skipped` with a `reason`; `skipped` for an agent that is not set up for this user is expected. For Codex, tell the human to open `/hooks` and trust Mehen's two hooks. Tell the human the guard level reported in `level` (`mehen guard block`, `mehen guard warn` or `mehen guard off` changes it).
 
 The command line works at once. The MCP tools arrive when the agent restarts; that is the last thing you tell the human, not a step you wait for.
 
