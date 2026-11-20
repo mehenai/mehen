@@ -22,8 +22,10 @@ const API = "/ex/jira/*/rest/api/3"
 // project (its body can set the permission and issue security schemes, and
 // no body rule can yet prove it does not), creating or updating a filter
 // (its body takes share and edit permissions), the default share scope,
-// filter permissions and deleting a project, at once or asynchronously,
-// are refused.
+// filter permissions, a filter's owner, dashboards (their bodies take share
+// and edit permissions), the user's preferences (user.default.share.private
+// sets default filter sharing, and a path rule cannot select the key) and
+// deleting a project, at once or asynchronously, are refused.
 // https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/
 export const jira: Template = {
   id: "jira",
@@ -88,6 +90,9 @@ export const jira: Template = {
         paths: [`${API}/filter`, `${API}/filter/*`],
         note: "creates or updates a filter, whose body takes share and edit permissions, or sets the default share scope",
       },
+      { action: "deny", methods: ["PUT"], paths: [`${API}/filter/*/owner`], note: "gives a filter, with its sharing, to someone else" },
+      { action: "deny", methods: WRITES, paths: [`${API}/dashboard/**`], note: "creates, changes, copies or bulk-edits dashboards, whose bodies take share and edit permissions" },
+      { action: "deny", methods: ["PUT", "DELETE"], paths: [`${API}/mypreferences`], note: "user preferences, among them default filter sharing" },
       { action: "deny", methods: ["PUT"], paths: [`${API}/project/*`], note: "updates a project, whose body can set its permission and issue security schemes" },
       { action: "deny", methods: ["DELETE"], paths: [`${API}/project/*`], note: "deletes a project and its issues" },
       { action: "deny", methods: ["POST"], paths: [`${API}/project/*/delete`], note: "deletes a project and its issues, asynchronously" },
