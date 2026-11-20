@@ -32,6 +32,7 @@ const REST: Record<PolicyInput["default"], PolicySummary["rest"]> = { allow: "al
 const BODY_WORDS: Record<NonNullable<PolicyRule["body"]>, string> = {
   "graphql-query": "GraphQL queries only",
   "graphql-mutation": "GraphQL that may change something",
+  "json-jira-access": "Jira writes that may change who can see an issue, or cannot be read",
 }
 
 // What a rule matches, in words: "DELETE on /v1/items/*, /v1/items",

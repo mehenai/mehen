@@ -4,7 +4,10 @@
 //   - "graphql-mutation" goes on deny and approve rules and matches anything
 //     it cannot prove is a plain query, so the rule still applies;
 //   - "graphql-query" is the only matcher an allow rule may carry, and it
-//     matches only a request it can prove is a single plain query.
+//     matches only a request it can prove is a single plain query;
+//   - "json-jira-access" goes on deny and approve rules and matches any
+//     Jira write it cannot prove leaves issue security and visibility alone
+//     (jiraWriteMayChangeAccess).
 // See ruleMatches in binding.ts for how a rule uses them.
 // graphqlMutationRootFields, at the end, is the stricter proof a standing
 // rule (policy-rules.ts) needs: the root fields of exactly one mutation and
@@ -12,7 +15,7 @@
 //
 // No dependencies, so the browser bundle and the CLI can use it.
 
-export const BODY_MATCHERS = ["graphql-mutation", "graphql-query"] as const
+export const BODY_MATCHERS = ["graphql-mutation", "graphql-query", "json-jira-access"] as const
 
 export type BodyMatcher = (typeof BODY_MATCHERS)[number]
 
@@ -29,7 +32,91 @@ export function bodyMatches(matcher: BodyMatcher, body: Uint8Array | null, searc
       return search !== "" || graphqlMayMutate(body)
     case "graphql-query":
       return search === "" && graphqlIsQuery(body)
+    case "json-jira-access":
+      return jiraWriteMayChangeAccess(body)
   }
+}
+
+// ---------------------------------------------------------------- Jira
+
+type JiraObject = Record<string, unknown>
+const JIRA_MAX_DEPTH = 64
+const isJiraObject = (value: unknown): value is JiraObject => typeof value === "object" && value !== null && !Array.isArray(value)
+// A key or field id as Jira's lenient readers may take it: case folded,
+// separators dropped, so "Security", "security_level" and "Security Level"
+// all count.
+const jiraName = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]/g, "")
+const isSecurityName = (text: string): boolean => jiraName(text) === "security" || jiraName(text) === "securitylevel"
+
+// Whether a "visibility" key appears at any depth, whatever its value
+// (null included); anything nested deeper than JIRA_MAX_DEPTH counts too.
+function jiraNamesVisibility(value: unknown, depth = 0): boolean {
+  if (depth > JIRA_MAX_DEPTH) return true
+  if (Array.isArray(value)) return value.some((v) => jiraNamesVisibility(v, depth + 1))
+  if (!isJiraObject(value)) return false
+  return Object.entries(value).some(([key, v]) => jiraName(key) === "visibility" || jiraNamesVisibility(v, depth + 1))
+}
+
+// An issue envelope: "fields" (an object of field values, or a list of
+// field names to read) and "update" (an object of field operations), each
+// unreadable when present in any other shape, and asking when either names
+// the security field.
+function jiraEnvelopeMayChangeAccess(object: JiraObject): boolean {
+  for (const [key, value] of Object.entries(object)) {
+    const name = jiraName(key)
+    if (name === "fields") {
+      if (Array.isArray(value)) {
+        if (!value.every((v) => typeof v === "string")) return true
+      } else if (!isJiraObject(value) || Object.keys(value).some(isSecurityName)) return true
+    }
+    if (name === "update" && (!isJiraObject(value) || Object.keys(value).some(isSecurityName))) return true
+  }
+  return false
+}
+
+// True unless the body is one strict JSON value that Jira could not read as
+// a change to who may see an issue. It asks for:
+//   - a body that is not strict JSON (empty, not UTF-8, invalid, a repeated
+//     key), a top-level array or null;
+//   - a "visibility" key at any depth, with any value;
+//   - "fields" or "update" naming the security field, in the body or in any
+//     element of a bulk create's "issueUpdates";
+//   - a bulk edit whose "selectedActions" or any "editedFieldsInput" entry's
+//     "fieldId" names security;
+//   - any of those envelopes in a shape it does not recognise.
+// A JSON string, number or boolean (a watcher's account id) cannot carry
+// either, so it passes.
+export function jiraWriteMayChangeAccess(body: Uint8Array | null): boolean {
+  if (body === null || body.length === 0) return true
+  let text: string
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body)
+  } catch {
+    return true
+  }
+  const parsed = parseJsonStrictly(text)
+  if (!parsed.ok) return true
+  const value = parsed.value
+  if (value === null || Array.isArray(value)) return true
+  if (!isJiraObject(value)) return false
+  if (jiraNamesVisibility(value) || jiraEnvelopeMayChangeAccess(value)) return true
+  for (const [key, v] of Object.entries(value)) {
+    const name = jiraName(key)
+    if (name === "issueupdates" && (!Array.isArray(v) || v.some((element) => !isJiraObject(element) || jiraEnvelopeMayChangeAccess(element)))) return true
+    if (name === "selectedactions" && (!Array.isArray(v) || v.some((action) => typeof action !== "string" || isSecurityName(action)))) return true
+    if (name === "editedfieldsinput") {
+      if (!isJiraObject(v)) return true
+      for (const entry of Object.values(v)) {
+        const items = Array.isArray(entry) ? entry : [entry]
+        for (const item of items) {
+          if (!isJiraObject(item)) return true
+          const fieldId = Object.entries(item).find(([k]) => jiraName(k) === "fieldid")?.[1]
+          if (fieldId !== undefined && (typeof fieldId !== "string" || isSecurityName(fieldId))) return true
+        }
+      }
+    }
+  }
+  return false
 }
 
 // JSON.parse, but a document with a repeated key in any object is refused:

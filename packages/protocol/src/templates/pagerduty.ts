@@ -3,15 +3,18 @@ import { NAMED_READS, READS, WRITES } from "./shared.ts"
 
 // A PagerDuty REST API key, account-wide or a user's, sent as
 // "Token token=<key>". The Events API takes a routing key in the body
-// instead and is not bound. Without a human: the named reads (an
-// incident's notes, alerts and related incidents, on-calls, schedules,
-// escalation policies, teams, users, business services, maintenance
-// windows, priorities and abilities). Every other read asks, and those
-// that can return a key are pinned to an approval, since a rule cannot read
-// the query string that asks for it: incident lists and incidents (a
-// trigger log entry's service_key with include[]=first_trigger_log_entries,
-// so even an ordinary incident read asks), services (integration keys with
-// include[]=integrations), log entries (a channel's service_key with
+// instead and is not bound. Without a human: the named reads (on-calls,
+// schedules, escalation policies, teams and their members, the user list,
+// business services, maintenance windows, priorities and abilities), each
+// checked against the OpenAPI for an include[] that expands a key: theirs
+// expand only references. Every other read asks, and those that can return
+// a key are pinned to an approval, since a rule cannot read the query
+// string that asks for it: incidents and every incident sub-read (notes,
+// alerts and related incidents ask too: an incident or its alerts with
+// include[]=first_trigger_log_entries return a trigger log entry's
+// service_key), a user's details (include[]=calendar_urls returns calendar
+// feed URLs, which are bearer credentials), services (integration keys
+// with include[]=integrations), log entries (a channel's service_key with
 // include[]=channels), event orchestrations, rulesets, service
 // integrations, automation runners, extensions and webhook subscriptions.
 // Triggering, acknowledging and resolving incidents and everything else
@@ -35,10 +38,6 @@ export const pagerduty: Template = {
     rules: [
       NAMED_READS(
         [
-          "/incidents/*/notes",
-          "/incidents/*/alerts",
-          "/incidents/*/alerts/*",
-          "/incidents/*/related_incidents",
           "/oncalls",
           "/schedules",
           "/schedules/*",
@@ -49,14 +48,13 @@ export const pagerduty: Template = {
           "/teams/*",
           "/teams/*/members",
           "/users",
-          "/users/*",
           "/business_services",
           "/business_services/*",
           "/maintenance_windows/**",
           "/priorities",
           "/abilities/**",
         ],
-        "reads of incident notes and alerts, on-calls, schedules, escalation policies, teams and users",
+        "reads of on-calls, schedules, escalation policies, teams and users",
       ),
       {
         action: "approve",
@@ -65,8 +63,8 @@ export const pagerduty: Template = {
           "/services",
           "/services/*",
           "/services/*/integrations/**",
-          "/incidents",
-          "/incidents/*",
+          "/incidents/**",
+          "/users/*",
           "/log_entries",
           "/log_entries/*",
           "/incidents/*/log_entries",
@@ -76,7 +74,7 @@ export const pagerduty: Template = {
           "/extensions/**",
           "/webhook_subscriptions/**",
         ],
-        note: "incidents, services, log entries, orchestrations, rulesets, integrations, runners and webhooks can hand back routing, service and integration keys",
+        note: "incidents, user details, services, log entries, orchestrations, rulesets, integrations, runners and webhooks can hand back routing, service and integration keys or bearer URLs",
       },
       { action: "approve", methods: ["POST"], paths: ["/incidents", "/incidents/*/status_updates", "/incidents/*/responder_requests"], note: "pages people or messages subscribers" },
       { action: "deny", methods: WRITES, paths: ["/users/**"], note: "users, their roles, contact methods and notification rules decide who gets paged" },

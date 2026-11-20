@@ -85,7 +85,9 @@ export function describeRule(rule: PolicyInput["rules"][number]): string {
       ? " whose body is a GraphQL mutation or cannot be read as a query"
       : rule.body === "graphql-query"
         ? " whose body is a single read-only GraphQL query, with nothing in the URL's query string"
-        : ""
+        : rule.body === "json-jira-access"
+          ? " whose body may change who can see an issue or cannot be read"
+          : ""
   const note = rule.note ? ` (${rule.note})` : ""
   return `${action} ${methods} requests${paths}${body}${note}`
 }

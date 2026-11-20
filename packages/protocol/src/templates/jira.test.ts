@@ -66,7 +66,6 @@ describe("jira binding", () => {
       ["PUT", "/rest/api/3/mypreferences"],
       ["POST", "/rest/api/3/group/user"],
       ["POST", "/rest/api/3/filter"],
-      ["PUT", "/rest/api/3/filter/defaultShareScope"],
       ["POST", "/rest/api/3/issuetypescheme"],
       ["PUT", "/rest/api/3/issues/archive/export"],
       ["GET", "/rest/api/3/search"],
@@ -203,6 +202,7 @@ describe("jira refusals", () => {
       ["POST", "/issueLinkType"],
       ["PUT", "/issueLinkType/1"],
       ["PUT", "/filter/10000"],
+      ["PUT", "/filter/defaultShareScope"],
       ["PUT", "/myself"],
     ] as const) {
       expect({ path, reaches: reaches(method, `${API}${path}`) }).toEqual({ path, reaches: true })
