@@ -83,3 +83,9 @@ describe("review fixes: patches that touch several files", () => {
     expect((codexAnswer(pre("apply_patch", { command: moved }), block) as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput.permissionDecisionReason).toContain("b.ts")
   })
 })
+
+describe("fifth review: printing a key variable through Codex", () => {
+  test("declare -p of a key variable is denied", () => {
+    expect(codexAnswer(pre("Bash", { command: "declare -p OPENAI_API_KEY" }), block)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } })
+  })
+})

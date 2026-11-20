@@ -17,7 +17,15 @@ export type Word = {
   brace: boolean
   // The word as a pattern: what was quoted, escaped with a backslash.
   pattern: string
+  // The variables it expands, by name.
+  vars: string[]
+  // A process substitution, <(...) or >(...), standing for a file only the
+  // shell names; its commands are read on their own.
+  process?: boolean
 }
+
+// A variable whose name says it holds a key.
+export const KEY_VARIABLE = /^[A-Za-z0-9_]*(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)[A-Za-z0-9_]*$/i
 
 export type Op = "start" | ";" | "&&" | "||" | "|" | "&"
 
@@ -52,7 +60,7 @@ export function escapePattern(text: string): string {
 
 // A word the guard made itself, not one the shell would expand.
 export function literal(text: string, dynamic = false): Word {
-  return { text, dynamic, glob: false, brace: false, pattern: escapePattern(text) }
+  return { text, dynamic, glob: false, brace: false, pattern: escapePattern(text), vars: [] }
 }
 
 const NAME = /[A-Za-z_][A-Za-z0-9_]*/y
@@ -175,6 +183,12 @@ class Parser {
         nodes.push({ kind: "unknown", why: "an unmatched parenthesis" })
         continue
       }
+      if ((c === "<" || c === ">") && this.s[this.i + 1] === "(") {
+        this.i += 2
+        nodes.push({ kind: "open", op: "start", sub: true, process: true }, ...this.list(")"), { kind: "close" })
+        words.push({ text: "", dynamic: true, glob: false, brace: false, pattern: "", vars: [], process: true })
+        continue
+      }
       if (c === "<" || c === ">") {
         if (this.redirect(nodes, (word) => inputs.push(word))) heredoc = true
         continue
@@ -199,7 +213,8 @@ class Parser {
       nodes.push({ kind: "unknown", why: "a here-string" })
       this.i += 3
       this.skipBlanks()
-      this.word(nodes)
+      const key = this.word(nodes).vars.find((v) => KEY_VARIABLE.test(v))
+      if (key) nodes.push({ kind: "unknown", why: `a here-string that expands $${key}`, runs: true })
       return true
     }
     if (s.startsWith("<<", this.i)) {
@@ -211,11 +226,6 @@ class Parser {
       const delimiter = this.word(nodes)
       this.heredocs.push({ delimiter: delimiter.text, strip, quoted: /['"\\]/.test(s.slice(raw, this.i)) })
       return true
-    }
-    if (s.startsWith("<(", this.i) || s.startsWith(">(", this.i)) {
-      this.i += 2
-      nodes.push({ kind: "open", op: "start", sub: true, process: true }, ...this.list(")"), { kind: "close" })
-      return false
     }
     const reading = s[this.i] === "<"
     this.i++
@@ -241,7 +251,13 @@ class Parser {
         const line = this.s.slice(this.i, eol === -1 ? this.s.length : eol)
         this.i = eol === -1 ? this.s.length : eol + 1
         if ((strip ? line.replace(/^\t+/, "") : line) === delimiter) break
-        if (!quoted && /\$\(|`/.test(line)) this.pending.push({ kind: "unknown", why: "a here-document that runs a command", runs: true })
+        if (quoted) continue
+        if (/\$\(|`/.test(line)) this.pending.push({ kind: "unknown", why: "a here-document that runs a command", runs: true })
+        // An unquoted body expands its variables, and prints them to
+        // whatever reads it.
+        for (const match of line.matchAll(/\$\{?[#!]?([A-Za-z_][A-Za-z0-9_]*)/g)) {
+          if (KEY_VARIABLE.test(match[1] as string)) this.pending.push({ kind: "unknown", why: `a here-document that expands $${match[1]}`, runs: true })
+        }
       }
     }
     this.heredocs = []
@@ -284,10 +300,32 @@ class Parser {
     this.braceScanEnd = j
   }
 
+  // Whether the bracket expression opening at this [ holds a POSIX class,
+  // [:alpha:], [=a=] or [.a.], scanned to its closing ] and no further; a
+  // [ inside a run already scanned is decided by that scan, so the whole
+  // line is read once.
+  private bracketScanEnd = -1
+  private bracketScan(nodes: ShellNode[]): void {
+    if (this.i < this.bracketScanEnd) return
+    const s = this.s
+    let j = this.i + 1
+    if (s[j] === "!" || s[j] === "^") j++
+    if (s[j] === "]") j++
+    for (; j < s.length; j++) {
+      const c = s[j] as string
+      if (c === "]" || OPERATOR_CHARS.includes(c) || c === "'" || c === '"') break
+      if (c === "[" && (s[j + 1] === ":" || s[j + 1] === "=" || s[j + 1] === ".")) {
+        nodes.push({ kind: "unknown", why: "a POSIX character class in a glob" })
+        break
+      }
+    }
+    this.bracketScanEnd = j
+  }
+
   // One word, with what substitutions inside it run pushed to `nodes`.
   private word(nodes: ShellNode[]): Word {
     const s = this.s
-    const word: Word = { text: "", dynamic: false, glob: false, brace: false, pattern: "" }
+    const word: Word = { text: "", dynamic: false, glob: false, brace: false, pattern: "", vars: [] }
     const add = (text: string, quoted: boolean) => {
       word.text += text
       word.pattern += quoted ? escapePattern(text) : text
@@ -344,7 +382,7 @@ class Parser {
         }
       }
       if (c === "*" || c === "?" || c === "[") word.glob = true
-      if (c === "[" && /^\[!?\^?\]?[^\]]*\[[:=.]/.test(s.slice(this.i, this.i + 64))) nodes.push({ kind: "unknown", why: "a POSIX character class in a glob" })
+      if (c === "[") this.bracketScan(nodes)
       if ("?*+@!".includes(c) && s[this.i + 1] === "(") nodes.push({ kind: "unknown", why: "an extended glob" })
       if (c === "{") this.braceScan(this.i, word)
       add(c, false)
@@ -435,6 +473,8 @@ class Parser {
       }
       const body = close === -1 ? s.slice(this.i + 2) : s.slice(this.i + 2, close)
       this.i = close === -1 ? s.length : close + 1
+      const named = /^[#!]?([A-Za-z_][A-Za-z0-9_]*)/.exec(body)?.[1]
+      if (named) word.vars.push(named)
       if (body === "HOME") add(this.home, true)
       else {
         word.dynamic = true
@@ -445,6 +485,7 @@ class Parser {
     NAME.lastIndex = this.i + 1
     const name = NAME.exec(s)?.[0]
     if (name) {
+      word.vars.push(name)
       this.i += 1 + name.length
       if (name === "HOME") add(this.home, true)
       else word.dynamic = true

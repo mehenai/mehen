@@ -68,3 +68,9 @@ describe("mehen hook cursor, as a process", () => {
     }
   })
 })
+
+describe("fifth review: an outside-grammar line through Cursor", () => {
+  test("a reader inside a case branch is denied", () => {
+    expect(cursorAnswer(shell("case x in x) cat .env;; esac"), block)).toMatchObject({ permission: "deny" })
+  })
+})
