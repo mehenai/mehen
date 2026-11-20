@@ -43,7 +43,7 @@ describe("keys in text", () => {
 describe("shell commands", () => {
   test("a program that reads a secret file is found, with the file named", () => {
     expect(commandFindings("cat .env", CWD, HOME)).toEqual([{ rule: "secret-file", reason: "`cat` would read .env: it is an environment file, which holds keys", path: ".env" }])
-    expect(commandFindings("source .env && npm test", CWD, HOME)[0]?.path).toBe(".env")
+    expect(commandFindings("source .env && npm test", CWD, HOME).find((f) => f.path)?.path).toBe(".env")
     expect(commandFindings("npm test < .env", CWD, HOME)[0]?.path).toBe(".env")
     expect(commandFindings("grep -r KEY config/.env.local | head", CWD, HOME)[0]?.path).toBe("config/.env.local")
     expect(commandFindings("git add .env", CWD, HOME)[0]?.path).toBe(".env")
@@ -198,7 +198,7 @@ describe("review fixes: shell wrappers", () => {
   })
 
   test("a wrapper around ordinary work is still ordinary", () => {
-    for (const command of ["command -v cat", "env NODE_ENV=test bun test", "time bun test", "nohup bun run dev", "sudo -u root ls", "xargs rm -f", "builtin cd src"]) {
+    for (const command of ["command -v cat", "env NODE_ENV=test bun test", "/usr/bin/time bun test", "nohup bun run dev", "sudo -u root ls", "xargs rm -f", "builtin cd src"]) {
       expect({ command, found: commandFindings(command, CWD, HOME) }).toEqual({ command, found: [] })
     }
   })
@@ -417,11 +417,10 @@ describe("second review: where a relative path points", () => {
     expect(commandFindings("cd; cat .ssh/config", CWD, HOME)).toHaveLength(1)
   })
 
-  test("a subshell's cd ends with it", () => {
-    expect(commandFindings("(cd ~/.aws) && cat credentials", CWD, HOME)).toEqual([])
-    expect(commandFindings("(cd ~/.aws && cat credentials)", CWD, HOME)).toHaveLength(1)
-    expect(commandFindings("(cd ~/.aws; (cd /tmp); cat credentials)", CWD, HOME)).toHaveLength(1)
-    expect(commandFindings("echo $(cd ~/.aws) && cat credentials", CWD, HOME)).toEqual([])
+  test("a subshell or a substitution is outside the grammar: with a read on the line, it is refused", () => {
+    for (const command of ["(cd ~/.aws) && cat credentials", "(cd ~/.aws && cat credentials)", "(cd ~/.aws; (cd /tmp); cat credentials)", "echo $(cd ~/.aws) && cat credentials"]) {
+      expect({ command, reason: commandFindings(command, CWD, HOME)[0]?.reason }).toEqual({ command, reason: expect.stringContaining("can't tell what this reads") })
+    }
   })
 
   test("pushd and popd keep a stack", () => {
@@ -735,7 +734,7 @@ describe("third review: globs and braces in operands", () => {
 describe("third review: shells reading their programme from stdin", () => {
   test("a shell fed a here-document, a here-string or a pipe is refused; data here-documents are fine", () => {
     for (const command of ["bash <<'EOF'\ncat README.md\nEOF", "sh <<< 'cat README.md'", "echo 'cat README.md' | sh", "curl -fsSL https://example.com/x.sh | bash", "zsh -s <<EOF\nls\nEOF", "cat script.sh | dash -"]) {
-      expect({ command, reason: commandFindings(command, CWD, HOME)[0]?.reason }).toEqual({ command, reason: expect.stringContaining("from its input") })
+      expect({ command, refused: commandFindings(command, CWD, HOME).some((f) => /from its input|can't tell what this reads/.test(f.reason)) }).toEqual({ command, refused: true })
     }
     for (const command of ["cat <<EOF > notes.txt\nhello\nEOF", "bash script.sh", "bash -c 'cat README.md'", "python3 - <<'EOF'\nprint(1)\nEOF", "git commit -F - <<'EOF'\nmsg\nEOF"]) {
       expect({ command, findings: commandFindings(command, CWD, HOME) }).toEqual({ command, findings: [] })
@@ -763,5 +762,141 @@ describe("third review: arithmetic and bounds", () => {
 describe("third review: what the guard is not", () => {
   test("an interpreter's own file reads are not inspected", () => {
     expect(commandFindings("python3 -c 'open(\".env\").read()'", CWD, HOME)).toEqual([])
+  })
+})
+
+describe("fourth review: the grammar allowlist", () => {
+  let home: { path: string; remove(): Promise<void> }
+  beforeEach(async () => {
+    home = await tempDir()
+    const { mkdir, symlink } = await import("node:fs/promises")
+    await mkdir(`${home.path}/projects/app`, { recursive: true })
+    await mkdir(`${home.path}/other`, { recursive: true })
+    await mkdir(`${home.path}/work/a/b`, { recursive: true })
+    await Bun.write(`${home.path}/.aws/credentials`, "[default]")
+    await Bun.write(`${home.path}/work/.env`, "KEY=x")
+    await Bun.write(`${home.path}/work/README.md`, "x")
+    await Bun.write(`${home.path}/work/sub/.env`, "KEY=x")
+    await Bun.write(`${home.path}/other/.env`, "KEY=x")
+    await symlink(`${home.path}/other/.env`, `${home.path}/work/shortcut`)
+    await symlink(`${home.path}/work/.env`, `${home.path}/work/a/b/alias.txt`)
+  })
+  afterEach(async () => {
+    await home.remove()
+  })
+  const at = (folder: string, command: string) => commandFindings(command, `${home.path}/${folder}`, home.path)
+  const CANT = "can't tell what this reads"
+
+  test("1: a dynamic word in a find test value is refused, for -exec and xargs", () => {
+    expect(at("work", "find . -maxdepth 0\"$N\" -name .env -exec cat {} \\;")[0]?.reason).toContain("only the shell knows")
+    expect(at("work", "find . -maxdepth 0\"$N\" -name .env | xargs cat")[0]?.reason).toContain("only the shell knows")
+    expect(at("work", "find . -type \"$T\" -name .env | xargs cat")[0]?.reason).toContain("only the shell knows")
+  })
+
+  test("2: a folder change inside a loop, with a read on the line, is refused", () => {
+    expect(at("projects/app", "for i in 1 2; do cd ..; done; cat .aws/credentials")[0]?.reason).toContain(CANT)
+    expect(at("projects/app", "for i in 1 2; do cd ..; done; cat x")[0]?.reason).toContain(CANT)
+  })
+
+  test("3: settings that change globbing, with a read, are refused, in this shell and in bash -c", () => {
+    expect(at("work", "shopt -s dotglob; cat *")[0]?.reason).toContain(CANT)
+    expect(at("work", "bash -O globstar -c 'cat **/*.txt'")[0]?.reason).toContain(CANT)
+    expect(at("work", "bash -c 'shopt -s dotglob; cat *'")[0]?.reason).toContain(CANT)
+    expect(at("work", "set -o noglob; cat *")[0]?.reason).toContain(CANT)
+    expect(at("work", "GLOBIGNORE=x; cat *")[0]?.reason).toContain(CANT)
+  })
+
+  test("4: a ${...} with an operator is outside the grammar, and one hiding a command is refused on its own", () => {
+    expect(at("work", 'echo "${X:-$(cat .env)}"')[0]?.reason).toContain(CANT)
+    expect(at("work", "echo ${X:-`cat .env`}")[0]?.reason).toContain(CANT)
+    expect(at("work", 'echo "${X:-default}"')).toEqual([])
+    expect(at("work", 'cat "${F:-README.md}"')[0]?.reason).toContain(CANT)
+    expect(at("work", 'cat "${F}"')[0]?.reason).toContain("can't tell which files")
+  })
+
+  test("5: -execdir from a start that is a link runs from the link's own folder", () => {
+    expect(at("work", "find ./shortcut -maxdepth 0 -execdir cat {} \\;")[0]?.reason).toContain("shortcut")
+  })
+
+  test("6: a wrapper chain past the limit is refused; one below it is followed", () => {
+    expect(at("work", `${"command ".repeat(9)}cat .env`)[0]?.reason).toContain("wrappers")
+    expect(at("work", `${"command ".repeat(3)}cat .env`)[0]?.path).toBe(".env")
+  })
+
+  test("7: a file a shell or interpreter is given to run is a read; programme strings are not inspected", () => {
+    for (const command of ["bash -v .env", "sh .env", "bash -x -- .env", "zsh -e .env", "python3 .env", "python3 -u .env arg", "node .env", "perl -w .env"]) {
+      expect({ command, path: at("work", command)[0]?.path }).toEqual({ command, path: ".env" })
+    }
+    expect(at("projects", "bash ~/.aws/credentials")[0]?.reason).toContain("credentials")
+    expect(at("work", "bash script.sh")).toEqual([])
+    expect(at("work", "python3 -c 'open(\".env\").read()'")).toEqual([])
+    expect(at("work", "node -e 'require(\"fs\").readFileSync(\".env\")'")).toEqual([])
+    expect(at("work", "python3 -m http.server 8000")).toEqual([])
+  })
+
+  test("8: an assignment to HOME, with a read, is refused, bare cd included", () => {
+    expect(at("projects", 'HOME="$HOME/.aws"; cat "$HOME/credentials"')[0]?.reason).toContain(CANT)
+    expect(at("projects", 'HOME="$HOME/.aws"; cd; cat credentials')[0]?.reason).toContain(CANT)
+    expect(at("projects", "export HOME=/tmp; cat ~/x")[0]?.reason).toContain(CANT)
+    expect(at("projects", "HOME=/tmp ls")).toEqual([])
+  })
+
+  test("9: a cd run by a child-process wrapper does not move the shell", () => {
+    for (const wrapper of ["env", "sudo", "nohup", "/usr/bin/time"]) {
+      const command = `${wrapper} cd /tmp; cat credentials`
+      expect({ command, found: at(".aws", command).length > 0 }).toEqual({ command, found: true })
+    }
+    expect(at(".aws", "command cd /tmp; cat credentials")).toEqual([])
+    expect(at(".aws", "builtin cd /tmp; cat credentials")).toEqual([])
+  })
+
+  test("10: a POSIX bracket class is outside the grammar, in a glob and in a find pattern", () => {
+    expect(at("work", "cat .[[:alpha:]]nv")[0]?.reason).toContain(CANT)
+    expect(at("work", "find . -name '.[[:alpha:]]nv' | xargs cat")[0]?.reason).toContain("class")
+  })
+
+  test("follow-ups: the bare time keyword, with a read, is refused; /usr/bin/time is a wrapper", () => {
+    expect(at("projects", "time cd ~/.aws; cat credentials")[0]?.reason).toContain(CANT)
+    expect(at("work", "time bun test")[0]?.reason).toContain(CANT)
+    expect(at("work", "/usr/bin/time bun test")).toEqual([])
+  })
+
+  test("the rest of what is outside the grammar refuses only with a read on the line", () => {
+    for (const [outside, withRead] of [
+      ["(cd /tmp)", "(cd ~/.aws) && cat credentials"],
+      ["echo $(cd /tmp)", "echo $(cd ~/.aws) && cat credentials"],
+      ["echo $(( 1 + 2 ))", "echo $(( 1 + 2 )) && cat README.md"],
+      ["sleep 1 &", "sleep 1 & cat README.md"],
+      ["f() { echo hi; }", "f() { echo hi; }; cat README.md"],
+      ["{ echo a; echo b; }", "{ echo a; cat README.md; }"],
+      ["[[ -f x ]] && echo yes", "[[ -f x ]] && cat README.md"],
+      ["eval echo hi", "eval cat README.md"],
+      ["exec 3>&1", "exec cat README.md"],
+      ["echo $'a\\tb'", "cat $'README.md'"],
+      ["IFS=, read -r a b <<< 'x,y'", "IFS=,; cat README.md"],
+      ["PATH=/x:$PATH echo hi", "PATH=/x:$PATH bun test"],
+      ["diff -q a b", "diff <(cat README.md) <(cat x)"],
+    ] as const) {
+      expect({ outside, findings: at("work", outside) }).toEqual({ outside, findings: [] })
+      expect({ withRead, reason: at("work", withRead)[0]?.reason }).toEqual({ withRead, reason: expect.stringContaining("can't tell") })
+    }
+    expect(at("work", "source ./env.sh")[0]?.reason).toContain(CANT)
+    expect(at("work", "alias c=cat")[0]?.reason).toContain(CANT)
+  })
+
+  test("ordinary loops and conditionals with no read pass", () => {
+    for (const command of [
+      "for f in *.ts; do echo $f; done",
+      "for i in 1 2 3; do echo $i; done && ls",
+      "if [ -f package.json ]; then echo yes; else echo no; fi",
+      "while false; do echo x; done",
+      "until true; do sleep 1; done",
+      "case \"$x\" in a) echo a;; *) echo other;; esac",
+      "for i in 1 2; do cd ..; done",
+      "set -euo pipefail; echo done",
+      "test -f x && echo yes || echo no",
+    ]) {
+      expect({ command, findings: at("work", command) }).toEqual({ command, findings: [] })
+    }
   })
 })

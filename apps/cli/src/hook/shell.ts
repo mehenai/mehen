@@ -29,8 +29,9 @@ export type ShellNode =
   // inside a word (`sub`): what changes inside it ends with it.
   | { kind: "open"; op: Op; sub: boolean }
   | { kind: "close" }
-  // Something the guard does not read, with why.
-  | { kind: "unknown"; why: string }
+  // A construct outside the grammar the guard reads, with why; `runs` when
+  // it may run a command the guard cannot see.
+  | { kind: "unknown"; why: string; runs?: boolean }
 
 // Past these the guard does not try to read a command, and says so.
 export const MAX_COMMAND_LENGTH = 65_536
@@ -81,7 +82,7 @@ class Parser {
     if (++this.depth > MAX_NESTING) {
       this.i = this.s.length
       this.depth--
-      return [{ kind: "unknown", why: `it is nested too deeply (more than ${MAX_NESTING} levels)` }]
+      return [{ kind: "unknown", why: `it is nested too deeply (more than ${MAX_NESTING} levels)`, runs: true }]
     }
     let op: Op = "start"
     let words: Word[] = []
@@ -138,6 +139,7 @@ class Parser {
           this.word(nodes)
         } else {
           this.i++
+          nodes.push({ kind: "unknown", why: "a command run in the background" })
           operator("&")
         }
         continue
@@ -161,6 +163,7 @@ class Parser {
           continue
         }
         flush()
+        nodes.push({ kind: "unknown", why: "a subshell" })
         nodes.push({ kind: "open", op, sub: false })
         nodes.push(...this.list(")"))
         nodes.push({ kind: "close" })
@@ -193,6 +196,7 @@ class Parser {
   private redirect(nodes: ShellNode[], input: (word: Word) => void): boolean {
     const s = this.s
     if (s.startsWith("<<<", this.i)) {
+      nodes.push({ kind: "unknown", why: "a here-string" })
       this.i += 3
       this.skipBlanks()
       this.word(nodes)
@@ -209,6 +213,7 @@ class Parser {
       return true
     }
     if (s.startsWith("<(", this.i) || s.startsWith(">(", this.i)) {
+      nodes.push({ kind: "unknown", why: "a process substitution" })
       this.i += 2
       nodes.push({ kind: "open", op: "start", sub: true }, ...this.list(")"), { kind: "close" })
       return false
@@ -237,7 +242,7 @@ class Parser {
         const line = this.s.slice(this.i, eol === -1 ? this.s.length : eol)
         this.i = eol === -1 ? this.s.length : eol + 1
         if ((strip ? line.replace(/^\t+/, "") : line) === delimiter) break
-        if (!quoted && /\$\(|`/.test(line)) this.pending.push({ kind: "unknown", why: "a here-document that runs a command" })
+        if (!quoted && /\$\(|`/.test(line)) this.pending.push({ kind: "unknown", why: "a here-document that runs a command", runs: true })
       }
     }
     this.heredocs = []
@@ -340,6 +345,8 @@ class Parser {
         }
       }
       if (c === "*" || c === "?" || c === "[") word.glob = true
+      if (c === "[" && /^\[!?\^?\]?[^\]]*\[[:=.]/.test(s.slice(this.i, this.i + 64))) nodes.push({ kind: "unknown", why: "a POSIX character class in a glob" })
+      if ("?*+@!".includes(c) && s[this.i + 1] === "(") nodes.push({ kind: "unknown", why: "an extended glob" })
       if (c === "{") this.braceScan(this.i, word)
       add(c, false)
       this.i++
@@ -386,6 +393,7 @@ class Parser {
   // substitution inside it is not followed, and is refused.
   private arithmetic(word: Word, nodes: ShellNode[]): void {
     const s = this.s
+    nodes.push({ kind: "unknown", why: "arithmetic" })
     let depth = 2
     let j = this.i + 3
     for (; j < s.length && depth > 0; j++) {
@@ -393,10 +401,10 @@ class Parser {
       if (c === "(") depth++
       else if (c === ")") depth--
       else if (c === "`" || (c === "$" && s[j + 1] === "(" && s[j + 2] !== "(")) {
-        nodes.push({ kind: "unknown", why: "a command substitution inside $(( ))" })
+        nodes.push({ kind: "unknown", why: "a command substitution inside $(( ))", runs: true })
       }
     }
-    if (depth > 0) nodes.push({ kind: "unknown", why: "an unclosed $((" })
+    if (depth > 0) nodes.push({ kind: "unknown", why: "an unclosed $((", runs: true })
     this.i = j
     word.dynamic = true
   }
@@ -412,11 +420,27 @@ class Parser {
       return
     }
     if (next === "{") {
-      const close = s.indexOf("}", this.i + 2)
-      const name = close === -1 ? "" : s.slice(this.i + 2, close)
+      // ${NAME} alone is in the grammar; anything with an operator is not,
+      // and one that holds a command substitution runs a command the
+      // guard does not follow.
+      let depth = 0
+      let close = -1
+      for (let j = this.i + 1; j < s.length; j++) {
+        const d = s[j]
+        if (d === "\\") j++
+        else if (d === "{") depth++
+        else if (d === "}" && --depth === 0) {
+          close = j
+          break
+        }
+      }
+      const body = close === -1 ? s.slice(this.i + 2) : s.slice(this.i + 2, close)
       this.i = close === -1 ? s.length : close + 1
-      if (name === "HOME") add(this.home, true)
-      else word.dynamic = true
+      if (body === "HOME") add(this.home, true)
+      else {
+        word.dynamic = true
+        if (!/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])$/.test(body)) nodes.push({ kind: "unknown", why: "a ${...} with an operator", runs: /\$\(|`/.test(body) || close === -1 })
+      }
       return
     }
     NAME.lastIndex = this.i + 1
@@ -433,7 +457,8 @@ class Parser {
       return
     }
     if (next === "'" || next === '"') {
-      // $'...' and $"...": quoting the guard reads no further into.
+      // $'...' and $"...": quoting outside the grammar.
+      nodes.push({ kind: "unknown", why: next === "'" ? "$'...' quoting" : "$\"...\" quoting" })
       this.i++
       word.dynamic = true
       return
@@ -453,6 +478,6 @@ class Parser {
 }
 
 export function parseShell(command: string, home: string): ShellNode[] {
-  if (command.length > MAX_COMMAND_LENGTH) return [{ kind: "unknown", why: `it is too long for the guard to read (more than ${MAX_COMMAND_LENGTH} characters)` }]
+  if (command.length > MAX_COMMAND_LENGTH) return [{ kind: "unknown", why: `it is too long for the guard to read (more than ${MAX_COMMAND_LENGTH} characters)`, runs: true }]
   return new Parser(command, home, 0).parse()
 }

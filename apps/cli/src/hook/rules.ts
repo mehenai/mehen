@@ -710,10 +710,13 @@ function parseFind(args: Word[]): FindSpec | { refuse: string } {
     if (text === "-a" || text === "-and") continue
     if (["-name", "-iname", "-path", "-ipath"].includes(text)) {
       const value = args[++i]
-      if (value === undefined || value.dynamic || value.glob || value.brace) return { refuse: `has a ${text} pattern the shell expands first; quote it` }
+      if (value === undefined || value.dynamic) return { refuse: `has a ${text} pattern only the shell knows` }
+      if (value.glob || value.brace) return { refuse: `has a ${text} pattern the shell expands first; quote it` }
+      if (/\[[^\]]*\[[:=.]/.test(value.text)) return { refuse: `uses a POSIX character class in ${text}, which the guard does not follow` }
       spec.tests.push({ kind: text.endsWith("name") ? "name" : "path", re: new RegExp(globRegex(value.text).source, text.startsWith("-i") ? "is" : "s") })
       continue
     }
+    if ((text === "-type" || text === "-maxdepth" || text === "-mindepth") && (args[i + 1] === undefined || args[i + 1]?.dynamic || args[i + 1]?.glob || args[i + 1]?.brace)) return { refuse: `has a ${text} value only the shell knows` }
     if (text === "-type") {
       const value = args[++i]?.text
       if (value !== "f" && value !== "d" && value !== "l") return { refuse: `uses -type ${value ?? ""}, which the guard does not follow` }
@@ -784,7 +787,7 @@ function selectFind(spec: FindSpec, cwds: Cwds, ctx: Context): { entries: Select
       const rootKind = statKind(root, spec.follow)
       if (rootKind === null) continue
       const rootName = start.text.replace(/\/+$/, "").split("/").at(-1) || start.text
-      const queue: { fs: string; printed: string; name: string; kind: FileKind; depth: number; parent: string }[] = [{ fs: rootKind === "d" ? (realOrNull(root) ?? root) : root, printed: start.text, name: rootName, kind: rootKind, depth: 0, parent: dirname(realOrNull(root) ?? root) }]
+      const queue: { fs: string; printed: string; name: string; kind: FileKind; depth: number; parent: string }[] = [{ fs: rootKind === "d" ? (realOrNull(root) ?? root) : root, printed: start.text, name: rootName, kind: rootKind, depth: 0, parent: realOrNull(dirname(root)) ?? normalize(dirname(root)) }]
       while (queue.length) {
         const node = queue.shift() as (typeof queue)[number]
         const selected = node.depth >= spec.mindepth && spec.tests.every((test) => (test.kind === "type" ? test.type === node.kind : test.re.test(test.kind === "name" ? node.name : node.printed)))
@@ -838,7 +841,37 @@ function xargsNames(ctx: Context, state: State, node: CommandNode, producer: Com
 
 // ---- reading the line ------------------------------------------------------
 
-type Context = { home: string; vaultDirs: string[]; command: string; findings: Finding[] }
+// `outside` lists the constructs on the line outside the grammar the guard
+// reads; `reads` says whether anything on it reads a file or prints the
+// environment; `nested` counts the subshells and substitutions around the
+// command being read.
+type Context = { home: string; vaultDirs: string[]; command: string; findings: Finding[]; outside: string[]; reads: boolean; nested: number }
+
+function outside(ctx: Context, why: string, runs = false): void {
+  if (!ctx.outside.includes(why)) ctx.outside.push(why)
+  if (runs) ctx.reads = true
+}
+
+// Assignments that change how the shell finds files, expands words or
+// starts: outside the grammar.
+const SPECIAL_VARIABLES = new Set(["HOME", "IFS", "GLOBIGNORE", "PATH", "CDPATH", "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS"])
+const ASSIGNED = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/
+
+function specialAssignment(words: Word[]): string | null {
+  for (const word of words) {
+    const name = ASSIGNED.exec(word.text)?.[1]
+    if (name === undefined) return null
+    if (SPECIAL_VARIABLES.has(name)) return name
+  }
+  return null
+}
+
+// The programs a line is said to read with: they read the files they are
+// given, or run a file they are given. env and export count only when
+// they print the environment.
+function isReader(program: string): boolean {
+  return (READERS.has(program) && program !== "env" && program !== "export") || program in FILE_READERS || SHELLS.has(program)
+}
 
 function refuse(ctx: Context, reason: string): void {
   if (!ctx.findings.some((f) => f.reason === reason)) ctx.findings.push({ rule: "secret-file", reason })
@@ -931,7 +964,12 @@ function fileOperands(program: string, args: Word[]): Word[] {
   return program === "cp" && !args.some((w) => /^(-t|--target-directory)/.test(w.text)) ? out.slice(0, -1) : out
 }
 
-type Unwrapped = { words: Word[]; cwds: Cwds; reads: Word[]; xargs: XargsInfo | null; refuse: string | null }
+// `child` says the program runs in a process of its own (under env, sudo,
+// nohup, xargs or a time binary), so a cd there does not move this shell.
+type Unwrapped = { words: Word[]; cwds: Cwds; reads: Word[]; xargs: XargsInfo | null; refuse: string | null; child: boolean }
+
+export const MAX_WRAPPERS = 8
+const WRAPPERS = new Set(["command", "builtin", "nohup", "exec", "time", "env", "sudo", "xargs"])
 
 function takeValue(args: Word[], i: number, word: Word, attached: string): [Word | undefined, number] {
   return attached ? [part(word, attached), i] : [args[i + 1], i + 1]
@@ -998,11 +1036,14 @@ const SUDO_VALUE = new Set(["-u", "-g", "-h", "-p", "-C", "-r", "-t", "-U", "-T"
 // exec, nohup, time, sudo and xargs. A wrapper that would run nothing (env
 // alone prints the environment, command -v only looks a name up) is kept.
 function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
-  const out: Unwrapped = { words, cwds, reads: [], xargs: null, refuse: null }
+  const out: Unwrapped = { words, cwds, reads: [], xargs: null, refuse: null, child: false }
   let current = words
-  for (let depth = 0; depth < 8; depth++) {
+  for (let depth = 0; depth < MAX_WRAPPERS; depth++) {
+    const special = specialAssignment(current)
+    if (special) outside(ctx, `an assignment to ${special}`)
     let i = 0
-    while (i < current.length - 1 && !(current[i] as Word).dynamic && ASSIGNMENT.test((current[i] as Word).text)) i++
+    // NAME=value, its value possibly only known when the shell runs it.
+    while (i < current.length - 1 && ASSIGNMENT.test((current[i] as Word).text)) i++
     current = current.slice(i)
     out.words = current
     const head = current[0]
@@ -1025,23 +1066,33 @@ function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
         break
       }
       case "builtin":
+        break
       case "nohup":
+        out.child = true
         break
       case "exec": {
+        outside(ctx, "exec")
         let j = 0
         while (j < rest.length && /^-[cla]+$/.test((rest[j] as Word).text)) j += (rest[j] as Word).text.endsWith("a") ? 2 : 1
         rest = rest.slice(j)
         break
       }
       case "time": {
+        // Bare `time` is the shell's keyword, which runs builtins such as
+        // cd in this shell; a path names a time program, a child process.
+        if (head.text === "time") outside(ctx, "the time keyword")
+        else out.child = true
         let j = 0
         while (j < rest.length && (rest[j] as Word).text.startsWith("-")) j += ["-f", "-o"].includes((rest[j] as Word).text) ? 2 : 1
         rest = rest.slice(j)
         break
       }
       case "env": {
+        out.child = true
         const next = unwrapEnv(rest, out, ctx)
         if (next === null) return out
+        const special = specialAssignment(next)
+        if (special) outside(ctx, `an assignment to ${special}`)
         let j = 0
         while (j < next.length && !(next[j] as Word).dynamic && ASSIGNMENT.test((next[j] as Word).text)) j++
         rest = next.slice(j)
@@ -1052,6 +1103,7 @@ function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
         break
       }
       case "sudo": {
+        out.child = true
         let j = 0
         while (j < rest.length && (rest[j] as Word).text.startsWith("-") && !(rest[j] as Word).dynamic) {
           const text = (rest[j] as Word).text
@@ -1121,6 +1173,7 @@ function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
         }
         rest = rest.slice(j)
         out.xargs = info
+        out.child = true
         if (!rest.length) return out
         break
       }
@@ -1131,10 +1184,58 @@ function unwrap(words: Word[], cwds: Cwds, ctx: Context): Unwrapped {
     current = rest
   }
   out.words = current
+  const last = current[0]
+  if (last && !last.dynamic && WRAPPERS.has(basename(last.text))) out.refuse = `can't tell what this runs: more than ${MAX_WRAPPERS} wrappers in a row; run the command directly`
   return out
 }
 
 type CommandNode = Extract<ShellNode, { kind: "command" }>
+
+const SHELL_VALUE_OPTIONS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"])
+
+// A shell run as a command: with -c, the commands in its string are read
+// as a line of their own; otherwise the file it is given is a read, its
+// contents not inspected; with none, -s or -, it runs what its input
+// holds, which is refused when that input is a pipe or a here-document.
+// -o, +o, -O and +O set options the guard does not model.
+function shellRun(ctx: Context, state: State, node: CommandNode, program: string, args: Word[], cwds: Cwds): void {
+  let command = false
+  let stdin = false
+  let operand: Word | undefined
+  let i = 0
+  for (; i < args.length; i++) {
+    const word = args[i] as Word
+    const text = word.text
+    if (word.dynamic || text === "-" || !/^[-+]/.test(text)) break
+    if (text === "--") {
+      i++
+      break
+    }
+    if (SHELL_VALUE_OPTIONS.has(text)) {
+      if (/^[-+][oO]$/.test(text)) outside(ctx, `${program} ${text}`)
+      i++
+      continue
+    }
+    if (text.startsWith("--")) continue
+    if (/[oO]/.test(text)) {
+      outside(ctx, `${program} ${text}`)
+      i++
+      continue
+    }
+    if (text.startsWith("-") && text.includes("c")) command = true
+    if (text.startsWith("-") && text.includes("s")) stdin = true
+  }
+  operand = args[i]
+  if (command) {
+    if (!operand || operand.dynamic) return outside(ctx, `\`${program} -c\` with commands only the shell knows`, true)
+    return lines(ctx, { ...state, cwds, stack: [...state.stack] }, parseShell(operand.text, ctx.home))
+  }
+  if (stdin || operand === undefined || operand.text === "-") {
+    if (node.op === "|" || node.heredoc) refuse(ctx, `can't tell what \`${program}\` runs: it reads its commands from its input; run them directly`)
+    return
+  }
+  judgeRead(ctx, state, cwds, `\`${program}\``, operand, true)
+}
 
 // One simple command: its folder changes, links, environment dumps, grep
 // -r walks and the files it reads. `producer` is the command piped into it
@@ -1147,6 +1248,8 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
   const unwrapped = unwrap(words, state.cwds, ctx)
   const first = unwrapped.words[0]
   const name = first === undefined ? "the redirect" : first.dynamic ? "the command" : `\`${basename(first.text)}\``
+  if (node.inputs.length || unwrapped.reads.length) ctx.reads = true
+  if (first && (first.dynamic || isReader(basename(first.text)))) ctx.reads = true
   for (const input of node.inputs) if (judgeRead(ctx, state, state.cwds, name, input, true)) break
   if (unwrapped.refuse) {
     refuse(ctx, unwrapped.refuse)
@@ -1171,30 +1274,33 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
     return
   }
   if (program === "cd" || program === "pushd" || program === "popd") {
+    // A cd in a process of its own does not move this shell. One inside a
+    // subshell, a substitution or a pipeline is outside the grammar.
+    if (unwrapped.child) return
+    if (ctx.nested > 0) return outside(ctx, "a folder change inside a subshell or a substitution")
+    if (node.op === "|" || node.next === "|") return outside(ctx, "a folder change in a pipeline")
     folderChange(program, args, state, ctx.home, apart)
     return
   }
-  if (program === "function") return refuse(ctx, "can't tell what this command runs (a function definition); run the part that reads files on its own")
-  if (SHELLS.has(program)) {
-    const flag = args.findIndex((a) => !a.dynamic && /^-[a-z]*c[a-z]*$/.test(a.text))
-    if (flag === -1) {
-      // No -c: it runs a script file, or, with none named, -s or -, what
-      // its input holds.
-      const operand = args.find((a) => a.dynamic || !/^[-+]/.test(a.text) || a.text === "-")
-      const stdin = operand === undefined || operand.text === "-" || args.some((a) => !a.dynamic && /^-[a-z]*s[a-z]*$/.test(a.text))
-      if (stdin && (node.op === "|" || node.heredoc)) refuse(ctx, `can't tell what \`${program}\` runs: it reads its commands from its input; run them directly`)
-      return
-    }
-    const script = args[flag + 1]
-    if (!script || script.dynamic) return refuse(ctx, `can't tell what \`${program} -c\` runs; run the command directly`)
-    return lines(ctx, { ...state, cwds, stack: [...state.stack] }, parseShell(script.text, ctx.home))
+  if (program === "function") return outside(ctx, "a function definition")
+  if (program === "shopt") return outside(ctx, "shopt")
+  if (program === "alias" || program === "unalias") return outside(ctx, "an alias", true)
+  if (program === "coproc") return outside(ctx, "a coprocess", true)
+  if (program === "source" || program === ".") outside(ctx, `\`${program}\``)
+  if (program === "set" && args.some((a) => !a.dynamic && /^[-+][A-Za-z]*[of]/.test(a.text))) outside(ctx, "set -o or set -f")
+  if (["export", "declare", "typeset", "readonly", "local", "unset"].includes(program)) {
+    const special = args.map((a) => ASSIGNED.exec(a.text)?.[1] ?? a.text).find((n) => SPECIAL_VARIABLES.has(n))
+    if (special) outside(ctx, `an assignment to ${special}`)
   }
+  if (SHELLS.has(program)) return shellRun(ctx, state, node, program, args, cwds)
   if (program === "eval") {
-    if (args.some((a) => a.dynamic)) return refuse(ctx, "can't tell what `eval` runs; run the command directly")
+    outside(ctx, "eval")
+    if (args.some((a) => a.dynamic)) return outside(ctx, "eval of a word only the shell knows", true)
     return lines(ctx, state, parseShell(args.map((a) => a.text).join(" "), ctx.home))
   }
   const dump = environmentRead(words.map((w) => w.text), ctx.command)
   if (dump) {
+    ctx.reads = true
     ctx.findings.push({ rule: "secret-file", reason: dump })
     return
   }
@@ -1292,6 +1398,9 @@ function findExec(ctx: Context, state: State, args: Word[], cwds: Cwds): void {
 type AndOr = { states: Cwds[]; pureAnd: boolean }
 
 const COMPOUND_OPEN = new Set(["if", "while", "until", "for", "case", "select"])
+// Words that start a construct outside the grammar when they start a
+// command: loops, conditionals, groups, tests, negation, coprocesses.
+const OUTSIDE_KEYWORDS = new Set(["if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "select", "function", "{", "}", "[[", "]]", "!", "coproc", "time"])
 const COMPOUND_CLOSE = new Set(["fi", "done", "esac"])
 
 function unionAll(states: Cwds[]): Cwds {
@@ -1322,12 +1431,14 @@ function lines(ctx: Context, state: State, nodes: ShellNode[]): void {
   let compound = 0
   for (const node of nodes) {
     if (node.kind === "open") {
+      ctx.nested++
       if (!node.sub) list = enter(state, list, node.op)
       saved.push({ cwds: state.cwds, stack: [...state.stack], previous, list, compound, sub: node.sub })
       previous = null
       list = null
       compound = 0
     } else if (node.kind === "close") {
+      ctx.nested = Math.max(0, ctx.nested - 1)
       const back = saved.pop()
       if (back) {
         state.cwds = back.cwds
@@ -1337,12 +1448,13 @@ function lines(ctx: Context, state: State, nodes: ShellNode[]): void {
         compound = back.compound
         if (!back.sub) list?.states.push(state.cwds)
       }
-    } else if (node.kind === "unknown") refuse(ctx, `can't tell what this command runs (${node.why}); run the part that reads files on its own`)
+    } else if (node.kind === "unknown") outside(ctx, node.why, node.runs)
     else {
       list = enter(state, list, node.op)
       const head = node.words[0]
       const keyword = head && !head.dynamic ? head.text : ""
       if (COMPOUND_OPEN.has(keyword)) compound++
+      if (OUTSIDE_KEYWORDS.has(keyword)) outside(ctx, keyword === "time" ? "the time keyword" : `\`${keyword}\``, keyword === "coproc")
       command(ctx, state, node, previous, compound > 0)
       if (COMPOUND_CLOSE.has(keyword)) compound = Math.max(0, compound - 1)
       list?.states.push(state.cwds)
@@ -1356,6 +1468,10 @@ export function commandFindings(command: string, cwd: string, home = homedir(), 
   const findings: Finding[] = []
   const inText = secretInText(command)
   if (inText) findings.push({ rule: "secret-in-command", reason: `the command carries ${inText}` })
-  lines({ home, vaultDirs, command, findings }, { cwds: [cwd], stack: [], links: new Map() }, parseShell(command, home))
+  const ctx: Context = { home, vaultDirs, command, findings, outside: [], reads: false, nested: 0 }
+  lines(ctx, { cwds: [cwd], stack: [], links: new Map() }, parseShell(command, home))
+  // The allowlist: a line that uses anything outside the grammar and reads
+  // a file or prints the environment is refused, whatever else was found.
+  if (ctx.outside.length && ctx.reads) findings.unshift({ rule: "secret-file", reason: `can't tell what this reads (it uses ${ctx.outside[0]}, which the guard does not follow); run the read on its own` })
   return findings
 }
