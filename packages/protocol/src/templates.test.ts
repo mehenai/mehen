@@ -174,6 +174,16 @@ describe("every template and provider, checked the same way", () => {
     }
   })
 
+  // Reads by allowlist, for the reasons the policy model gives: these APIs
+  // have reads that hand back tokens, keys and signing secrets.
+  it("allows reads only on named routes in gitlab, pagerduty, jira, twilio, sendgrid, discord, figma and pypi", () => {
+    for (const id of ["gitlab", "pagerduty", "jira", "twilio", "sendgrid", "discord", "figma", "pypi"]) {
+      const template = getTemplate(id)
+      if (!template) throw new Error(id)
+      expect({ id, blanket: blanketReadAllows(template) }).toEqual({ id, blanket: [] })
+    }
+  })
+
   it("an OAuth client's binding reaches only its token endpoints, by POST", () => {
     for (const s of SERVICES.filter((x) => x.client)) {
       expect({ id: s.id, methods: s.binding.methods, paths: (s.binding.paths ?? []).length > 0, rules: s.policy.rules }).toEqual({ id: s.id, methods: ["POST"], paths: true, rules: [] })
@@ -206,11 +216,13 @@ describe("every template and provider, checked the same way", () => {
         const paths = rule.paths ?? [pathInBinding(s.binding)]
         for (const pattern of paths) {
           const path = samplePath(pattern)
+          // A GraphQL rule with no body matcher is reached by a plain query,
+          // which a fail-closed mutation rule on the same path lets by.
+          // An allowed write is sent with an empty JSON object, which a
+          // fail-closed JSON field matcher on the same route lets by.
           for (const method of rule.action === "allow" ? methods.slice(0, 1) : methods) {
+            const body = rule.body === undefined && path.toLowerCase().endsWith("/graphql") ? { query: "query { __typename }" } : rule.action === "allow" && !READS.includes(method.toUpperCase()) ? {} : undefined
             const request = `${s.id}: ${method} ${path}`
-            // An allowed write is sent with an empty JSON object, which a
-            // fail-closed JSON field matcher on the same route lets by.
-            const body = rule.action === "allow" && !READS.includes(method.toUpperCase()) ? {} : undefined
             expect({ request, inBinding: inBinding(s, method, path) }).toEqual({ request, inBinding: true })
             expect({ request, action: decide(s.policy, method, urlOf(s, path), body).action }).toEqual({ request, action: rule.action })
           }

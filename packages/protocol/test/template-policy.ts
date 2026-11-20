@@ -26,9 +26,10 @@ export function underBroadAllow(template: Template, method: string, url: string,
 }
 
 // The notes of a template's allow rules that admit a read anywhere in its
-// binding: no paths, or a path that is the whole API.
+// binding: no paths, or a path that is the whole API (an open binding path,
+// one ending "/**"; an exact binding path names one route).
 export function blanketReadAllows(template: Template): string[] {
-  const whole = new Set(["/**", "/*", ...(template.binding.paths ?? [])])
+  const whole = new Set(["/**", "/*", ...(template.binding.paths ?? []).filter((p) => p.endsWith("/**"))])
   return template.policy.rules
     .filter((r) => r.action === "allow" && (r.methods === undefined || r.methods.some((m) => ["GET", "HEAD", "*"].includes(m.toUpperCase()))))
     .filter((r) => r.paths === undefined || r.paths.length === 0 || r.paths.some((p) => whole.has(p)))

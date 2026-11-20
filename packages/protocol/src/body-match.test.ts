@@ -66,6 +66,20 @@ describe("graphqlMayMutate", () => {
     for (const [what, body] of cases) expect(graphqlMayMutate(body), what).toBe(true)
   })
 
+  it("accepts only a strict single-query envelope: a multiplexed _json batch, any other key or several operations count as a mutation", () => {
+    const query = "{ currentUser { username } }"
+    const cases: [string, Uint8Array][] = [
+      ["a _json batch beside a harmless query", json({ query, _json: [{ query: "mutation { createIssue(input: {}) { errors } }" }] })],
+      ["an empty _json batch", json({ query, _json: [] })],
+      ["persisted-query extensions", json({ query, extensions: { persistedQuery: { sha256Hash: "x" } } })],
+      ["any other key", json({ query, mehen: 1 })],
+      ["two query operations", json({ query: "query A { a } query B { b }" })],
+      ["variables that are not an object", json({ query, variables: [1] })],
+    ]
+    for (const [what, body] of cases) expect(graphqlMayMutate(body), what).toBe(true)
+    expect(graphqlMayMutate(json({ query, variables: {}, operationName: null }))).toBe(false)
+  })
+
   it("is what bodyMatches runs for graphql-mutation, which also flags any query string", () => {
     expect(bodyMatches("graphql-mutation", json({ query: "{ viewer { login } }" }), "")).toBe(false)
     expect(bodyMatches("graphql-mutation", null, "")).toBe(true)
@@ -498,5 +512,32 @@ describe("the json-media-export matcher: uploads to a caller's URL", () => {
   })
   it("lets ordinary generation, an output without an upload and a function call's string output by", () => {
     for (const body of [{ prompt: "a cat" }, { prompt: "a cat", output: {} }, { prompt: "a cat", output: { format: "png" } }, { input: [{ type: "function_call_output", call_id: "c", output: "42" }] }]) expect(asks(body)).toBe(false)
+  })
+})
+
+describe("the json-jira-access matcher", () => {
+  const asks = (body: Uint8Array | null) => bodyMatches("json-jira-access", body, "")
+  it("matches a body it cannot read, a repeated key and an array", () => {
+    for (const body of [null, new Uint8Array(), text("x=1"), new Uint8Array([0x7b, 0xff, 0x7d]), text('{"fields":{},"fields":{"security":{}}}'), json([{}]), json(null)]) expect(asks(body)).toBe(true)
+  })
+  it("matches security in fields, update and each issueUpdates element, visibility at any depth, and bulk edits naming security", () => {
+    for (const body of [
+      { fields: { security: { id: "1" } } },
+      { update: { Security: [] } },
+      { issueUpdates: [{ fields: { summary: "a" } }, { fields: { security: null } }] },
+      { a: [{ b: { visibility: null } }] },
+      { selectedActions: ["SECURITY"] },
+      { editedFieldsInput: { singleSelectFields: [{ fieldId: "security" }] } },
+    ]) expect(asks(json(body))).toBe(true)
+  })
+  it("matches an envelope in a shape it does not recognise", () => {
+    for (const body of [{ fields: "x" }, { fields: [1] }, { update: [] }, { issueUpdates: {} }, { issueUpdates: ["x"] }, { selectedActions: "security" }, { selectedActions: [1] }, { editedFieldsInput: [] }, { editedFieldsInput: { x: ["y"] } }, { editedFieldsInput: { x: 1 } }]) {
+      expect(asks(json(body))).toBe(true)
+    }
+  })
+  it("lets ordinary issue writes, field selections and JSON scalars by", () => {
+    for (const body of [{ fields: { summary: "a", project: { key: "A" } } }, { update: { labels: [{ add: "x" }] } }, { body: "a comment" }, { jql: "x", fields: ["summary", "security"] }, { selectedActions: ["priority"], editedFieldsInput: { priority: { priorityId: "1" } } }, "5b10ac8d82e05b22cc7d4ef5"]) {
+      expect(asks(json(body))).toBe(false)
+    }
   })
 })

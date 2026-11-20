@@ -17,6 +17,7 @@ const CORE_LENGTH = 28
 // Prefixes that SDKs and secret scanners use to recognise a key. Longest
 // first so "sk-proj-" wins over "sk-".
 const KNOWN_PREFIXES = [
+  "figd_", "pypi-",
   "sk-ant-api03-", "sk-ant-", "sk-proj-", "sk-svcacct-", "sk-or-v1-", "sk_live_", "sk_test_", "rk_live_", "rk_test_", "pk_live_",
   "github_pat_", "ghp_", "gho_", "ghs_", "ghu_", "glpat-", "xoxb-", "xoxp-", "xapp-", "lin_api_", "secret_", "ntn_",
   "sk-", "AKIA", "AIza", "hf_", "gsk_", "pplx-", "re_", "SG.", "key-", "dp.st.", "phc_", "phx_", "sntrys_", "sntryu_",

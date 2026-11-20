@@ -5,6 +5,9 @@
 //     it cannot prove is a plain query, so the rule still applies;
 //   - "graphql-query" is the only matcher an allow rule may carry, and it
 //     matches only a request it can prove is a single plain query;
+//   - "json-jira-access" goes on deny and approve rules and matches any
+//     Jira write it cannot prove leaves issue security and visibility alone
+//     (jiraWriteMayChangeAccess).
 //   - the JSON field matchers ("json-remote-mcp", "json-webhook",
 //     "json-media-export") go on
 //     deny and approve rules and match a body that is not one strict JSON
@@ -17,7 +20,7 @@
 //
 // No dependencies, so the browser bundle and the CLI can use it.
 
-export const BODY_MATCHERS = ["graphql-mutation", "graphql-query", "json-remote-mcp", "json-webhook", "json-media-export"] as const
+export const BODY_MATCHERS = ["graphql-mutation", "graphql-query", "json-remote-mcp", "json-webhook", "json-media-export", "json-jira-access"] as const
 
 export type BodyMatcher = (typeof BODY_MATCHERS)[number]
 
@@ -38,13 +41,15 @@ export function bodyMatches(matcher: BodyMatcher, body: Uint8Array | null, searc
     case "json-webhook":
     case "json-media-export":
       return jsonNamesField(matcher, body)
+    case "json-jira-access":
+      return jiraWriteMayChangeAccess(body)
   }
 }
 
 // The fields each JSON field matcher looks for, in a body already read as
 // one JSON object. Keys compare without regard to case, since some JSON
 // decoders (Go's encoding/json among them) match a key to a field that way.
-type JsonFieldMatcher = Extract<BodyMatcher, `json-${string}`>
+type JsonFieldMatcher = Exclude<Extract<BodyMatcher, `json-${string}`>, "json-jira-access">
 type JsonObject = Record<string, unknown>
 const JSON_FIELD_DEPTH = 64
 
@@ -102,6 +107,88 @@ function jsonNamesField(matcher: JsonFieldMatcher, body: Uint8Array | null): boo
   return JSON_FIELD_MATCHERS[matcher](parsed.value as JsonObject)
 }
 
+// ---------------------------------------------------------------- Jira
+
+type JiraObject = Record<string, unknown>
+const JIRA_MAX_DEPTH = 64
+const isJiraObject = (value: unknown): value is JiraObject => typeof value === "object" && value !== null && !Array.isArray(value)
+// A key or field id as Jira's lenient readers may take it: case folded,
+// separators dropped, so "Security", "security_level" and "Security Level"
+// all count.
+const jiraName = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]/g, "")
+const isSecurityName = (text: string): boolean => jiraName(text) === "security" || jiraName(text) === "securitylevel"
+
+// Whether a "visibility" key appears at any depth, whatever its value
+// (null included); anything nested deeper than JIRA_MAX_DEPTH counts too.
+function jiraNamesVisibility(value: unknown, depth = 0): boolean {
+  if (depth > JIRA_MAX_DEPTH) return true
+  if (Array.isArray(value)) return value.some((v) => jiraNamesVisibility(v, depth + 1))
+  if (!isJiraObject(value)) return false
+  return Object.entries(value).some(([key, v]) => jiraName(key) === "visibility" || jiraNamesVisibility(v, depth + 1))
+}
+
+// An issue envelope: "fields" (an object of field values, or a list of
+// field names to read) and "update" (an object of field operations), each
+// unreadable when present in any other shape, and asking when either names
+// the security field.
+function jiraEnvelopeMayChangeAccess(object: JiraObject): boolean {
+  for (const [key, value] of Object.entries(object)) {
+    const name = jiraName(key)
+    if (name === "fields") {
+      if (Array.isArray(value)) {
+        if (!value.every((v) => typeof v === "string")) return true
+      } else if (!isJiraObject(value) || Object.keys(value).some(isSecurityName)) return true
+    }
+    if (name === "update" && (!isJiraObject(value) || Object.keys(value).some(isSecurityName))) return true
+  }
+  return false
+}
+
+// True unless the body is one strict JSON value that Jira could not read as
+// a change to who may see an issue. It asks for:
+//   - a body that is not strict JSON (empty, not UTF-8, invalid, a repeated
+//     key), a top-level array or null;
+//   - a "visibility" key at any depth, with any value;
+//   - "fields" or "update" naming the security field, in the body or in any
+//     element of a bulk create's "issueUpdates";
+//   - a bulk edit whose "selectedActions" or any "editedFieldsInput" entry's
+//     "fieldId" names security;
+//   - any of those envelopes in a shape it does not recognise.
+// A JSON string, number or boolean (a watcher's account id) cannot carry
+// either, so it passes.
+export function jiraWriteMayChangeAccess(body: Uint8Array | null): boolean {
+  if (body === null || body.length === 0) return true
+  let text: string
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body)
+  } catch {
+    return true
+  }
+  const parsed = parseJsonStrictly(text)
+  if (!parsed.ok) return true
+  const value = parsed.value
+  if (value === null || Array.isArray(value)) return true
+  if (!isJiraObject(value)) return false
+  if (jiraNamesVisibility(value) || jiraEnvelopeMayChangeAccess(value)) return true
+  for (const [key, v] of Object.entries(value)) {
+    const name = jiraName(key)
+    if (name === "issueupdates" && (!Array.isArray(v) || v.some((element) => !isJiraObject(element) || jiraEnvelopeMayChangeAccess(element)))) return true
+    if (name === "selectedactions" && (!Array.isArray(v) || v.some((action) => typeof action !== "string" || isSecurityName(action)))) return true
+    if (name === "editedfieldsinput") {
+      if (!isJiraObject(v)) return true
+      for (const entry of Object.values(v)) {
+        const items = Array.isArray(entry) ? entry : [entry]
+        for (const item of items) {
+          if (!isJiraObject(item)) return true
+          const fieldId = Object.entries(item).find(([k]) => jiraName(k) === "fieldid")?.[1]
+          if (fieldId !== undefined && (typeof fieldId !== "string" || isSecurityName(fieldId))) return true
+        }
+      }
+    }
+  }
+  return false
+}
+
 // JSON.parse, but a document with a repeated key in any object is refused:
 // parsers disagree on which copy wins, so what one shows another may not run.
 export function parseJsonStrictly(text: string): { ok: true; value: unknown } | { ok: false } {
@@ -153,16 +240,16 @@ function jsonStringEnd(text: string, start: number): number {
   return text.length
 }
 
-// True unless the body is a GraphQL-over-HTTP JSON request whose query
-// document, read in full, holds no mutation or subscription. An empty or
-// non-UTF-8 body, invalid JSON, a repeated key, a batch (an array), or a
-// missing or unreadable query all count as a mutation.
+// True unless the body is exactly the envelope graphqlIsQuery accepts: one
+// plain query, with only "variables" and "operationName" beside it. Anything
+// else counts as a mutation: an empty or non-UTF-8 body, invalid JSON, a
+// repeated key, a batch (an array), a missing or unreadable query, several
+// operations, and any other key, since a server may run what it holds
+// (GitLab executes a "_json" array of operations even beside a harmless
+// top-level "query", and persisted-query keys name a document the body
+// does not show).
 export function graphqlMayMutate(body: Uint8Array | null): boolean {
-  const request = graphqlRequestOf(body)
-  if (request === null) return true
-  const query = request.query
-  if (typeof query !== "string") return true
-  return graphqlDocumentMayMutate(query)
+  return !graphqlIsQuery(body)
 }
 
 // True only for a GraphQL-over-HTTP JSON request that holds nothing but
