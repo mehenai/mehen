@@ -474,7 +474,13 @@ class Parser {
   private arithmetic(word: Word, nodes: ShellNode[], from: number, end: number): void {
     nodes.push({ kind: "unknown", why: "arithmetic" })
     const body = this.s.slice(from, end)
-    if (/`|\$\((?!\()/.test(body)) nodes.push({ kind: "unknown", why: "a command substitution inside $(( ))", runs: true })
+    // A nested $(( that bash would not read as arithmetic is a command
+    // substitution, as is any other $( or a backtick.
+    let substitution = body.includes("`")
+    for (let at = this.s.indexOf("$(", from); !substitution && at !== -1 && at < end; at = this.s.indexOf("$(", at + 2)) {
+      substitution = this.s[at + 2] !== "(" || this.arithmeticEnd(at + 3) === -1
+    }
+    if (substitution) nodes.push({ kind: "unknown", why: "a command substitution inside $(( ))", runs: true })
     for (const name of body.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) word.vars.push(name)
     this.i = end + 2
   }
