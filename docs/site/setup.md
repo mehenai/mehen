@@ -35,7 +35,7 @@ command -v mehen || ls "$HOME/.local/bin/mehen" 2>/dev/null
 mehen version --json
 ```
 
-Mehen's CLI prints one JSON object with `version` and `build` (for example `{"version":"<x.y.z>","commit":"<commit>","build":"release","helper":"embedded"}`). Anything else, an error, plain text or another shape, means this `mehen` is a different program: tell the human, and install Mehen with the script below, never from npm.
+Mehen's CLI prints one JSON object with `version` and `build` (for example `{"version":"<x.y.z>","commit":"<commit>","build":"release","helper":"embedded"}`). Anything else, an error, plain text or another shape, means this `mehen` is a different program: tell the human, and install Mehen with the script below, never from the unscoped `mehen` npm package.
 
 When it is Mehen's, bring it up to date with its own updater:
 
@@ -45,7 +45,7 @@ mehen update --json
 
 `result` `updated` or `current` (from an older `mehen`: `updated: true` or `available: false`) means it is current; `held` means the release on offer is not newer than one this machine already had, so nothing changed; carry on. If the answer lists `skills`, report to the human every entry whose `status` is not `added`, `updated` or `unchanged`, with its `reason`. `locked` means another update is running; carry on. If the update is refused (a signature that does not verify, a downgrade, a directory you cannot write), tell the human exactly what it said and stop; do not reinstall. If it refuses with `usage` because this `mehen` is not an installed standalone binary (a source checkout), carry on without updating; do not install.
 
-**Nothing is printed: Mehen is not installed.** Install it with this script. Mehen is not on npm or Homebrew; the npm package called `mehen` is an unrelated tool.
+**Nothing is printed: Mehen is not installed.** Install it with this script (or `npx @mehenai/cli up` / `npm create mehen`). Mehen is not on Homebrew; the unscoped npm package called `mehen` is an unrelated tool.
 
 ```sh
 curl -fsSL https://mehen.dev/install | sh
