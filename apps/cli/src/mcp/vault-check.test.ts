@@ -16,7 +16,7 @@ afterEach(async () => dir.remove())
 
 test("refusal/vault_check never presents a local allow as server authorisation", async () => {
   const before = vault.seen.length
-  const result = await runJv(["mcp"], env, '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"vault_check","arguments":{"item":"openai-personal","method":"GET","url":"https://api.openai.com/v1/models"}}}\n')
+  const result = await runJv(["mcp", "--toolsets", "all"], env, '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"vault_check","arguments":{"item":"openai-personal","method":"GET","url":"https://api.openai.com/v1/models"}}}\n')
   expect(result.code).toBe(0)
   const output = (JSON.parse(result.stdout) as { result: { structuredContent: Record<string, unknown>; content: { text: string }[] } }).result
   expect(output.structuredContent).toMatchObject({ decision: "allow", advisory: true, scope: "base-policy-only" })

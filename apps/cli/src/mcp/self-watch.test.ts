@@ -64,7 +64,7 @@ const serverBase = (extra: Record<string, string> = {}) => {
   const { MEHEN_HOME: _home, ...rest } = env()
   const home = privateDir("mehen-selfwatch-home-")
   serverHomes.push(home)
-  return { ...rest, HOME: home, ...extra }
+  return { ...rest, HOME: home, MEHEN_MCP_TOOLSETS: "all", ...extra }
 }
 afterAll(async () => {
   for (const home of serverHomes.splice(0)) await rm(home, { recursive: true, force: true })

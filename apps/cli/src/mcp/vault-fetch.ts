@@ -39,8 +39,8 @@ export const vaultFetch = tool({
   name: "vault_fetch",
   title: "Send a request with a credential",
   description:
-    "Make one HTTP request with an item's credential: the vault adds it on the way to the upstream, which must be in the item's binding. Returns the upstream status, headers and body as the vault returns them (text, at most 256 KiB, possibly decompressed, scrubbed or with headers removed). select takes a JSON field from the full response, up to 32 MiB. " +
-    "Any upstream status is a success here; read `status`, and `hint` if the credential was rejected. A vault refusal is an error with `next`; when a human must approve or reconnect, it also carries `ask` and a link: hand them over and call vault_wait with the id, do not retry.",
+    "One HTTP request with an item's credential, added by the vault on the way to an upstream in the item's binding. Returns status, headers and body (text, at most 256 KiB; select picks JSON from up to 32 MiB). " +
+    "Any upstream status is a success here: read `status`, and `hint` if the credential was rejected. A refusal is an error with `next`; one needing a human carries `ask`: hand it over, call vault_wait, do not retry.",
   input: z.object({
     item: z.string().optional().describe("the item to use (or run)"),
     run: z.string().optional().describe("a mehen run id whose placeholders the request carries (instead of item)"),
@@ -50,10 +50,10 @@ export const vaultFetch = tool({
     body: z.string().optional().describe("request body as text"),
     bodyBase64: z.string().optional().describe("request body as base64, for binary bodies"),
     approval: z.string().optional().describe("an approved apr_ id, when retrying after an approval"),
-    replaces: z.string().optional().describe("your open apr_ ask this corrected request supersedes; for several writes use vault_plan"),
-    context: z.object({ project: z.string().describe("the project id (prj_...)"), environment: z.string().describe("the environment name") }).optional().describe("the project environment the credential is used for; needed for a protected, team or guest credential. Never changes the workspace."),
-    select: z.string().optional().describe('one part of a JSON response, by keys and indexes: data.0.id, .items[2]["display name"], or . for all; returned as `selected` instead of `body`, from the whole response however large'),
-    timeoutSeconds: z.number().int().min(1).max(FETCH_MAX_TIME_SECONDS).optional().describe("stop waiting after this many seconds: a read is then a network error, a write outcome_unknown"),
+    replaces: z.string().optional().describe("your open apr_ ask this corrected request supersedes"),
+    context: z.object({ project: z.string().describe("prj_..."), environment: z.string().describe("its name") }).optional().describe("the project environment it is used for, for a protected, team or guest credential; never changes the workspace"),
+    select: z.string().optional().describe("one part of a JSON response, such as data.0.id (. for all), returned as `selected` from the whole response"),
+    timeoutSeconds: z.number().int().min(1).max(FETCH_MAX_TIME_SECONDS).optional().describe("stop waiting after this many seconds; a write then is outcome_unknown"),
     workspace: WORKSPACE_ARG,
   }),
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },

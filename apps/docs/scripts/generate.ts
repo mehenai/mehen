@@ -2,7 +2,7 @@
 // generated/: the CLI's command table and help text (cli.json), every error
 // code with its HTTP status, exit code, default next step and the prose of
 // reference/errors.md (errors.json), the MCP tool list the server answers
-// with (mcp.json) and the template catalogue `mehen templates --json` prints
+// with under --toolsets all, each tool with its toolset (mcp.json) and the template catalogue `mehen templates --json` prints
 // (providers.json), and the platform API's route table with every route's
 // path, query, body and answer fields, refusals and prose, and the
 // platform's limits (platform.json). Everything is imported; nothing runs
@@ -19,6 +19,7 @@ import { GLOBAL_FLAGS } from "../../cli/src/args.ts"
 import { COMMANDS, LANE_COMMANDS, commandHelp, shellWord } from "../../cli/src/cli.ts"
 import type { Command } from "../../cli/src/command.ts"
 import { MCP_HELP } from "../../cli/src/commands/info.ts"
+import { toolsetOf } from "../../cli/src/mcp/registry.ts"
 import { templatesJson } from "../../cli/src/commands/templates.ts"
 import { WORKSPACE_HELP } from "../../cli/src/commands/workspace.ts"
 import { DEFAULT_NEXT, LOCAL_EXIT } from "../../cli/src/errors.ts"
@@ -31,9 +32,9 @@ export const DOCS_ROOT = path.resolve(import.meta.dir, "..")
 export const REPO_ROOT = path.resolve(DOCS_ROOT, "../..")
 export const GENERATED_DIR = path.join(DOCS_ROOT, "generated")
 export const ERRORS_SOURCE = "docs/site/reference/errors.md"
-// The tool list mehen mcp answers tools/list with, held byte for byte
-// against the server by the CLI's own test.
-export const TOOLS_FIXTURE = "apps/cli/src/mcp/fixtures/tools-list.json"
+// The tool list mehen mcp --toolsets all answers tools/list with, held byte
+// for byte against the server by the CLI's own test.
+export const TOOLS_FIXTURE = "apps/cli/src/mcp/fixtures/tools-list-all.json"
 
 // The redirect URI an OAuth client lists, for the default vault: what
 // `mehen templates --json` prints with no MEHEN_VAULT_URL and no enrolment.
@@ -317,13 +318,24 @@ export function platformReference(routes: readonly PlatformRoute[] = PLATFORM_RO
   }
 }
 
+// Each tool with the toolset that serves it; one in no toolset fails.
+export function mcpReference(list: McpReference): McpReference {
+  return {
+    tools: list.tools.map((tool) => {
+      const toolset = toolsetOf(tool.name)
+      if (toolset === null) throw new Error(`${tool.name} is in no toolset`)
+      return { ...tool, toolset }
+    }),
+  }
+}
+
 export type Generated = { cli: CliReference; errors: ErrorEntry[]; mcp: McpReference; providers: Record<string, unknown>; platform: PlatformReference }
 
 export async function generate(errorsSource: string): Promise<Generated> {
   return {
     cli: cliReference(),
     errors: errorEntries(errorsSource),
-    mcp: JSON.parse(await readFile(path.join(REPO_ROOT, TOOLS_FIXTURE), "utf8")) as McpReference,
+    mcp: mcpReference(JSON.parse(await readFile(path.join(REPO_ROOT, TOOLS_FIXTURE), "utf8")) as McpReference),
     providers: templatesJson(DEFAULT_REDIRECT_URI, undefined),
     platform: platformReference(),
   }

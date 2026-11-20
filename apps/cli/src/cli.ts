@@ -13,7 +13,7 @@ import { doctorCommand } from "./commands/doctor.ts"
 import { enrolCommand } from "./commands/enrol.ts"
 import { fetchCommand } from "./commands/fetch.ts"
 import { fillCommand } from "./commands/fill.ts"
-import { MCP_HELP, MCP_SUMMARY, guideCommand, versionCommand } from "./commands/info.ts"
+import { MCP_HELP, MCP_SUMMARY, MCP_USAGE, guideCommand, versionCommand } from "./commands/info.ts"
 import { connectCommand, requestCommand, waitCommand } from "./commands/intake.ts"
 import { lsCommand, showCommand } from "./commands/items.ts"
 import { mandateCommand } from "./commands/mandate.ts"
@@ -279,9 +279,9 @@ export async function main(argv: string[], parentEnv: Env): Promise<number> {
         printBlock(MCP_HELP)
         return EXIT.ok
       }
-      const mcpArgs = parseArgs(rest, { usage: "mehen mcp [--workspace <slug or id>]", flags: {}, positionals: { min: 0, max: 0 } })
-      if (mcpArgs.bool("json") || mcpArgs.bool("no-qr")) throw usageError("Usage: mehen mcp [--workspace <slug or id>] (it takes no other options)", "mehen mcp --help")
-      return await serveMcp(env, { args: rest })
+      const mcpArgs = parseArgs(rest, { usage: MCP_USAGE, flags: { toolsets: { type: "string" } }, positionals: { min: 0, max: 0 } })
+      if (mcpArgs.bool("json") || mcpArgs.bool("no-qr")) throw usageError(`Usage: ${MCP_USAGE} (it takes no other options)`, "mehen mcp --help")
+      return await serveMcp(env, { args: rest, toolsets: mcpArgs.string("toolsets") })
     }
     const lane = LANE_COMMANDS[name]
     if (lane) {

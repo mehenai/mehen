@@ -53,14 +53,14 @@ export const vaultList = tool({
   name: "vault_list",
   title: "List credentials",
   description:
-    `List the credentials (items) this machine may use, across every workspace this server may use (or the one named), ${LIST_PAGE_DEFAULT} at a time, one short row each, with \`review\` when a human should look at one. vault_show gives one item in full. Never returns values.`,
+    `The credentials (items) this machine may use, in every workspace this server may use or the one named, ${LIST_PAGE_DEFAULT} at a time, one short row each; \`review\` marks one a human should look at. Never returns values.`,
   input: z.object({
     tag: z.string().optional().describe("only items with this tag"),
     kind: z.string().optional().describe("only items of this kind, e.g. api-key"),
-    provider: z.string().optional().describe("only items from this provider template, e.g. openai"),
+    provider: z.string().optional().describe("only items from this provider template"),
     search: z.string().optional().describe("only items whose slug or account contains this text"),
-    offset: z.number().int().min(0).optional().describe("skip this many items: the last answer's nextOffset"),
-    limit: z.number().int().min(1).max(LIST_PAGE_MAX).optional().describe(`at most this many items; default ${LIST_PAGE_DEFAULT}`),
+    offset: z.number().int().min(0).optional().describe("the last answer's nextOffset"),
+    limit: z.number().int().min(1).max(LIST_PAGE_MAX).optional().describe(`default ${LIST_PAGE_DEFAULT}`),
     workspace: WORKSPACE_ARG,
   }),
   annotations: READS,

@@ -54,9 +54,12 @@ test("a code without prose, or prose for no code, fails the generation", async (
   expect(() => errorEntries(`${source}\n### \`frozen_solid\`\n\n**What it means.** x\n\n**What you do.** y\n`)).toThrow("frozen_solid is not an error code")
 })
 
-test("mcp.json is the server's tool list", async () => {
-  const fixture = JSON.parse(await readFile(path.join(REPO_ROOT, TOOLS_FIXTURE), "utf8")) as Record<string, unknown>
-  expect((await generate(await errorsSource())).mcp as unknown).toEqual(fixture)
+test("mcp.json is the server's full tool list, each tool with its toolset", async () => {
+  const fixture = JSON.parse(await readFile(path.join(REPO_ROOT, TOOLS_FIXTURE), "utf8")) as { tools: { name: string }[] }
+  const mcp = (await generate(await errorsSource())).mcp
+  expect(mcp.tools.map(({ toolset: _toolset, ...tool }) => tool) as unknown).toEqual(fixture.tools)
+  expect(mcp.tools.filter((tool) => tool.toolset === "core").map((tool) => tool.name)).toEqual(["vault_status", "vault_list", "vault_request", "vault_fetch", "vault_env", "vault_wait"])
+  expect(mcp.tools.find((tool) => tool.name === "vault_doctor")?.toolset).toBe("inspect")
 })
 
 test("providers.json is what mehen templates --json prints", async () => {

@@ -19,7 +19,7 @@ afterEach(async () => dir.remove())
 
 type ToolResult = { isError: boolean; structuredContent: Record<string, unknown>; content: { type: string; text?: string; uri?: string }[] }
 async function push(args: Record<string, unknown>): Promise<ToolResult> {
-  const result = await runJv(["mcp"], env, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "vault_push", arguments: args } })}\n`)
+  const result = await runJv(["mcp", "--toolsets", "all"], env, `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "vault_push", arguments: args } })}\n`)
   expect(result.code).toBe(0)
   return (JSON.parse(result.stdout) as { result: ToolResult }).result
 }

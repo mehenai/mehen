@@ -42,9 +42,10 @@ class McpClient {
   private started(): ReturnType<typeof Bun.spawn<"pipe", "pipe", "pipe">> {
     if (this.proc) return this.proc
     // HOME is an empty directory: a server under test never discovers this user's own enrolments.
+    // Every toolset: this suite covers every tool.
     this.home = mkdtempSync(join(tmpdir(), "mehen-mcp-home-"))
     const proc = Bun.spawn([process.execPath, MAIN, "mcp"], {
-      env: { PATH: process.env.PATH ?? "", HOME: this.home, MEHEN_POLL_INTERVAL_MS: "20", ...this.env },
+      env: { PATH: process.env.PATH ?? "", HOME: this.home, MEHEN_POLL_INTERVAL_MS: "20", MEHEN_MCP_TOOLSETS: "all", ...this.env },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -759,6 +760,12 @@ describe("mehen mcp tools", () => {
     const noneText = (none.content as { type: string; text?: string }[])[0]?.text ?? ""
     expect(noneText).toContain('propose one for only this credential and these kinds: vault_mandate { "action": "propose", "items": ["openai-personal"], "classes": ["read", "send"], "note": "<why>" }.')
     expect(noneText).not.toContain("mehen mandate propose")
+    // A core-only server names the command, never the tool it does not serve.
+    await mcp.close()
+    mcp = new McpClient({ MEHEN_CONFIG_DIR: dir.path, MEHEN_VAULT_URL: vault.url, MEHEN_SESSION: "mcp-test", MEHEN_MCP_TOOLSETS: "core" })
+    const core = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x" })
+    expect(JSON.stringify(core)).not.toContain("vault_mandate")
+    expect((core.content as { type: string; text?: string }[])[0]?.text).toContain('`mehen mandate propose --items openai-personal --classes read,send --note "<why>"`')
   })
 
   test("vault_fetch reports a rule that ended before the relay's last check with the vault's message and a next that does not loop", async () => {

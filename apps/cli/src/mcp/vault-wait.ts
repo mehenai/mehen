@@ -82,7 +82,7 @@ export const vaultWait = tool({
   name: "vault_wait",
   title: "Wait for a human",
   description:
-    `Wait for a human to finish an intake (int_), an approval (apr_), an OAuth connection (con_), a policy proposal (pol_), an adoption batch (adp_), a bundle from vault_plan (bnd_: done when every request in it is approved; a denial is an error that names the approved ones, which stay usable), a mandate proposal (mdp_: done once signed) or an enrolment this machine started at its terminal (enr_). The id is found in the one workspace this server may use that recorded it; pass workspace only when the call should be held to one. Returns the outcome; a human who has not acted yet is a \`timeout\` error: call it again, and remind the human of the link if needed. ` +
+    `Wait for a human to finish an ask: intake (int_), approval (apr_), connection (con_), policy (pol_), adoption (adp_), bundle (bnd_), mandate proposal (mdp_) or an enrolment begun at the terminal (enr_). \`timeout\` means not yet: call again, reminding the human of the link if needed. ` +
     `Default ${WAIT_DEFAULT_SECONDS} s, at most ${WAIT_MAX_SECONDS} s. Decides nothing itself.`,
   input: z.object({
     id: z.string().describe("int_..., apr_..., con_..., pol_..., adp_..., bnd_..., mdp_... or enr_..."),
@@ -153,18 +153,18 @@ export async function waitSlot(deps: ToolDeps, id: string, workspace: string | n
     const chosen = await resolveSlot(server, workspace, { manifest: null })
     if (hits.length > 0 && !hits.some((h) => h.dir === chosen.dir)) {
       throw workspaceMismatch(`${id} is recorded in ${slotNames(hits)}, not in ${workspaceLabel(chosen.config)} at ${chosen.config.vault}, which this call uses.`, {
-        say: "Call vault_wait with the workspace the ask was made in (vault_pending shows each ask's workspace), or leave workspace out.",
+        say: "Call vault_wait with the workspace the ask was made in (`mehen pending` shows each ask's workspace), or leave workspace out.",
       })
     }
     return chosen
   }
   if (hits.length > 1) {
-    throw new CliError("context_ambiguous", `${id} is recorded in ${hits.length} workspaces this server may use: ${slotNames(hits)}.`, { say: "Pass workspace in the call to name the one the ask was made in; vault_pending shows each ask's workspace." })
+    throw new CliError("context_ambiguous", `${id} is recorded in ${hits.length} workspaces this server may use: ${slotNames(hits)}.`, { say: "Pass workspace in the call to name the one the ask was made in; `mehen pending` shows each ask's workspace." })
   }
   const only = hits[0] ?? (span.active.length === 1 ? span.active[0] : undefined)
   if (only) return only
   if (span.active.length === 0) throw notEnrolled()
-  throw new CliError("not_found", `${id} is not recorded in any workspace this server may use.`, { say: id.startsWith("mdp_") ? 'Pass workspace to ask that workspace\'s vault; vault_mandate { "action": "list" } with workspace lists its open mandate proposals.' : "Call vault_pending to see what is open and in which workspace, or pass workspace to ask that workspace's vault." })
+  throw new CliError("not_found", `${id} is not recorded in any workspace this server may use.`, { say: id.startsWith("mdp_") ? "Pass workspace to ask that workspace's vault; `mehen mandate ls` with workspace lists its open mandate proposals." : "`mehen pending` shows what is open and in which workspace; or pass workspace to ask that workspace's vault." })
 }
 
 // Does a slot under pending/ that reads as active (the interim form of an

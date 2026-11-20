@@ -213,13 +213,13 @@ describe("one server spanning the allowed set", () => {
     try {
       await writeFile(join(repo.path, "mehen.toml"), `project = "prj_1"\nworkspace = "${SECOND.id}"\n`)
       const before = vault.seen.length
-      const inRepo = await runJv(["mcp"], env, lines(["vault_show", { item: "openai-personal" }]), repo.path)
+      const inRepo = await runJv(["mcp", "--toolsets", "inspect"], env, lines(["vault_show", { item: "openai-personal" }]), repo.path)
       expect(inRepo.code).toBe(0)
       expect(replies(inRepo.stdout)[0]?.result.isError).toBe(false)
       expect(vault.seen.slice(before).map((c) => [c.path, c.claims.ten])).toEqual([["/v1/items/openai-personal", SECOND.id]])
       // There is no default: elsewhere a call that needs one workspace names it.
       const seen = vault.seen.length
-      const refusals = await runJv(["mcp"], env, lines(["vault_show", { item: "openai-personal" }], ["vault_request", { kind: "api-key", name: "x", reason: "r", provider: "openai" }]), home.path)
+      const refusals = await runJv(["mcp", "--toolsets", "inspect"], env, lines(["vault_show", { item: "openai-personal" }], ["vault_request", { kind: "api-key", name: "x", reason: "r", provider: "openai" }]), home.path)
       expect(refusals.code).toBe(0)
       for (const refused of replies(refusals.stdout)) {
         expect(refused.result.isError).toBe(true)
@@ -229,7 +229,7 @@ describe("one server spanning the allowed set", () => {
         expect(say).toContain(`workspace: "${SECOND.slug}"`)
       }
       expect(vault.seen.length).toBe(seen)
-      const named = await runJv(["mcp"], env, lines(["vault_status", {}], ["vault_show", { item: "openai-personal", workspace: "mock-space" }]), home.path)
+      const named = await runJv(["mcp", "--toolsets", "inspect"], env, lines(["vault_status", {}], ["vault_show", { item: "openai-personal", workspace: "mock-space" }]), home.path)
       const [status, show] = replies(named.stdout)
       expect((status?.result.structuredContent as { workspaces: Entry[] }).workspaces.map((e) => e.slot).sort()).toEqual([firstSlot(), second()].sort())
       expect(status?.result.structuredContent.selected).toBeNull()

@@ -28,7 +28,7 @@ function notice(extra: Record<string, unknown> = {}): Record<string, unknown> {
 }
 
 async function pending(): Promise<PendingResult> {
-  const result = await runJv(["mcp"], env, '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"vault_pending","arguments":{}}}\n')
+  const result = await runJv(["mcp", "--toolsets", "all"], env, '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"vault_pending","arguments":{}}}\n')
   expect(result.code).toBe(0)
   expect(result.stderr).toBe("")
   const message = JSON.parse(result.stdout) as { result: PendingResult }

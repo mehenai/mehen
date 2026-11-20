@@ -6,6 +6,7 @@ import type { CliMcp, McpHandover } from "../install-state.ts"
 import { type ManifestWorkspace } from "../run/manifest.ts"
 import { type VaultSession } from "../session.ts"
 import type { CeilingEntry, FoundCorrupt, FoundPending } from "../slots.ts"
+import { type Toolset, serves } from "./toolsets.ts"
 
 export type ProgressToken = string | number
 export type JsonRpcNotification = { jsonrpc: "2.0"; method: string; params: Record<string, unknown> }
@@ -109,6 +110,9 @@ export type ToolDeps = {
   // The server's handover decision at its start, for `cli.mcpHandover`
   // and `tools.listChanged`; absent in-process.
   mcpHandover?: McpHandover
+  // The toolsets this server lists and calls, fixed at its start; the core
+  // alone when absent.
+  toolsets?: readonly Toolset[]
 }
 
 // What the host attached to this call: a progressToken means it wants
@@ -135,6 +139,13 @@ export function manifestProject(server: McpServer, config: Config): string | nul
   if (!manifest) return null
   if (manifest.workspace !== null && (manifest.workspace !== config.tenant || (manifest.vault !== null && manifest.vault !== config.vault))) return null
   return manifest.project
+}
+
+// Whether this server serves a tool, for a step that would name one: the
+// core alone when the toolsets are absent.
+export function servedBy(deps: Pick<ToolDeps, "toolsets">): (tool: string) => boolean {
+  const toolsets = deps.toolsets ?? ["core"]
+  return (tool) => serves(toolsets, tool)
 }
 
 export function plain(structured: Record<string, unknown>): ToolOutput {

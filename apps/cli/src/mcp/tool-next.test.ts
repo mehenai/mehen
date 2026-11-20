@@ -117,6 +117,19 @@ describe("toolNext", () => {
     expect(toolNext(new CliError("bad_request", "Bad.", own), "vault_fetch").next).toEqual(own)
   })
 
+  // A tool outside the server's toolsets is no step an agent can take there:
+  // its command stays, as a step only the command line takes.
+  test("a step whose tool this server does not serve keeps its command and names no tool", () => {
+    const core = (name: string) => ["vault_status", "vault_list", "vault_request", "vault_fetch", "vault_env", "vault_wait"].includes(name)
+    const doctor = toolNext(error("mehen doctor --json", "Run `mehen doctor` to find out why; then `mehen ls`."), "vault_fetch", core)
+    expect(doctor.next).toEqual({ command: "mehen doctor --json", say: "Run `mehen doctor` to find out why; then `vault_list`." })
+    const templates = toolNext(error("mehen templates", "List them."), "vault_request", core)
+    expect(templates.next).toEqual({ command: "mehen templates", say: "List them." })
+    const wait = toolNext(error("mehen wait apr_1", "Wait."), "vault_fetch", core)
+    expect(wait.next).toEqual({ say: "Wait.", tool: "vault_wait", arguments: { id: "apr_1" } })
+    expect(toolSay("Use `mehen show <item>` or `mehen ls`.", core)).toBe("Use `mehen show <item>` or `vault_list`.")
+  })
+
   test("toolSay leaves a command with flags no tool takes", () => {
     expect(toolSay("Use `mehen fetch -o <file>` or `mehen run`.")).toBe("Use `mehen fetch -o <file>` or `mehen run`.")
     expect(toolSay("Use `mehen fetch` or `mehen run`.")).toBe("Use `vault_fetch` or `mehen run`.")
