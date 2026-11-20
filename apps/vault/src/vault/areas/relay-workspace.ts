@@ -176,7 +176,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
       const batch = { floor: heldRequestFloor(held), shape: heldRequestShape(credential.id, held), replaces: req.replaces ?? null, ...(plan ? { bundle: plan.bundle } : {}) }
       const askedFrom = ctx.now()
       const noAsk = dial === "work" ? { noAsk: () => dialRefusal(ctx, principal, credential, held, invocation.workspace.slug, req.run ?? null) } : {}
-      const approved = prepareApprovedUse(guarded, accessState(ctx), { principal, workspace: invocation.workspace, presentation, mode: req.run ? "placeholder" : "relay", batch, ...noAsk }, projection, context ? { project: context.project, env: context.environment } : null, subject, req.approval ?? null, ctx.now())
+      const approved = prepareApprovedUse(guarded, accessState(ctx), { principal, workspace: invocation.workspace, presentation, mode: req.run ? "placeholder" : "relay", batch, session: legacy.session, ...noAsk }, projection, context ? { project: context.project, env: context.environment } : null, subject, req.approval ?? null, ctx.now())
       if (approved.kind === "required") {
         // The binding code, expiry and wait command a machine shows beside the link, as a protected run's ask carries them.
         // No command for a workload: mehen wait signs with the device's key, which cannot see a workload's approval.
