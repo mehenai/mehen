@@ -16,8 +16,8 @@ import { renderQr } from "./qr.ts"
 import { type QrChoice, type Segment, type Styler, plainStyler, plainText, segments, visibleText } from "./tty.ts"
 
 // bundle: several relay requests a human approves together (bnd_, /g/).
-// mandate: a mandate this machine proposed (mdp_), signed on its sign page;
-// nothing waits on it, so it has no wait command.
+// mandate: a mandate this machine proposed (mdp_), signed on its sign page,
+// whose link carries the id in its query.
 export type AskKind = "enrol" | "intake" | "connect" | "reconnect" | "approval" | "policy" | "adoption" | "bundle" | "unfreeze" | "mandate"
 // The kinds whose link is a route with the ask's own id, which mehen wait follows.
 export type WaitableAskKind = Exclude<AskKind, "unfreeze" | "mandate">
@@ -558,8 +558,8 @@ export type MandateAskInput = {
   requestedBy: RequestedBy
 }
 
-// The person signs on the page with their passkey, or not; this machine
-// never waits on it.
+// The person signs on the page with their passkey, or not; mehen wait
+// follows it until they do or it expires.
 export function mandateAsk(input: MandateAskInput): Ask {
   if (!MANDATE_PROPOSAL_ID.test(input.id)) throw new CliError("internal", "The vault returned an invalid mandate proposal id.")
   return {
@@ -572,7 +572,7 @@ export function mandateAsk(input: MandateAskInput): Ask {
     expiresAt: input.expiresAt,
     account: null,
     requestedBy: input.requestedBy,
-    wait: null,
+    wait: `mehen wait ${input.id} --timeout 60 --json`,
   }
 }
 

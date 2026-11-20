@@ -9,7 +9,7 @@
 // is dropped: it is free text the redactor never sees as a header.
 
 import { ITEM_HEADER, MANDATE_HEADER, POSTURE_HEADER, RULE_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
-import { type RedactionSecret, StreamRedactor, buildNeedles, redactText } from "@mehen/protocol"
+import { type RedactionSecret, StreamRedactor, buildNeedles, isReadMethod, redactText } from "@mehen/protocol"
 import { VaultError } from "../http.ts"
 import { upstreamFetch } from "./upstream.ts"
 
@@ -97,7 +97,9 @@ export async function forwardRelay(material: RelayMaterial, body: Uint8Array<Arr
   try {
     response = await upstreamFetch(new Request(material.url, { method: material.method, headers: requestHeaders, body, redirect: "manual" }))
   } catch {
-    throw new VaultError("upstream_failed", `Could not reach ${host}. Nothing was changed by the vault; retry later.`, { retryAfter: 5 })
+    if (isReadMethod(material.method)) throw new VaultError("upstream_failed", `Could not reach ${host}. Nothing was changed by the vault; retry later.`, { retryAfter: 5 })
+    // A write may have been sent before the connection failed.
+    throw new VaultError("upstream_failed", `Could not get an answer from ${host}. The request may have reached it: check whether it took effect before sending it again.`)
   }
   const coding = response.headers.get("content-encoding")?.trim().toLowerCase() ?? ""
   if (coding !== "" && !DECODED_CODINGS.includes(coding)) {
@@ -107,7 +109,9 @@ export async function forwardRelay(material: RelayMaterial, body: Uint8Array<Arr
   const declared = Number(response.headers.get("content-length") ?? "0")
   if (declared > MAX_RELAY_RESPONSE_BYTES) {
     await response.body?.cancel()
-    throw new VaultError("too_large", `The response from ${host} is larger than the relay allows (${MAX_RELAY_RESPONSE_BYTES} bytes). Ask for less, for example with a range or a page size.`)
+    if (isReadMethod(material.method)) throw new VaultError("too_large", `The response from ${host} is larger than the relay allows (${MAX_RELAY_RESPONSE_BYTES} bytes). Ask for less, for example with a range or a page size.`)
+    // The write was sent and answered: only its answer is withheld.
+    throw new VaultError("too_large", `The response from ${host} is larger than the relay allows (${MAX_RELAY_RESPONSE_BYTES} bytes), so it was not passed on. The request was sent and may have taken effect: check whether it did before sending it again.`)
   }
 
   const needles = buildNeedles(scrubSecrets(material.scrub))

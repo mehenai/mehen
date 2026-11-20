@@ -7,17 +7,18 @@
 
 import { PENDING_RESTRICTION_UNTIL } from "@mehen/protocol"
 export { PENDING_RESTRICTION_UNTIL } from "@mehen/protocol"
-import { EXIT, type SecurityNotice } from "@mehen/protocol/api"
+import { EXIT, type NextStep, type SecurityNotice } from "@mehen/protocol/api"
 import { z } from "zod"
 import { type Ask, type AskUrl, type AskVault, ROUTE_PREFIX, adoptionAsk, approvalAsk, askGroup, askNext, askUrl, askUrlFor, connectAsk, expiryText, intakeAsk, isWaitId, policyAsk, refusedLinkWarning, requestedBy, withContext } from "../ask.ts"
 import type { Command } from "../command.ts"
 import { type Env, resolveVaultUrl } from "../config.ts"
 import { CliError, type CliErrorCode, toCliError } from "../errors.ts"
 import { managedHost } from "../home.ts"
-import { type LedgerEntry, findLedgerEntry, readLedger } from "../ledger.ts"
+import { type LedgerEntry, findLedgerEntry, isListedAsk, readLedger } from "../ledger.ts"
 import { normaliseWorkspacePending, workspaceMachineNotices, type MachineAddedNotice } from "../pending-workspace.ts"
 import { note, printAsk, printJson, printLine, table } from "../output.ts"
 import { type SessionContext, type VaultSession, openContext, sessionContext } from "../session.ts"
+import { pendingEnrolmentStatus } from "./activate.ts"
 import { type FoundPending, type LocalContext, allowedSlots, listActive, pendingIn, slotView } from "../slots.ts"
 import { VaultApiError } from "../vault-api.ts"
 import { type Text, colourEnabled, styler, visibleText } from "../tty.ts"
@@ -133,7 +134,9 @@ export function pendingNoticeText(notice: DeviceSecurityNotice | MachineAddedNot
   if (!("payload" in notice)) return securityNoticeText(notice)
   const { payload } = notice
   const origin = new URL(notice.url).origin
-  return visibleText(`Machine added: ${payload.name} (${payload.device}) in ${payload.workspace.name} (${payload.workspace.slug}) at ${origin}. Open ${notice.url} to review this machine.`)
+  // Only notices about the caller's own machine are kept (workspaceMachineNotices).
+  const on = payload.at.slice(0, 10)
+  return visibleText(`Machine added on ${on}: this machine, ${payload.name} (${payload.device}), in ${payload.workspace.name} (${payload.workspace.slug}) at ${origin}. Open ${notice.url} to review it.`)
 }
 
 // An entry mehen can use: a known kind and an id with that kind's prefix and
@@ -189,7 +192,10 @@ function buildFromServerEntry(entry: ServerPendingEntry, url: AskUrl, expiresAt:
 }
 
 // An open ask and the item slug it creates, when known, for lookup by slug.
-export type PendingItem = { ask: Ask; slug: string | null }
+// stale: read from this machine's record alone, its state not confirmed by
+// the vault (unreachable, refusing, or listing it no more), so it may be
+// settled.
+export type PendingItem = { ask: Ask; slug: string | null; stale?: true }
 
 // `refusedLinks` counts server entries whose url was not on this vault;
 // `unavailable` names each workspace whose vault could not be asked (its
@@ -205,12 +211,12 @@ type SlotPending = Omit<PendingList, "vaultUrl" | "unavailable">
 // the slot's context.
 async function slotPending(env: Env, slot: LocalContext, now: Date, open: PendingSpan["open"]): Promise<SlotPending> {
   const { api, ledger: scope, context, vaultUrl } = await open(slot)
-  const ledger = await readLedger(slot.dir, scope, now)
+  const ledger = (await readLedger(slot.dir, scope, now)).filter(isListedAsk)
   let server: ServerPending
   try {
     server = await api.request<ServerPending>("GET", "/v1/pending")
   } catch (error) {
-    if (error instanceof VaultApiError && error.status === 404) return { items: fromLedger(ledger, context), notices: [], groups: [], source: "ledger", refusedLinks: 0 }
+    if (error instanceof VaultApiError && error.status === 404) return { items: staleFromLedger(ledger, context), notices: [], groups: [], source: "ledger", refusedLinks: 0 }
     throw error
   }
   const by = requestedBy(env, slot.config.name ?? null)
@@ -226,7 +232,8 @@ async function slotPending(env: Env, slot: LocalContext, now: Date, open: Pendin
     if (ask) items.push({ ask: withContext(ask, context), slug: typeof entry.item === "string" ? entry.item : (known?.slug ?? null) })
   }
   const seen = new Set(items.map((i) => i.ask.id))
-  for (const entry of ledger) if (!seen.has(entry.ask.id)) items.push({ ask: withContext(entry.ask, context), slug: entry.slug })
+  // One the vault's answer leaves out may have been settled since.
+  for (const entry of ledger) if (!seen.has(entry.ask.id)) items.push({ ask: withContext(entry.ask, context), slug: entry.slug, stale: true })
   const groupList = serverGroups(server.groups, scope)
   const grouped = items.map((item) => {
     const group = item.ask.kind === "approval" ? groupList.groups.find((g) => g.approvals.includes(item.ask.id)) : undefined
@@ -237,8 +244,8 @@ async function slotPending(env: Env, slot: LocalContext, now: Date, open: Pendin
   return { items: grouped, notices: [...noticeList.notices, ...machineList.notices], groups: groupList.groups, source: "vault", refusedLinks: refusedLinks + groupList.refusedLinks + noticeList.refusedLinks + machineList.refusedLinks }
 }
 
-function fromLedger(entries: LedgerEntry[], context: SessionContext): PendingItem[] {
-  return entries.map((e) => ({ ask: withContext(e.ask, context), slug: e.slug }))
+function staleFromLedger(entries: LedgerEntry[], context: SessionContext): PendingItem[] {
+  return entries.map((e) => ({ ask: withContext(e.ask, context), slug: e.slug, stale: true }))
 }
 
 // Everything open across the allowed set: every active
@@ -273,7 +280,8 @@ export async function listPending(env: Env, now = new Date(), span?: PendingSpan
       unavailable.push({ slot: slot.dir, error: failure.code, message: failure.message })
       const context = sessionContext(slot.config)
       const scope = { vaultUrl: slot.config.vault, workspace: slot.config.tenant, device: slot.config.device, workspaceSlug: slot.config.workspaceSlug ?? null }
-      found = { items: fromLedger(await readLedger(slot.dir, scope, now).catch(() => []), context), notices: [], groups: [], source: "ledger", refusedLinks: 0 }
+      const kept = staleFromLedger((await readLedger(slot.dir, scope, now).catch(() => [])).filter(isListedAsk), context)
+      found = { items: kept, notices: [], groups: [], source: "ledger", refusedLinks: 0 }
     }
     items.push(...found.items)
     notices.push(...found.notices)
@@ -281,17 +289,21 @@ export async function listPending(env: Env, now = new Date(), span?: PendingSpan
     refusedLinks += found.refusedLinks
     if (found.source === "vault") source = "vault"
   }
-  // Every pending slot's enrolment is read locally and asks no vault, so a
-  // refusing vault elsewhere never hides it.
+  // Every pending slot's enrolment, from this machine's record, confirmed by
+  // a read of its status that never finishes it: only one the vault says
+  // still waits for its owner is current; approved, ended or unread, stale.
   const device = requestedBy(env).device
   const enrolments: PendingItem[] = []
   for (const slot of pendingSlots) {
     const view = await slotView(slot, device)
-    if (view.state === "pending") enrolments.push({ ask: view.ask, slug: null })
+    if (view.state !== "pending") continue
+    const waiting = (await pendingEnrolmentStatus(env, slot.dir, slot.record)) === "pending"
+    enrolments.push({ ask: view.ask, slug: null, ...(waiting ? {} : { stale: true as const }) })
   }
-  // Only when no active vault answered and nothing else can be returned is
-  // the first refusal the answer.
-  if (active.length > 0 && unavailable.length === active.length && enrolments.length === 0) throw firstFailure
+  // Only when no active vault answered and nothing at all can be returned is
+  // the first refusal the answer: otherwise the asks this machine recorded
+  // are shown, marked stale.
+  if (active.length > 0 && unavailable.length === active.length && items.length === 0 && enrolments.length === 0) throw firstFailure
   items.push(...enrolments)
   const vaultUrl = active[0]?.config.vault ?? pendingSlots[0]?.record.origin ?? resolveVaultUrl(env, null)
   return { items, notices, groups, source, vaultUrl, refusedLinks, unavailable }
@@ -302,6 +314,10 @@ function shortWhat(ask: Ask): string {
   return what.charAt(0).toLowerCase() + what.slice(1)
 }
 
+const STALE_ASK_NEXT: NextStep = { say: "The vault did not confirm this ask is open; it may already be settled. Do not hand the link over as live: run mehen pending again once the vault answers." }
+// An enrolment the vault does not say still waits: approved, ended or unread.
+const staleNext = (ask: Ask): NextStep => ask.kind !== "enrol" || ask.wait === null ? STALE_ASK_NEXT : { command: ask.wait, say: `The vault does not confirm this enrolment still waits for its owner. Do not hand its link over: \`${ask.wait}\` finishes it if it was approved, or says how it ended.` }
+
 export const pendingCommand: Command = {
   summary: "list the asks still waiting for a human, or show one again (mehen pending [<id>|<slug>])",
   spec: { usage: "mehen pending [<id>|<slug>]", flags: {}, positionals: { min: 0, max: 1 } },
@@ -309,24 +325,26 @@ export const pendingCommand: Command = {
   async run({ args, json, env }) {
     const now = new Date()
     const { items, notices, groups, vaultUrl, refusedLinks, unavailable } = await listPending(env, now)
-    for (const gone of unavailable) note(`mehen: warning: the vault for ${gone.slot} could not be asked (${gone.error}: ${gone.message}); its asks are listed from this machine's record.`)
+    for (const gone of unavailable) note(`mehen: warning: the vault for ${gone.slot} could not be asked (${gone.error}: ${gone.message}); its asks are listed from this machine's record, marked stale: the vault may have settled them, so do not hand their links over as live.`)
     if (refusedLinks > 0) note(`mehen: warning: ${refusedLinks === 1 ? "one pending entry" : `${refusedLinks} pending entries`} came with a link not on the vault or an id mehen does not know; ${refusedLinkWarning(vaultUrl)}`)
     const asks = items.map((i) => i.ask)
     const wanted = args.positionals[0]
     if (wanted !== undefined) {
-      const ask = asks.find((a) => a.id === wanted) ?? items.filter((i) => i.slug === wanted).at(-1)?.ask
-      if (!ask) {
+      const found = items.find((i) => i.ask.id === wanted) ?? items.filter((i) => i.slug === wanted).at(-1)
+      if (!found) {
         throw new CliError("not_found", `Nothing is pending for ${JSON.stringify(wanted)}.`, { command: "mehen pending", say: "List what is still waiting for a human with `mehen pending`." })
       }
-      if (json) printJson({ ask, next: askNext(ask, { now }), ...(notices.length ? { notices } : {}) })
+      const { ask, stale } = found
+      if (json) printJson({ ask: stale ? { ...ask, stale: true } : ask, next: stale ? staleNext(ask) : askNext(ask, { now }), ...(notices.length ? { notices } : {}) })
       else {
         for (const notice of notices) printLine(pendingNoticeText(notice))
-        printAsk(ask, { env, noQr: args.bool("no-qr"), now })
+        if (stale) printLine("(stale: may be settled)")
+        printAsk(ask, { env, noQr: stale || args.bool("no-qr"), now })
       }
       return EXIT.ok
     }
     if (json) {
-      printJson({ pending: asks, ...(groups.length ? { groups } : {}), ...(notices.length ? { notices } : {}) })
+      printJson({ pending: items.map((i) => (i.stale ? { ...i.ask, stale: true } : i.ask)), ...(groups.length ? { groups } : {}), ...(notices.length ? { notices } : {}) })
       return EXIT.ok
     }
     for (const notice of notices) printLine(pendingNoticeText(notice))
@@ -336,9 +354,9 @@ export const pendingCommand: Command = {
     }
     const s = styler(colourEnabled(process.stdout, env))
     const rows: Text[][] = [["KIND", "ID", "WHAT", "EXPIRES", "THEN"]]
-    for (const ask of asks) {
+    for (const { ask, stale } of items) {
       const expiry = expiryText(ask, { now })
-      rows.push([ask.kind, ask.id || "-", shortWhat(ask), expiry === "expired" ? s.danger(expiry) : expiry, ask.wait ?? "-"])
+      rows.push([ask.kind, ask.id || "-", shortWhat(ask), expiry === "expired" ? s.danger(expiry) : stale ? s.warn(`${expiry} (stale)`) : expiry, ask.wait ?? "-"])
     }
     for (const line of table(rows)) printLine(line)
     for (const group of groups) printLine(pendingGroupText(group, asks))

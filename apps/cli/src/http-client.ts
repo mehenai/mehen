@@ -5,6 +5,7 @@ import {
   type ApiError,
   ERROR_CODES,
   ERROR_HEADER,
+  FORWARDED_HEADER,
   type ErrorCode,
   type NextStep,
   type RelayRequestInput,
@@ -16,7 +17,7 @@ import { PROOF_HEADER, type ProofSigner, createProof, fetchSignedOnce, parseProo
 import type { WorkspaceEnrolStatus } from "@mehen/protocol/workspace"
 import { z } from "zod"
 import { readMandateCover } from "./mandate-cover.ts"
-import { type CallContext, type VaultApi, VaultApiError, VaultNetworkError, type VaultRequestOptions } from "./vault-api.ts"
+import { type CallContext, RelayOutcomeUnknownError, RelayUnmarkedAnswerError, type VaultApi, VaultApiError, VaultNetworkError, type VaultRequestOptions, retrySafeMethod } from "./vault-api.ts"
 import { BUILD_KIND, VERSION } from "./version.ts"
 
 // What every /v1 request says it is: the vault's version seam
@@ -92,6 +93,10 @@ export type HttpVaultApiOptions = {
 
 type Method = "GET" | "POST" | "PUT" | "DELETE"
 
+// Failures before a connection was made, so the request never left this
+// machine: a refused connection or a name that does not resolve.
+const NEVER_SENT_CODES: ReadonlySet<unknown> = new Set(["ConnectionRefused", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "FailedToOpenSocket", "ENETUNREACH", "EHOSTUNREACH"])
+
 function isNextStep(value: unknown): value is NextStep {
   if (typeof value !== "object" || value === null) return false
   const n = value as Record<string, unknown>
@@ -127,8 +132,40 @@ type ApiErrorWithExpiry = ApiError & { expiresAt?: string }
 // The mandate a cap kept from covering a held request; dropped unless well formed.
 const CappedMandateSchema = z.object({ id: MandateIdSchema, capped: z.array(MandateClassSchema).min(1) })
 
-// Reads a Mehen-Error body, keeping only the documented fields.
-export async function readApiError(response: Response, context: CallContext | null = null): Promise<VaultApiError> {
+// Whether a Mehen-Error body is one mehen can read: a known code and a message.
+// A vault from before Mehen-Forwarded (0.4.0 and earlier) marks its own
+// refusals with Mehen-Error and nothing else. There, after the upstream
+// fetch, the relay route raises only upstream_failed and too_large (a
+// response too large, relay/forward.ts), and anything unexpected became
+// internal; every other code it can send on /v1/relay comes from a check
+// before forwarding: the Worker's rate limits and version gate, the device
+// request's proof and body, the relay route's own input checks and the
+// workspace's authorisation of the request (relay.authorise). Read from
+// the vault's relay code at 124e548a; relay-codes.test.ts pins both lists
+// against the current vault's relay path.
+export const RELAY_PRE_FORWARD_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  "bad_request", "unauthenticated", "proof_invalid", "device_pending", "device_revoked", "forbidden", "not_found", "conflict", "ambiguous",
+  "binding_refused", "policy_denied", "approval_required", "mode_refused", "environment_refused", "remote_mismatch", "needs_reauth",
+  "refresh_retrying", "frozen", "rate_limited", "account_pending", "owner_inactive", "identity_required", "project_unshared", "cli_outdated",
+  "workload_ended", "workload_required", "platform_suspended", "quota_exceeded", "origin_mismatch", "totp_unreadable", "provider_refused",
+])
+// What such a vault may send after the request went upstream (upstream_failed,
+// a response too_large, internal), and codes its relay never raised, which
+// are not trusted from an unmarked answer either.
+export const RELAY_MAY_HAVE_BEEN_SENT_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>(["upstream_failed", "too_large", "internal", "surface_refused", "intake_required"])
+
+function readableError(text: string): boolean {
+  try {
+    const body = JSON.parse(text) as unknown
+    return typeof body === "object" && body !== null && (ERROR_CODES as readonly unknown[]).includes((body as { error?: unknown }).error) && typeof (body as { message?: unknown }).message === "string"
+  } catch {
+    return false
+  }
+}
+
+// Reads a Mehen-Error body, keeping only the documented fields. relayedItem:
+// the item a relay sent, which mandateCover then names (MandateCover).
+export async function readApiError(response: Response, context: CallContext | null = null, relayedItem: string | null = null): Promise<VaultApiError> {
   let raw: unknown = null
   try {
     raw = await response.json()
@@ -152,8 +189,10 @@ export async function readApiError(response: Response, context: CallContext | nu
   if (code === "approval_required") {
     const mandate = CappedMandateSchema.safeParse(body.mandate)
     if (mandate.success) error.mandate = mandate.data
-    const cover = readMandateCover(body.mandateCover)
+    const cover = readMandateCover(body.mandateCover, relayedItem)
     if (cover) error.mandateCover = cover
+    // Who may decide it, by name, as the vault's next.say names them.
+    if (Array.isArray(body.deciders) && body.deciders.every((d) => typeof d === "string")) error.deciders = body.deciders as string[]
   }
   if (isEnrolStatus(body.enrolment)) error.enrolment = body.enrolment
   if (code === "forbidden" && (POLICY_RULE_REFUSALS as readonly unknown[]).includes(body.ruleRefused)) error.ruleRefused = body.ruleRefused as PolicyRuleRefusal
@@ -177,7 +216,9 @@ export class HttpVaultApi implements VaultApi {
     this.fetcher = options.fetch ?? fetchSignedOnce
   }
 
-  private async send(method: Method, path: string, body: string | null, options?: VaultRequestOptions): Promise<Response> {
+  // write: the relayed request is not retry safe, so a connection that
+  // failed once it may have reached the vault is RelayOutcomeUnknownError.
+  private async send(method: Method, path: string, body: string | null, options?: VaultRequestOptions, write = false): Promise<Response> {
     if (!path.startsWith("/v1/")) throw new Error(`vault paths start with /v1/, got ${path}`)
     const signal = options?.signal
     const url = `${this.options.vaultUrl}${path}`
@@ -196,6 +237,9 @@ export class HttpVaultApi implements VaultApi {
     } catch (error) {
       if (signal?.aborted) throw signal.reason
       const detail = error instanceof Error ? error.message : String(error)
+      if (write && !NEVER_SENT_CODES.has((error as { code?: unknown } | null)?.code)) {
+        throw new RelayOutcomeUnknownError(`The connection to the vault at ${this.options.vaultUrl} failed after the request may have reached it: ${detail}`)
+      }
       throw new VaultNetworkError(`Could not reach the vault at ${this.options.vaultUrl}: ${detail}`)
     }
   }
@@ -213,17 +257,48 @@ export class HttpVaultApi implements VaultApi {
     }
   }
 
+  // A write's answer is safe to send again only when the vault says, in a
+  // refusal it can be read from, that it refused before forwarding anything
+  // (Mehen-Forwarded: no), and that refusal is not its own failure; or, from
+  // a vault that sends no Mehen-Forwarded, a readable refusal whose code it
+  // only ever raised before forwarding (RELAY_PRE_FORWARD_CODES). Every
+  // other answer to a write that is not the upstream's own may have come
+  // after it took effect: RelayOutcomeUnknownError.
   async relay(request: RelayRequestInput, options?: VaultRequestOptions): Promise<Response> {
-    const response = await this.send("POST", "/v1/relay", JSON.stringify(request), options)
-    if (response.headers.has(ERROR_HEADER)) throw await readApiError(response, this.options.context ?? null)
-    if (!response.headers.has(UPSTREAM_HEADER)) {
-      await response.body?.cancel()
-      throw new VaultApiError(response.status, {
-        error: "internal",
-        message: `The vault answered the relay with HTTP ${response.status} but neither ${UPSTREAM_HEADER} nor ${ERROR_HEADER}, so mehen will not treat it as the upstream's answer.`,
-      })
+    const write = !retrySafeMethod(request.method)
+    const response = await this.send("POST", "/v1/relay", JSON.stringify(request), options, write)
+    if (!write) return this.relayAnswer(request, response, false)
+    // Once a write may have gone, nothing that goes wrong reading the answer
+    // may look like a retryable failure: it is RelayOutcomeUnknownError,
+    // unless the vault said, readably, that it refused before forwarding.
+    try {
+      return await this.relayAnswer(request, response, true)
+    } catch (error) {
+      if (error instanceof VaultApiError || error instanceof RelayOutcomeUnknownError) throw error
+      throw new RelayOutcomeUnknownError(`mehen could not read the vault's answer to the request (${error instanceof Error ? error.message : String(error)}).`)
     }
-    return withDecodedHeaders(response)
+  }
+
+  private async relayAnswer(request: RelayRequestInput, response: Response, write: boolean): Promise<Response> {
+    if (response.headers.has(UPSTREAM_HEADER) && !response.headers.has(ERROR_HEADER)) return withDecodedHeaders(response)
+    if (response.headers.has(ERROR_HEADER)) {
+      if (!write) throw await readApiError(response, this.options.context ?? null, request.item ?? null)
+      const text = await response.text().catch(() => null)
+      // Readable before anything is built from it: a 204, 205 or 304 takes no body.
+      if (text === null || !readableError(text)) throw new RelayOutcomeUnknownError(`The vault answered the write with HTTP ${response.status} and an error mehen cannot read.`)
+      const error = await readApiError(new Response(text, { status: response.status >= 200 && response.status <= 599 && ![204, 205, 304].includes(response.status) ? response.status : 500, headers: response.headers }), this.options.context ?? null, request.item ?? null)
+      const forwarded = response.headers.get(FORWARDED_HEADER)?.trim().toLowerCase()
+      const beforeForwarding = forwarded === "no" || (forwarded === undefined && RELAY_PRE_FORWARD_CODES.has(error.body.error))
+      if (beforeForwarding && !(error.body.error === "internal" && response.status >= 500)) throw error
+      throw new RelayOutcomeUnknownError(error.body.message)
+    }
+    // Disposal is best effort: a body that already failed changes nothing.
+    await response.body?.cancel().catch(() => {})
+    const message = `The vault answered the relay with HTTP ${response.status} but neither ${UPSTREAM_HEADER} nor ${ERROR_HEADER}, so mehen will not treat it as the upstream's answer.`
+    // Something in front of the vault, such as a proxy, may have answered
+    // after the vault sent the write upstream.
+    if (write) throw new RelayOutcomeUnknownError(message)
+    throw new RelayUnmarkedAnswerError(response.status, { error: "internal", message })
   }
 }
 

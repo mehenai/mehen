@@ -1,4 +1,7 @@
-import { expect, test } from "bun:test"
+import { afterAll, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { z } from "zod"
 import { toCliError } from "../errors.ts"
 import type { VaultSession } from "../session.ts"
@@ -10,8 +13,10 @@ import { vaultMandate } from "./vault-mandate.ts"
 
 const call = { signal: new AbortController().signal, progressToken: null }
 const VAULT = "https://vault.example"
+// propose records the proposal in this directory's ask ledger.
+const configDir = mkdtempSync(join(tmpdir(), "mehen-vault-mandate-"))
+afterAll(() => rmSync(configDir, { recursive: true, force: true }))
 function deps(api: VaultApi): ToolDeps {
-  const configDir = "/unused"
   const config = { vault: VAULT, tenant: "ten_test", device: "dev_test", backend: "software" as const, workspaceSlug: "test-space", workspaceName: "Test Space" }
   const session: VaultSession = { api, config, vaultUrl: config.vault, configDir, selection: { dir: configDir, config, reason: "workspace" }, ledger: { vaultUrl: config.vault, workspace: config.tenant, device: config.device, workspaceSlug: "test-space" }, context: { origin: config.vault, workspace: null, device: config.device } }
   const server = { home: "/unused", managed: null, ceiling: null, allowed: null, pin: null, manifest: null, slots: new Map(), seen: new Map(), realRoot: "/unused" }
@@ -84,14 +89,14 @@ test("refusal/vault_mandate refuses resume, stop, sign, stray fields and terms t
   expect(seen).toEqual([])
 })
 
-test("propose sends the protocol's terms and hands over the sign page, with a then: that lists rather than waits", async () => {
+test("propose sends the protocol's terms and hands over the sign page, with a then: that waits on it", async () => {
   const { api, seen } = vault(() => mandateCreated(VAULT, "test-space"))
   const result = await vaultMandate.call({ action: "propose", note: "Nightly triage", items: ["linear-work", "github-work"], classes: ["send"], caps: { send: 20 }, days: 7, schedule: "UTC daily 22:00-06:00" }, { ...deps(api), env: { MEHEN_SESSION: "triage-1" } }, call)
   expect(seen.map((s) => s.path)).toEqual(["/v1/me", "/v1/mandates/proposals"])
   expect(seen.find((s) => s.path === "/v1/mandates/proposals")?.body).toEqual({ terms: { items: ["github-work", "linear-work"], classes: ["read", "send"], caps: { read: 500, change: 0, send: 20, delete: 0 }, ttlDays: 7, schedule: { tz: "UTC", windows: [{ days: [0, 1, 2, 3, 4, 5, 6], from: "22:00", to: "06:00" }] }, note: "Nightly triage" }, reason: "Nightly triage" })
   const url = `${VAULT}/w/test-space/sign-mandate?proposal=mdp_new`
   expect(result.structured).toMatchObject({ proposal: "mdp_new", url, warning: null })
-  expect(result.handover).toMatchObject([{ ask: { kind: "mandate", id: "mdp_new", url, wait: null, requestedBy: { device: "test-machine", session: "triage-1" } }, then: 'vault_mandate { "action": "list" } shows it again while it is open, and the mandate once it is signed' }])
+  expect(result.handover).toMatchObject([{ ask: { kind: "mandate", id: "mdp_new", url, wait: "mehen wait mdp_new --timeout 60 --json", requestedBy: { device: "test-machine", session: "triage-1" } }, then: 'vault_wait { "id": "mdp_new" } waits until a person signs it; vault_mandate { "action": "list" } shows it again while it is open, and the mandate once it is signed' }])
   const again = await vaultMandate.call({ action: "propose", note: "Nightly triage" }, deps(vault(() => ({ ...mandateCreated(VAULT, "test-space"), existing: true })).api), call)
   expect(again.structured).toMatchObject({ proposal: "mdp_new", existing: true })
   expect(again.handover[0]?.then).toStartWith("these terms are already waiting for the person to sign; this is the same link.")

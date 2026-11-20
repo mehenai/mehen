@@ -1,6 +1,7 @@
 // app.mehen.dev: one Worker in front of one fresh Durable Object per workspace.
 
 import type { Env } from "./env.ts"
+import { ERROR_HEADER, FORWARDED_HEADER } from "@mehen/protocol/api"
 import { VaultError, errorResponse, responseFor, withSecurityHeaders } from "./http.ts"
 import { assertSameOrigin } from "./directory/session.ts"
 import { findRoute } from "./router.ts"
@@ -49,6 +50,16 @@ async function notFoundPage(request: Request, env: Env): Promise<Response> {
   return account ? pageResponse(workspaceNotFoundPage({ origin: env.VAULT_ORIGIN, account: account.account, name: account.name, accountPages: servedAccountPages() }), 404) : errorPage(null, 404, NOT_FOUND_ERROR)
 }
 
+// Every /v1/relay refusal not already marked came before the request was
+// forwarded (authentication, rate limits, the policy, the approval, the
+// relay's own checks): it had no effect upstream, so a machine may resend it.
+function markRelayRefusal(request: Request, url: URL, response: Response): Response {
+  if (request.method !== "POST" || url.pathname !== "/v1/relay" || response.headers.get(ERROR_HEADER) !== "1" || response.headers.has(FORWARDED_HEADER)) return response
+  const marked = new Response(response.body, response)
+  marked.headers.set(FORWARDED_HEADER, "no")
+  return marked
+}
+
 async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url)
   if (!(await withinRateLimits(request, url, env))) return rateLimitedResponse()
@@ -93,7 +104,7 @@ export default {
     }
     const timedPage = timesRequest(request, url) && !isPlatformPath(url.pathname) && !Object.hasOwn(ROOT_ICONS, url.pathname)
     const response = timedPage ? await withServerTiming(() => answer(timedEnv(env)), (answered) => carriesServerTiming(url, answered)) : await answer(env)
-    return withCliAdvice(withSecurityHeaders(await chargeRefusedDeviceProof(request, url, env, response)), url, env)
+    return withCliAdvice(withSecurityHeaders(markRelayRefusal(request, url, await chargeRefusedDeviceProof(request, url, env, response))), url, env)
   },
   async scheduled(_controller, env): Promise<void> {
     await assertWorkspaceCutover(env)

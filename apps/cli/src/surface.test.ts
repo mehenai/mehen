@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { z } from "zod"
 import { GLOBAL_FLAGS } from "./args.ts"
 import { COMMANDS } from "./cli.ts"
+import type { AskKind } from "./ask.ts"
 import { TOOLS } from "./mcp/registry.ts"
+import { WAIT_ID_PREFIXES } from "./operations.ts"
 import { runJv, tempDir } from "./testing/run-mehen.ts"
 
 let dir: Awaited<ReturnType<typeof tempDir>>
@@ -65,6 +67,21 @@ test("mehen request and connect help, the guide, the skill and the MCP home argu
     const schema = JSON.stringify(tool ? z.toJSONSchema(tool.input, { io: "input" }) : null)
     expect(schema).toContain("scope.privateCredentials false")
   }
+})
+
+// mehen guide is the agent's full guide: it names every command mehen --help
+// lists, every MCP tool, every ask kind and every id mehen wait follows.
+test("the guide names every command, MCP tool, ask kind and wait id prefix", async () => {
+  const guide = await Bun.file(new URL("./guide.md", import.meta.url)).text()
+  const help = JSON.parse((await runJv(["--help", "--json"], {})).stdout) as { commands: { name: string }[] }
+  expect(help.commands.length).toBeGreaterThan(30)
+  expect(help.commands.map((c) => c.name).filter((name) => !guide.includes(`\`mehen ${name}`))).toEqual([])
+  expect(TOOLS.map((t) => t.name).filter((name) => !guide.includes(`\`${name}\``))).toEqual([])
+  const kinds: Record<AskKind, true> = { enrol: true, intake: true, connect: true, reconnect: true, approval: true, policy: true, adoption: true, bundle: true, unfreeze: true, mandate: true }
+  const listed = guide.match(/`ask` has `kind` \(([^)]*)\)/)?.[1]?.split(", ") ?? []
+  expect(listed.sort()).toEqual(Object.keys(kinds).sort())
+  expect(WAIT_ID_PREFIXES.length).toBe(8)
+  expect(WAIT_ID_PREFIXES.filter((prefix) => !guide.includes(`(\`${prefix}_\`)`))).toEqual([])
 })
 
 // Claude Code attaches only the first 5,000 tokens of a skill again after

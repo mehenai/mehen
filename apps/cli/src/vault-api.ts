@@ -30,6 +30,29 @@ export class VaultNetworkError extends Error {
   }
 }
 
+// A relayed write (any method but GET, HEAD or OPTIONS) whose connection
+// failed once it may have reached the vault: the vault may have sent it on
+// to the upstream, so repeating it could do it twice.
+export class RelayOutcomeUnknownError extends VaultNetworkError {
+  constructor(message: string) {
+    super(message)
+    this.name = "RelayOutcomeUnknownError"
+  }
+}
+
+// The vault's relay answer carried neither Mehen-Upstream nor mehen-error:
+// something in front of the vault, such as a proxy, may have sent it.
+export class RelayUnmarkedAnswerError extends VaultApiError {}
+
+// Methods a repeat cannot make do more than the first did. Every other
+// method, DELETE and PUT included, is treated as a write that may not be
+// repeated blind: an upstream need not make them idempotent.
+const RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"])
+
+export function retrySafeMethod(method: string): boolean {
+  return RETRY_SAFE_METHODS.has(method.toUpperCase())
+}
+
 export type VaultRequestOptions = {
   // Aborting rejects with the signal's reason, not a VaultNetworkError.
   signal?: AbortSignal

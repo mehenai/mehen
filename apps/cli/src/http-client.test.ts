@@ -1,12 +1,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { ERROR_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
+import { ERROR_HEADER, FORWARDED_HEADER, UPSTREAM_HEADER } from "@mehen/protocol/api"
 import { type ProofSigner, parseProof } from "@mehen/protocol/proof"
 import { readConfig } from "./config.ts"
+import { DEFAULT_NEXT, OUTCOME_UNKNOWN_SAY, errorBody, toCliError } from "./errors.ts"
 import { loadDeviceKey } from "./device-key.ts"
 import { HttpVaultApi } from "./http-client.ts"
 import { MOCK_TENANT, MockVault, vaultError } from "./testing/mock-vault.ts"
 import { tempDir } from "./testing/run-mehen.ts"
-import { VaultApiError, VaultNetworkError } from "./vault-api.ts"
+import { RelayOutcomeUnknownError, RelayUnmarkedAnswerError, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 
 let vault: MockVault
 let dir: { path: string; remove(): Promise<void> }
@@ -139,6 +140,20 @@ describe("HttpVaultApi errors", () => {
     expect(dropped.body).not.toHaveProperty("expiresAt")
   })
 
+  test("approval_required keeps deciders, a list of names, through to the CLI error; other shapes and codes drop it", async () => {
+    const api = await client()
+    vault.overrides.set("GET /v1/me", () => vaultError("approval_required", "Needs approval.", { approval: "apr_1", deciders: ["Alex", "Sam"] }))
+    const kept = (await api.request("GET", "/v1/me").catch((e: unknown) => e)) as VaultApiError
+    expect(kept.body.deciders).toEqual(["Alex", "Sam"])
+    expect(errorBody(toCliError(kept))).toMatchObject({ error: "approval_required", deciders: ["Alex", "Sam"] })
+    for (const [code, deciders] of [["approval_required", [1]], ["approval_required", "Alex"], ["forbidden", ["Alex"]]] as const) {
+      vault.overrides.set("GET /v1/me", () => vaultError(code, "No.", { deciders } as unknown as object))
+      const dropped = (await api.request("GET", "/v1/me").catch((e: unknown) => e)) as VaultApiError
+      expect(dropped.body).not.toHaveProperty("deciders")
+      expect(errorBody(toCliError(dropped))).not.toHaveProperty("deciders")
+    }
+  })
+
   test("a terminal renew refusal keeps its settled enrolment, the full active answer included; malformed ones are dropped", async () => {
     const api = await client()
     const workspace = { id: "tn_work0001", slug: "northwind", name: "Northwind" }
@@ -188,6 +203,129 @@ describe("HttpVaultApi errors", () => {
 })
 
 describe("HttpVaultApi relay", () => {
+  // A write relayed over a connection that broke may have gone upstream; a
+  // read, or a connection never made, did not do anything twice.
+  test("a broken connection is RelayOutcomeUnknownError for a write only, and never when nothing connected", async () => {
+    const reset = Object.assign(new Error("The socket connection was closed unexpectedly"), { code: "ECONNRESET" })
+    const refused = Object.assign(new Error("Unable to connect"), { code: "ConnectionRefused" })
+    const signer = await enrolledSigner()
+    const relay = (failure: Error, method: string) => new HttpVaultApi({ vaultUrl: vault.url, tenant: MOCK_TENANT, signer, fetch: async () => { throw failure } }).relay({ item: "gmail", method, url: "https://gmail.googleapis.com/x", headers: [] }).catch((e: unknown) => e)
+    for (const method of ["POST", "PATCH", "PUT", "DELETE"]) expect(await relay(reset, method)).toBeInstanceOf(RelayOutcomeUnknownError)
+    for (const method of ["GET", "HEAD"]) {
+      const error = await relay(reset, method)
+      expect(error).toBeInstanceOf(VaultNetworkError)
+      expect(error).not.toBeInstanceOf(RelayOutcomeUnknownError)
+    }
+    expect(await relay(refused, "POST")).not.toBeInstanceOf(RelayOutcomeUnknownError)
+  })
+
+  test("upstream_failed keeps retry later for a read, and says to check before sending again for a write", async () => {
+    const api = await client()
+    vault.overrides.set("POST /v1/relay", () => vaultError("upstream_failed", "Could not get an answer from gmail.googleapis.com."))
+    const failed = async (method: string) => errorBody(toCliError(await api.relay({ item: "gmail", method, url: "https://gmail.googleapis.com/x", headers: [] }).catch((e: unknown) => e)))
+    const read = await failed("GET")
+    expect(read.error).toBe("upstream_failed")
+    expect(read.next?.say).toContain("retry later")
+    const write = await failed("POST")
+    expect(write.error).toBe("outcome_unknown")
+    expect(write.message).toBe("Could not get an answer from gmail.googleapis.com.")
+    expect(write.next?.say).toBe(OUTCOME_UNKNOWN_SAY)
+  })
+
+  test("after a write, an answer whose body already failed, a bodiless status with a refusal mark, or any other throw is outcome unknown", async () => {
+    const answered = (answer: () => Response) => client({ fetch: async () => answer() })
+    const write = { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] as [string, string][] }
+    // A proxy's answer whose stream already errored: disposing of it rejects.
+    const broken = await answered(() => new Response(new ReadableStream({ start(c) { c.error(new Error("proxy reset")) } }), { status: 502 }))
+    expect(await broken.relay(write).catch((e: unknown) => e)).toBeInstanceOf(RelayOutcomeUnknownError)
+    // A refusal mark on a status that carries no body.
+    for (const status of [204, 205, 304]) {
+      const bodiless = await answered(() => new Response(null, { status, headers: { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" } }))
+      const failed = await bodiless.relay(write).catch((e: unknown) => e)
+      expect(failed, String(status)).toBeInstanceOf(RelayOutcomeUnknownError)
+    }
+    // Anything else that throws once the request was sent.
+    const odd = await answered(() => { const r = Response.json({ error: "approval_required", message: "x" }, { status: 409, headers: { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" } }); Object.defineProperty(r, "text", { value: () => { throw new TypeError("unexpected") } }); return r })
+    expect(await odd.relay(write).catch((e: unknown) => e)).toBeInstanceOf(RelayOutcomeUnknownError)
+    // A read is judged as before: its unmarked answer is retryable.
+    const read = await broken.relay({ ...write, method: "GET" }).catch((e: unknown) => e)
+    expect(read).not.toBeInstanceOf(RelayOutcomeUnknownError)
+  })
+
+  test("a write is safe to send again only after a readable refusal marked as made before forwarding, and not the vault's own failure", async () => {
+    const api = await client()
+    const write = async () => toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
+    const answer = (status: number, headers: Record<string, string>, text: string) => vault.overrides.set("POST /v1/relay", () => new Response(text, { status, headers }))
+    const refusal = JSON.stringify({ error: "approval_required", message: "Needs a human.", approval: "apr_1", next: { url: `${vault.url}/w/mock-space/a/apr_1`, say: "Ask." } })
+    // Marked no and readable: the vault's own answer, which may be resent.
+    answer(409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, refusal)
+    expect((await write()).code).toBe("approval_required")
+    const unknown: [string, number, Record<string, string>, string][] = [
+      ["an unmarked refusal from a vault that does not say whether it forwarded, with a code it raises after forwarding", 502, { [ERROR_HEADER]: "1" }, JSON.stringify({ error: "upstream_failed", message: "Could not reach the upstream." })],
+      ["an unmarked refusal with a code that vault never raised on a relay", 409, { [ERROR_HEADER]: "1" }, JSON.stringify({ error: "intake_required", message: "x" })],
+      ["an unmarked refusal whose body cannot be read", 409, { [ERROR_HEADER]: "1" }, "<html>"],
+      ["an unmarked refusal with an unknown code", 409, { [ERROR_HEADER]: "1" }, JSON.stringify({ error: "brand_new", message: "x" })],
+      ["the vault's own failure, unmarked", 500, { [ERROR_HEADER]: "1" }, JSON.stringify({ error: "internal", message: "It broke." })],
+      ["a refusal marked as after forwarding", 413, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "yes" }, JSON.stringify({ error: "too_large", message: "The answer was too large." })],
+      ["a marked refusal whose body cannot be read", 409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, "<html>"],
+      ["a marked refusal with an unknown code", 409, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, JSON.stringify({ error: "brand_new", message: "x" })],
+      ["the vault's own failure, even marked", 500, { [ERROR_HEADER]: "1", [FORWARDED_HEADER]: "no" }, JSON.stringify({ error: "internal", message: "It broke." })],
+      ...[408, 429, 499, 200].map((status): [string, number, Record<string, string>, string] => [`an unmarked ${status}`, status, {}, "from a proxy"]),
+    ]
+    for (const [name, status, headers, text] of unknown) {
+      answer(status, headers, text)
+      vault.relayForwarded = null
+      const failed = await write().finally(() => { vault.relayForwarded = "no" })
+      expect([failed.code, failed.next?.say], name).toEqual(["outcome_unknown", OUTCOME_UNKNOWN_SAY])
+      expect(failed.extras, name).not.toHaveProperty("retryAfter")
+    }
+    // A read is judged as before: an unmarked answer is retryable.
+    answer(429, {}, "from a proxy")
+    const read = toCliError(await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
+    expect(read.code).toBe("internal")
+  })
+
+  // A vault from before Mehen-Forwarded marks its refusals with Mehen-Error
+  // only: a code it raises only before forwarding is its refusal of the
+  // write, which never went upstream.
+  test("an older vault's approval_required on a write is the ask, and the agent can wait on it", async () => {
+    const api = await client()
+    vault.relayForwarded = null
+    try {
+      vault.overrides.set("POST /v1/relay", () => new Response(JSON.stringify({ error: "approval_required", message: "Needs a human.", approval: "apr_old1", next: { url: `${vault.url}/w/mock-space/a/apr_old1`, command: "mehen wait apr_old1", say: "Ask." } }), { status: 409, headers: { [ERROR_HEADER]: "1" } }))
+      const asked = toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
+      expect([asked.code, asked.extras.approval, asked.next?.command]).toEqual(["approval_required", "apr_old1", "mehen wait apr_old1"])
+      for (const code of ["forbidden", "rate_limited", "cli_outdated", "conflict", "bad_request"] as const) {
+        vault.overrides.set("POST /v1/relay", () => new Response(JSON.stringify({ error: code, message: "Refused." }), { status: 409, headers: { [ERROR_HEADER]: "1" } }))
+        expect(toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e)).code).toBe(code)
+      }
+    } finally {
+      vault.relayForwarded = "no"
+    }
+  })
+
+  test("an older vault's upstream_failed or response too_large on a write is outcome_unknown", async () => {
+    const api = await client()
+    vault.relayForwarded = null
+    try {
+      for (const [code, status] of [["upstream_failed", 502], ["too_large", 413]] as const) {
+        vault.overrides.set("POST /v1/relay", () => new Response(JSON.stringify({ error: code, message: "After forwarding." }), { status, headers: { [ERROR_HEADER]: "1" } }))
+        const failed = toCliError(await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", headers: [] }).catch((e: unknown) => e))
+        expect([code, failed.code, failed.next?.say]).toEqual([code, "outcome_unknown", OUTCOME_UNKNOWN_SAY])
+      }
+    } finally {
+      vault.relayForwarded = "no"
+    }
+  })
+
+  test("a write's upstream_failed loses any retryAfter the vault sent, as its next says to check first", async () => {
+    const api = await client()
+    vault.overrides.set("POST /v1/relay", () => Response.json({ error: "upstream_failed", message: "Could not get an answer.", retryAfter: 5 }, { status: 502, headers: { [ERROR_HEADER]: "1" } }))
+    const failed = async (method: string) => toCliError(await api.relay({ item: "gmail", method, url: "https://gmail.googleapis.com/x", headers: [] }).catch((e: unknown) => e))
+    expect((await failed("POST")).extras.retryAfter).toBeUndefined()
+    expect((await failed("GET")).extras.retryAfter).toBe(5)
+  })
+
   test("returns the streamed upstream response", async () => {
     const api = await client()
     const response = await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/models", headers: [] })
@@ -246,12 +384,29 @@ describe("HttpVaultApi relay", () => {
     expect(error.body.error).toBe("binding_refused")
   })
 
-  test("an answer with neither Mehen-Upstream nor Mehen-Error is not passed off as the upstream's", async () => {
+  test("an answer with neither Mehen-Upstream nor Mehen-Error is not passed off as the upstream's, and is RelayUnmarkedAnswerError with its status", async () => {
     const api = await client()
     vault.overrides.set("POST /v1/relay", () => new Response("hello", { status: 200 }))
     const error = (await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e)) as VaultApiError
     expect(error).toBeInstanceOf(VaultApiError)
     expect(error.body.error).toBe("internal")
+    vault.overrides.set("POST /v1/relay", () => new Response("Bad Gateway", { status: 502 }))
+    const proxied = await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e)
+    expect(proxied).toBeInstanceOf(RelayUnmarkedAnswerError)
+    expect((proxied as RelayUnmarkedAnswerError).status).toBe(502)
+  })
+
+  test("an unmarked 502 or 504 after a write is outcome unknown, never internal with retry advice; after a read it stays retryable", async () => {
+    const api = await client()
+    for (const status of [502, 504]) {
+      vault.overrides.set("POST /v1/relay", () => new Response("Gateway", { status }))
+      const write = await api.relay({ item: "openai-personal", method: "POST", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e)
+      expect(write).toBeInstanceOf(RelayOutcomeUnknownError)
+      const cli = toCliError(write)
+      expect([cli.code, cli.next?.say]).toEqual(["outcome_unknown", OUTCOME_UNKNOWN_SAY])
+      const read = toCliError(await api.relay({ item: "openai-personal", method: "GET", url: "https://api.openai.com/", headers: [] }).catch((e: unknown) => e))
+      expect([read.code, read.next?.say]).toEqual(["internal", DEFAULT_NEXT.internal.say])
+    }
   })
 })
 

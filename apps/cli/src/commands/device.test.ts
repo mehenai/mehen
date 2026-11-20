@@ -13,7 +13,7 @@ import { activeLockPath, withSlotLocks } from "../slot-lock.ts"
 import { mandateOpenProposal, mandateView } from "../testing/mandate-fixtures.ts"
 import { MOCK_OWNER, MOCK_TENANT, MOCK_WORKSPACE, MockVault, vaultError } from "../testing/mock-vault.ts"
 import { type JvResult, runJv, tempDir } from "../testing/run-mehen.ts"
-import { revokeSlot, status, statusCommand } from "./device.ts"
+import { type StatusEntry, allChecksFailed, revokeSlot, status, statusCommand, statusNext } from "./device.ts"
 
 const SECOND = { id: "tn_second00000001", slug: "second-space", name: "Second Space" }
 
@@ -68,7 +68,7 @@ describe("identity", () => {
     expect(statusCommand.notes?.join("\n")).toContain("a workspace this machine is not enrolled in is exit 2 (workspace_unknown)")
   })
 
-  test("a revoked device exits 6 with --workspace; plain status reports it in the entry's check and deletes nothing", async () => {
+  test("a revoked device exits 6 with --workspace; plain status reports it in the entry's check, exits 6 too as no workspace answered, and deletes nothing", async () => {
     const device = await enrolled()
     const record = vault.devices.get(device)
     if (record) record.revoked = true
@@ -76,10 +76,22 @@ describe("identity", () => {
     expect(result.code).toBe(EXIT.identity)
     expect(result.stderr).toContain("revoked")
     const all = await runJv(["status", "--json"], env)
-    expect(all.code).toBe(EXIT.ok)
-    expect(json(all)).toMatchObject({ workspaces: [{ state: "active", slot: vault.slotDir(dir.path), device, check: { ok: false, error: "device_revoked" } }] })
+    expect(all.code).toBe(EXIT.identity)
+    expect(json(all)).toMatchObject({ error: "device_revoked", workspaces: [{ state: "active", slot: vault.slotDir(dir.path), device, check: { ok: false, error: "device_revoked" } }] })
+    expect((json(all).next as { say?: string } | null)?.say).toBe((json(all).workspaces as { check: { next: { say: string } } }[])[0]?.check.next.say)
     expect(existsSync(join(vault.slotDir(dir.path), "config.json"))).toBe(true)
     expect(existsSync(join(vault.slotDir(dir.path), "device-key.json"))).toBe(true)
+  })
+
+  test("plain status is usable while any active workspace's check passed: no top-level next and exit 0; with none, the first failure", () => {
+    const active = (check: unknown) => ({ state: "active", check }) as unknown as StatusEntry
+    const down = active({ ok: false, error: "network", message: "Unable to connect.", next: { say: "Check the network." } })
+    const mismatch = active({ ok: false, error: "workspace_mismatch", message: "Another vault.", next: null })
+    expect(allChecksFailed([active({ ok: true, status: {} }), down])).toBeNull()
+    expect(statusNext([active({ ok: true, status: {} }), down], "https://vault.example")).toBeNull()
+    expect(allChecksFailed([down, mismatch])?.error).toBe("network")
+    expect(statusNext([down, mismatch], "https://vault.example")).toEqual({ say: "Check the network." })
+    expect(statusNext([mismatch], "https://vault.example")).toMatchObject({ command: "mehen doctor --json" })
   })
 
   test("a group-readable device key is refused before any request", async () => {
@@ -94,14 +106,17 @@ describe("identity", () => {
     expect(vault.seen.length).toBe(before)
   })
 
-  test("an unreachable vault exits 7 with --workspace, and is the entry's network check otherwise", async () => {
+  test("an unreachable vault exits 7 with --workspace, and otherwise is the entry's network check, exit 7 with its next on top when no workspace answered", async () => {
     await vault.enrolSoftware(dir.path, { config: { vault: "http://127.0.0.1:1" } })
     const result = await runJv(["status", "--json", "--workspace", "mock-space"], { ...env, MEHEN_VAULT_URL: "http://127.0.0.1:1" })
     expect(result.code).toBe(EXIT.transient)
     expect(json(result)).toMatchObject({ error: "network" })
     const all = await runJv(["status", "--json"], { ...env, MEHEN_VAULT_URL: "http://127.0.0.1:1" })
-    expect(all.code).toBe(EXIT.ok)
-    expect(json(all)).toMatchObject({ workspaces: [{ state: "active", check: { ok: false, error: "network" } }] })
+    expect(all.code).toBe(EXIT.transient)
+    expect(json(all)).toMatchObject({ workspaces: [{ state: "active", check: { ok: false, error: "network" } }], next: { say: expect.stringContaining("Check the network connection") } })
+    // The top-level error and message are the failure that set the exit code, as a native app reads them.
+    const failed = (json(all) as { workspaces: { check: { message: string } }[] }).workspaces[0]?.check
+    expect(json(all)).toMatchObject({ error: "network", message: failed?.message })
   })
 
   test("MEHEN_VAULT_URL naming another origin than the enrolment refuses before any signature (workspace_mismatch, exit 2)", async () => {
@@ -111,7 +126,7 @@ describe("identity", () => {
     expect(result.code).toBe(EXIT.usage)
     expect(json(result)).toMatchObject({ error: "workspace_mismatch", message: `MEHEN_VAULT_URL is https://other.example, but this context is enrolled with ${vault.url}.` })
     const all = await runJv(["status", "--json"], { ...env, MEHEN_VAULT_URL: "https://other.example" })
-    expect(all.code).toBe(EXIT.ok)
+    expect(all.code).toBe(EXIT.usage)
     expect(json(all)).toMatchObject({ workspaces: [{ state: "active", check: { ok: false, error: "workspace_mismatch" } }] })
     expect(vault.seen.length).toBe(before)
     // Unset, the enrolled origin is used as before.
@@ -327,6 +342,7 @@ describe("mehen status and mehen whoami", () => {
     const whoami = await runJv(["whoami", "--json"], env)
     expect(whoami.code).toBe(EXIT.ok)
     expect(json(whoami)).toEqual(json(status))
+    expect(json(status)).not.toHaveProperty("error")
     const help = await runJv(["whoami", "--help"], env)
     expect(help.stdout).toContain("usage: mehen whoami")
     expect(help.stdout).toContain("same as mehen status")
@@ -405,7 +421,7 @@ describe("mehen status across the allowed set", () => {
         { state: "active", slot: vault.slotDir(dir.path), origin: vault.url, workspace: MOCK_WORKSPACE, device, check: { ok: true, status: { device, slot: vault.slotDir(dir.path), session: "pi-4f2a" } } },
         { state: "pending", slot: pendingSlotPath(dir.path, vault.url, "personal"), origin: vault.url, intent: { workspace: "personal", team: null }, enrolment, legacy: false, claimed: false, ask: { kind: "enrol", id: enrolment, intent: { workspace: "personal", team: null }, context: { origin: vault.url, workspace: null, device: null } } },
       ],
-      cli: { installed: null, previous: null, highestSeen: null, holdBelow: null, pending: null, check: null, vault: {}, lastUpdate: null },
+      cli: { pending: null },
     })
     const fixture = JSON.parse(await Bun.file(join(import.meta.dir, "..", "mcp", "fixtures", "status-all.json")).text()) as { workspaces: { state: string }[]; cli: Record<string, unknown> }
     expect(fixture.workspaces.map((w) => w.state)).toEqual(["active", "pending"])
@@ -426,15 +442,18 @@ describe("mehen status across the allowed set", () => {
     expect(shapeOf({ ...fixturePending, renewals: "0" })).not.toEqual(shapeOf(all.workspaces[1]))
     expect(Object.keys(all).sort()).toEqual(Object.keys(fixture).sort())
     // cli against its contract, values and not only keys, in both.
+    // mehen status keeps what an agent reads; the install records are doctor's.
+    const STATUS_CLI_KEYS = ["autoUpdate", "build", "commit", "mcpHandover", "path", "pending", "version"]
+    expect(Object.keys((all as unknown as { cli: Record<string, unknown> }).cli).sort()).toEqual(STATUS_CLI_KEYS)
     for (const cli of [(all as unknown as { cli: Record<string, unknown> }).cli, fixture.cli]) {
-      expect(Object.keys(cli).sort()).toEqual(["autoUpdate", "build", "check", "commit", "highestSeen", "holdBelow", "installed", "lastUpdate", "mcpHandover", "path", "pending", "previous", "vault", "version"])
+      expect(Object.keys(cli).sort()).toEqual(expect.arrayContaining(STATUS_CLI_KEYS))
       expect(typeof cli.version).toBe("string")
       expect(cli.commit === null || typeof cli.commit === "string").toBe(true)
       expect([null, "release", "dev"]).toContain(cli.build as string | null)
       expect(typeof cli.path).toBe("string")
       expect(["on", "off", "ci", "dev", "read-only"]).toContain(cli.autoUpdate as string)
       expect(cli.mcpHandover).toMatchObject({ handover: expect.stringMatching(/^(on|off)$/) })
-      expect(cli).toMatchObject({ installed: null, previous: null, highestSeen: null, holdBelow: null, pending: null, check: null, vault: {}, lastUpdate: null })
+      expect(cli).toMatchObject({ pending: null })
     }
     // The human form: one block per entry, then the CLI.
     const human = await runJv(["status"], env2)
@@ -669,9 +688,9 @@ describe("panic buttons", () => {
   })
 })
 
-test("refusal/status shows unavailable rather than no active access on an unsupported vault", async () => {
+test("status prints no policy windows line for a vault that does not report them, never \"unavailable\" or no active access", async () => {
   await enrolled()
   const result = await runJv(["status"], env)
-  expect(result.stdout).toContain("  policy windows:  unavailable from this vault\n")
+  expect(result.stdout).not.toContain("policy windows")
   expect(result.stdout).not.toContain("No active policy windows")
 })

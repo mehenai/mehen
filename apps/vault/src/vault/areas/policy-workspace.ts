@@ -14,7 +14,7 @@ import { registerWorkspacePendingProvider } from "./pending-workspace.ts"
 import { parseOpInput } from "./approvals.ts"
 import { items } from "./items.ts"
 import { policy, guardDigest, itemPolicyFloor, policyHelpNext } from "./policy.ts"
-import { ruleProposalOps, ruleProposalRow, ruleProposalsPending, workspacePolicyRuleOps } from "./policy-rules-workspace.ts"
+import { policyRulesOn, ruleProposalOps, ruleProposalRow, ruleProposalsPending, workspacePolicyRuleOps } from "./policy-rules-workspace.ts"
 
 // policy_proposals' workspace columns: rule proposals read ask and lineage;
 // workspace_view held a window proposal's view and is no longer written.
@@ -61,6 +61,11 @@ export const workspacePolicyOps: NonNullable<Area["workspaceOps"]> = {
     if (principal.kind !== "system" && isRuleProposal(ctx, raw)) {
       const input = parseOpInput(z.strictObject({ id: z.string().max(64), wait: z.boolean().optional() }), raw)
       return ruleProposalOps.status(ctx, principal, input.id, input.wait === true, invocation)
+    }
+    // With standing rules on, an id that names no rule proposal is a typo,
+    // another workspace's or one purged: not a switched-off feature.
+    if (principal.kind === "device" && policyRulesOn(ctx.env, ctx.tenant)) {
+      throw new VaultError("not_found", "No such policy proposal.", { next: { command: "mehen pending", say: "No such policy proposal in this workspace; mehen pending lists this machine's open asks, in every workspace." } })
     }
     if (principal.kind === "device") disabled()
     if (principal.kind === "system") throw new VaultError("not_found", "No such object.")

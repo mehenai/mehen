@@ -11,11 +11,10 @@
 
 import type { Bytes } from "@mehen/protocol/bytes"
 import type { NextStep } from "@mehen/protocol/api"
-import type { MandateCoverHint } from "@mehen/protocol/mandate-terms"
 import { type Ask, type AskTextOptions, type AskVault, askForError, askLines, askUrl, refusedLinkWarning } from "./ask.ts"
 import type { Env } from "./config.ts"
 import { type CliError, describeNext, errorBody, toolCallText } from "./errors.ts"
-import { checkedMandateCover, mandateCoverText } from "./mandate-cover.ts"
+import { type MandateCover, checkedMandateCover, mandateCoverText } from "./mandate-cover.ts"
 import type { MandateSurface } from "./mandate-operations.ts"
 import { type Segment, type Text, type TtyStream, colourEnabled, qrChoice, segments, styler, terminalText, visibleWidth } from "./tty.ts"
 
@@ -98,7 +97,7 @@ export type ErrorOutputOptions = { env?: Env; noQr?: boolean; vaultUrl?: AskVaul
 // so. A link that passes is the canonical string askUrl returned.
 // mandateCover's link is checked against the failing call's own vault, as
 // a synthesised ask's is.
-function checkedError(error: CliError, options: ErrorOutputOptions): { ask: Ask | null; next: NextStep | null; refused: boolean; cover: MandateCoverHint | null } {
+function checkedError(error: CliError, options: ErrorOutputOptions): { ask: Ask | null; next: NextStep | null; refused: boolean; cover: MandateCover | null } {
   const vaultUrl = options.vaultUrl ?? null
   const { ask, refusedLink } = askForError(error, options.env ?? {}, vaultUrl)
   const call = error.extras.context ?? null

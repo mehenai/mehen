@@ -69,9 +69,10 @@ export function ledgerPath(dir: string): string {
   return join(dir, LEDGER_FILE)
 }
 
-// A mandate proposal is never kept: nothing waits on it.
-type LedgerAskKind = Exclude<AskKind, "mandate">
-const ASK_KINDS: readonly LedgerAskKind[] = ["enrol", "intake", "connect", "reconnect", "approval", "policy", "adoption", "bundle", "unfreeze"]
+// A mandate proposal is kept only so mehen wait and vault_wait find its
+// workspace: mehen mandate ls lists proposals, so no pending list or count
+// shows it (isListedAsk).
+const ASK_KINDS: readonly AskKind[] = ["enrol", "intake", "connect", "reconnect", "approval", "policy", "adoption", "bundle", "unfreeze", "mandate"]
 const CHECK_LABELS: readonly AskCheckLabel[] = ["fingerprint", "code", "account", "asked by", "codes"]
 
 function isString(value: unknown): value is string {
@@ -108,10 +109,11 @@ function pickContext(value: unknown, scope: LedgerScope, linkSlug: string | null
 // The route a link of each kind must be on: the ask's own id, or for an
 // enrolment its code; the unfreeze link is the workspace root. A reconnect
 // may also point at the credential's own page.
-function routeMatches(kind: LedgerAskKind, id: string, link: AskLink): boolean {
+function routeMatches(kind: AskKind, id: string, link: AskLink): boolean {
   const route = link.route
   if (kind === "unfreeze") return route === null && id === ""
   if (route === null) return false
+  if (kind === "mandate") return route.prefix === "sign-mandate" && route.id === id
   if (kind === "enrol") return route.prefix === "e" && isAskId("enrol", route.id)
   if (kind === "reconnect" && route.prefix === "items") return id === ""
   if ((kind === "policy" || kind === "adoption" || kind === "bundle") && id === "") return false
@@ -124,12 +126,12 @@ function pickAsk(value: unknown, scope: LedgerScope): Ask | null {
   const a = value as Record<string, unknown>
   const by = a.requestedBy as Record<string, unknown> | undefined
   const check = a.check as Record<string, unknown> | null | undefined
-  if (!ASK_KINDS.includes(a.kind as LedgerAskKind) || !isString(a.id) || !isString(a.title) || !isString(a.what)) return null
-  const kind = a.kind as LedgerAskKind
+  if (!ASK_KINDS.includes(a.kind as AskKind) || !isString(a.id) || !isString(a.title) || !isString(a.what)) return null
+  const kind = a.kind as AskKind
   const vaultUrl: AskVault = scope
   const link = askUrl(a.url, vaultUrl)
   if (link === null) return null
-  if (kind !== "unfreeze" && a.id !== "" && !isWaitId(kind, a.id)) return null
+  if (kind !== "unfreeze" && kind !== "mandate" && a.id !== "" && !isWaitId(kind, a.id)) return null
   if (!routeMatches(kind, a.id, link)) return null
   const provenance = pickContext(a.context, scope, link.workspace)
   if (provenance === "refused") return null
@@ -275,7 +277,7 @@ async function readAllEntries(dir: string, now: Date): Promise<unknown[]> {
     const entry = e as Record<string, unknown>
     const ask = entry.ask as Record<string, unknown> | undefined
     if (!isString(entry.origin) || !isNullableString(entry.workspace) || !isNullableString(entry.device) || !isString(entry.createdAt)) return false
-    if (typeof ask !== "object" || ask === null || !ASK_KINDS.includes(ask.kind as LedgerAskKind) || !isString(ask.id) || !isString(ask.url) || !isNullableString(ask.expiresAt)) return false
+    if (typeof ask !== "object" || ask === null || !ASK_KINDS.includes(ask.kind as AskKind) || !isString(ask.id) || !isString(ask.url) || !isNullableString(ask.expiresAt)) return false
     return remainingMs({ ask: { kind: ask.kind as AskKind, expiresAt: ask.expiresAt } as Ask, createdAt: entry.createdAt } as LedgerEntry, now) > 0
   })
 }
@@ -352,6 +354,12 @@ export async function removeLedgerEntries(dir: string, scope: LedgerScope, match
     const kept = entries.filter((entry) => !matches(entry))
     if (kept.length !== entries.length) await writeLedgerUnlocked(dir, scope, kept, now)
   }, options)
+}
+
+// Whether a pending list or count shows the entry: every ask but a mandate
+// proposal.
+export function isListedAsk(entry: LedgerEntry): boolean {
+  return entry.ask.kind !== "mandate"
 }
 
 // By id (exact) or by the slug the ask creates; the newest wins for a slug.

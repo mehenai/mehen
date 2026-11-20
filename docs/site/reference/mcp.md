@@ -69,7 +69,7 @@ The same as `mehen connect`. Without `client`, the one OAuth client that exists 
 
 ### vault_fetch
 
-The same as `mehen fetch`. It returns `{ status, statusText, item, headers, body, truncated, note? }`. The body is text after vault processing, cut at 256 KiB; with `select` it returns `{ status, statusText, item, headers, selected, found }` from the whole response instead (within the vault's 32 MiB response limit), which is the way to read one field of a large JSON answer. For a whole large or binary body use `mehen fetch -o <file>` in a shell. `context` names the project environment the credential is used for, as `--project` and `--env`; it is never a workspace switch. A host's `notifications/cancelled` stops the request.
+The same as `mehen fetch`. It returns `{ status, statusText, item, headers, body, truncated, note? }`. The body is text after vault processing, cut at 256 KiB; for a write, the note says that sending it again will not recover the rest. A write whose answer breaks off while it is read is `outcome_unknown`; with `select` it returns `{ status, statusText, item, headers, selected, found }` from the whole response instead (within the vault's 32 MiB response limit), which is the way to read one field of a large JSON answer. A body that is not JSON is a `usage` error for a read; for a write, which was sent and may have taken effect, the answer is the body as it came with `selected: null`, `found: false` and a `note`, never advice to send it again. For a whole large or binary body use `mehen fetch -o <file>` in a shell. `context` names the project environment the credential is used for, as `--project` and `--env`; it is never a workspace switch. A host's `notifications/cancelled` stops the request.
 
 ### vault_env
 
@@ -83,7 +83,7 @@ With an `enr_` id it finishes an enrolment `mehen enrol` started on this machine
 
 ### vault_pending
 
-The same as `mehen pending --json`, across every workspace: `{ pending: Ask[], groups?, notices?, warning? }` plus a `resource_link` per ask. An approval a human can review with others carries `group`, and `groups` lists each such group with its Review together page and the approvals in it; `notices` appears only when this machine has any, and `warning` when an entry came with a link mehen did not trust.
+The same as `mehen pending --json`, across every workspace: `{ pending: Ask[], groups?, notices?, warning? }` plus a `resource_link` per ask. An approval a human can review with others carries `group`, and `groups` lists each such group with its Review together page and the approvals in it; `notices` appears only when this machine has any, and `warning` when an entry came with a link mehen did not trust. An ask this machine recorded that its vault did not confirm (the vault unreachable or refusing, its answer leaving the ask out, or an enrolment it no longer says waits for its owner) comes with `stale: true`, `warning` names a vault that did not answer, and a stale ask gets no `resource_link` or card: it may be settled.
 
 ### vault_policy
 
