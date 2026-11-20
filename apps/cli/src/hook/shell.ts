@@ -592,6 +592,13 @@ class Parser {
 // single quotes or $'...', in a comment, and in the body of a quoted
 // here-document, as bash does. So `$\<newline>{!v}` is `${!v}` and
 // `$\<newline>OPENAI_API_KEY` expands the key.
+// The first index at or after `at` that does not begin a line continuation.
+function skipContinuations(s: string, at: number): number {
+  let j = at
+  while (s[j] === "\\" && s[j + 1] === "\n") j += 2
+  return j
+}
+
 export function logicalText(s: string): string {
   let out = ""
   let i = 0
@@ -651,22 +658,35 @@ export function logicalText(s: string): string {
       i = end
       continue
     }
-    if (c === "<" && s[i + 1] === "<" && s[i + 2] !== "<") {
-      // A here-document: its delimiter word, quoted if any part of it is.
-      let j = i + 2
+    // A here-document: `<<` or `<<-` and its delimiter word, any of them
+    // split by continuations, which bash removes first. The delimiter is
+    // quoted if any part of it is, continuations aside.
+    const second = skipContinuations(s, i + 1)
+    if (c === "<" && s[second] === "<" && s[skipContinuations(s, second + 1)] !== "<") {
+      let j = skipContinuations(s, second + 1)
       const strip = s[j] === "-"
-      if (strip) j++
-      while (s[j] === " " || s[j] === "\t") j++
-      const start = j
-      while (j < s.length && !/[\s;&|<>()]/.test(s[j] as string)) {
-        if (s[j] === "'" || s[j] === '"') {
-          const close = s.indexOf(s[j] as string, j + 1)
-          j = close === -1 ? s.length : close + 1
-        } else j += s[j] === "\\" ? 2 : 1
+      if (strip) j = skipContinuations(s, j + 1)
+      let blanks = ""
+      while (s[j] === " " || s[j] === "\t" || (s[j] === "\\" && s[j + 1] === "\n")) {
+        if (s[j] === "\\") j += 2
+        else blanks += s[j++]
       }
-      const raw = s.slice(start, j)
+      let raw = ""
+      while (j < s.length && !/[\s;&|<>()]/.test(s[j] as string)) {
+        if (s[j] === "\\" && s[j + 1] === "\n") j += 2
+        else if (s[j] === "'" || s[j] === '"') {
+          const close = s.indexOf(s[j] as string, j + 1)
+          const stop = close === -1 ? s.length : close + 1
+          raw += s.slice(j, stop)
+          j = stop
+        } else {
+          const step = s[j] === "\\" ? 2 : 1
+          raw += s.slice(j, j + step)
+          j += step
+        }
+      }
       docs.push({ delimiter: raw.replace(/\\(.)/gs, "$1").replace(/['"]/g, ""), strip, quoted: /['"\\]/.test(raw) })
-      out += s.slice(i, j)
+      out += `<<${strip ? "-" : ""}${blanks}${raw}`
       i = j
       wordStart = false
       continue
