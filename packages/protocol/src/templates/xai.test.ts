@@ -122,3 +122,32 @@ describe("xai third review fixes", () => {
     expect(decide("POST", `${API}/v1/batches/b1/requests`, plain)).toBe("allow")
   })
 })
+
+describe("xai fourth review fix", () => {
+  const MEDIA = ["/v1/images/generations", "/v1/images/edits", "/v1/videos/generations", "/v1/videos/edits", "/v1/videos/extensions"]
+  const published = { model: "grok-imagine", prompt: "a cat", storage_options: { public_url: true } }
+  const publishedObject = { model: "grok-imagine", prompt: "a cat", storage_options: { public_url: { expires_after: 0 } } }
+  const privateStorage = { model: "grok-imagine", prompt: "a cat", storage_options: { public_url: false } }
+  const plain = { model: "grok-imagine", prompt: "a cat" }
+
+  it("holds a media request that publishes its output, or cannot be read, and lets ordinary or private ones through, whatever the item's policy says", () => {
+    for (const path of MEDIA) {
+      for (const body of [plain, privateStorage]) {
+        expect({ path, body, policy: decide("POST", `${API}${path}`, body) }).toEqual({ path, body, policy: "allow" })
+        expect({ path, body, relay: underBroadAllow(xai, "POST", `${API}${path}`, body) }).toEqual({ path, body, relay: "allow" })
+      }
+      for (const body of [published, publishedObject, "not json"]) {
+        expect({ path, body, policy: decide("POST", `${API}${path}`, body) }).toEqual({ path, body, policy: "approve" })
+        expect({ path, body, relay: underBroadAllow(xai, "POST", `${API}${path}`, body) }).toEqual({ path, body, relay: "approve" })
+      }
+    }
+  })
+
+  it("holds an inline batch request that publishes media, and lets a private one through", () => {
+    const nested = (image: unknown) => ({ batch_requests: [{ batch_request_id: "1", batch_request: { image_generation: image } }] })
+    expect(decide("POST", `${API}/v1/batches/b1/requests`, nested(published))).toBe("approve")
+    expect(underBroadAllow(xai, "POST", `${API}/v1/batches/b1/requests`, nested(published))).toBe("approve")
+    expect(decide("POST", `${API}/v1/batches/b1/requests`, nested(privateStorage))).toBe("allow")
+    expect(underBroadAllow(xai, "POST", `${API}/v1/batches/b1/requests`, nested(privateStorage))).toBe("allow")
+  })
+})

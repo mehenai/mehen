@@ -448,3 +448,36 @@ describe("the JSON field matchers", () => {
     expect(ALLOW_BODY_MATCHERS.includes("json-webhook")).toBe(false)
   })
 })
+
+describe("the json-public-url matcher", () => {
+  it("matches a body it cannot read as one JSON object", () => {
+    for (const body of [null, new Uint8Array(), text("prompt=x"), new Uint8Array([0x7b, 0xff, 0x7d]), json([{ prompt: "x" }]), text('{"storage_options":{"public_url":false},"storage_options":{"public_url":true}}')]) {
+      expect(bodyMatches("json-public-url", body, "")).toBe(true)
+    }
+  })
+
+  it("matches storage_options that publish the output, at any depth, in any case, or in a shape it cannot read", () => {
+    const cases: [string, unknown][] = [
+      ["public_url true", { prompt: "a cat", storage_options: { public_url: true } }],
+      ["public_url as an object", { prompt: "a cat", storage_options: { public_url: { expires_after: 3600 } } }],
+      ["public_url as a string", { storage_options: { public_url: "yes" } }],
+      ["public_url null", { storage_options: { public_url: null } }],
+      ["a key in another case", { Storage_Options: { Public_URL: true } }],
+      ["storage_options that is not an object", { storage_options: true }],
+      ["storage_options null", { storage_options: null }],
+      ["storage_options an array", { storage_options: [{ public_url: false }] }],
+      ["nested in a batch", { batch_requests: [{ batch_request: { image_generation: { prompt: "x", storage_options: { public_url: true } } } }] }],
+    ]
+    for (const [what, body] of cases) expect(bodyMatches("json-public-url", json(body), ""), what).toBe(true)
+  })
+
+  it("lets ordinary generation and explicitly private storage by", () => {
+    for (const body of [{ prompt: "a cat", n: 1 }, { prompt: "a cat", storage_options: { public_url: false } }, { prompt: "a cat", storage_options: {} }, { prompt: "the words storage_options and public_url" }]) {
+      expect(bodyMatches("json-public-url", json(body), "")).toBe(false)
+    }
+  })
+
+  it("is only for deny and approve rules", () => {
+    expect(ALLOW_BODY_MATCHERS.includes("json-public-url")).toBe(false)
+  })
+})

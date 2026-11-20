@@ -47,6 +47,8 @@ const CASES: Case[] = [
   ["xai", "POST", "https://api.x.ai/v1/responses", "approval_required", MCP],
   ["xai", "POST", "https://api.x.ai/v1/batches", "approval_required", { name: "nightly", input_file_id: "file_abc" }],
   ["xai", "POST", "https://api.x.ai/v1/files", "approval_required", { purpose: "batch" }],
+  ["xai", "POST", "https://api.x.ai/v1/images/generations", "approval_required", { model: "grok-imagine", prompt: "a cat", storage_options: { public_url: true } }],
+  ["xai", "POST", "https://api.x.ai/v1/batches/b1/requests", "approval_required", { batch_requests: [{ batch_request_id: "1", batch_request: { image_generation: { prompt: "a cat", storage_options: { public_url: true } } } }] }],
   ["xai", "GET", "https://api.x.ai/v1/api-key", "approval_required"],
   ["supabase", "GET", "https://api.supabase.com/v1/projects/ref/api-keys", "approval_required"],
   ["supabase", "GET", "https://api.supabase.com/v1/branches/br1", "approval_required"],
@@ -104,6 +106,8 @@ describe("the body floors at the relay", () => {
   it.each([
     ["xai", "https://api.x.ai/v1/responses", { model: "grok-4", input: "hi", tools: [{ type: "web_search" }] }],
     ["replicate", "https://api.replicate.com/v1/predictions", { version: "v1", input: { prompt: "a cat" } }],
+    ["xai", "https://api.x.ai/v1/images/generations", { model: "grok-imagine", prompt: "a cat", storage_options: { public_url: false } }],
+    ["xai", "https://api.x.ai/v1/batches/b1/requests", { batch_requests: [{ batch_request_id: "1", batch_request: { image_generation: { prompt: "a cat" } } }] }],
   ] as const)("let a plain %s call through to the provider, once", async (id, url, body) => inVault(async (ctx) => {
     const template = getTemplate(id)
     if (!template) throw new Error(id)
