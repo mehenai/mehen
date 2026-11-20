@@ -2,6 +2,12 @@
 
 The version is printed by `mehen version --json`, with the commit it was built from. Releases are served from `https://mehen.dev/dl/`; `mehen update` installs the latest one.
 
+## Unreleased
+
+### Changed
+
+- **`mehen setup` gives a new Claude Desktop entry the `inspect` and `connect` toolsets** (`MEHEN_MCP_TOOLSETS=inspect,connect`). Claude Desktop's Chat and Cowork tabs run no shell, so a next step that names a `mehen` command is one they cannot take; with these toolsets they can connect an OAuth account with `vault_connect` and see their pending asks with `vault_pending`. Only a new entry, or one `--reset-env` rebuilds, gets them: an existing entry keeps what it has, and `mehen setup --agent claude-desktop --toolsets core` takes them out for good. Agents with a shell keep the six core tools.
+
 ## 0.4.2
 
 Agents now see six core MCP tools by default (`vault_status`, `vault_list`, `vault_request`, `vault_fetch`, `vault_env` and `vault_wait`) with opt-in toolsets for the rest, and a short 6.5 KB skill backed by `mehen guide <topic>`. Guard hooks now cover Cursor and Codex alongside Claude Code and pi, and a fresh `mehen up` starts the guard in `warn` mode so existing `.env` repos keep working until you move their keys in (`mehen up --guard block` blocks immediately). Solo developers in shared or open-source repos can use an uncommitted `mehen.local.toml` via `mehen init --local`, and `mehen adopt file <path>` scans and plans a single `.env` file in one step. The web UI's Add a credential sheet now supports custom-host API keys and lease-only program secrets directly, eighteen new provider templates ship with default environment variables, and the repository includes a hardened `Dockerfile` and `compose.yaml` for self-hosting `mehen serve`. Installed machines update themselves on their next call to the vault once this release is published, or at their next hourly check.
