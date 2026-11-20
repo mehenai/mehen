@@ -1092,7 +1092,13 @@ describe("sixth review: reproductions", () => {
     expect(refused("proj", `cat ${"*".repeat(40)}.e*v`)).toEqual(yes(`cat ${"*".repeat(40)}.e*v`))
   })
 
+  test("an integer variable evaluates a key variable named bare", () => {
+    for (const command of ['declare -i n=DB_PASSWORD; echo "$n"', "typeset -i n; n=GITHUB_TOKEN+0; echo $n", "f() { local -i n=OPENAI_API_KEY; echo $n; }; f"]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["declare -i n=5; echo $n", "declare -i n=n+1"]) none("proj", command)
+  })
+
   test("an option whose arity differs between GNU and BSD is not in the allowlist", () => {
+    expect(refused("proj", "cp -S .env /dev/stdout")).toEqual(yes("cp -S .env /dev/stdout"))
     expect(refused("proj", "sed -l p .env")).toEqual(yes("sed -l p .env"))
     expect(refused("proj", "sed -l 80 -n p README.md")).toEqual(yes("sed -l 80 -n p README.md"))
   })

@@ -1008,7 +1008,9 @@ function xargsNames(ctx: Context, state: State, node: CommandNode, producer: Com
 // command being read.
 // `words` holds every command's words, for the check on a line outside
 // the grammar.
-type Context = { home: string; vaultDirs: string[]; command: string; findings: Finding[]; outside: string[]; reads: boolean; nested: number; words: Word[][] }
+// `arithmetic`: the line has let or an integer variable (declare -i), so a
+// key variable named bare in any word may be read.
+type Context = { home: string; vaultDirs: string[]; command: string; findings: Finding[]; outside: string[]; reads: boolean; nested: number; words: Word[][]; arithmetic: boolean }
 
 function outside(ctx: Context, why: string, runs = false): void {
   if (!ctx.outside.includes(why)) ctx.outside.push(why)
@@ -1478,9 +1480,17 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
   // reference (declare -n) makes one variable another under a new name.
   if (program === "let") {
     outside(ctx, "let")
-    if (args.some((a) => (a.text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).some((name) => KEY_VARIABLE.test(name)))) ctx.reads = true
+    ctx.arithmetic = true
   }
-  if (["declare", "typeset", "local"].includes(program) && args.some((a) => !a.dynamic && /^-[A-Za-z]*n/.test(a.text))) outside(ctx, `${program} -n`)
+  if (["declare", "typeset", "local"].includes(program)) {
+    const flags = args.filter((a) => !a.dynamic && /^[-+][A-Za-z]+$/.test(a.text)).map((a) => a.text.slice(1)).join("")
+    if (flags.includes("n")) outside(ctx, `${program} -n`)
+    // An integer variable evaluates what is assigned to it as arithmetic.
+    if (flags.includes("i")) {
+      outside(ctx, `${program} -i`)
+      ctx.arithmetic = true
+    }
+  }
   if (["export", "declare", "typeset", "readonly", "local", "unset"].includes(program)) {
     const special = args.map((a) => ASSIGNED.exec(a.text)?.[1] ?? a.text).find((n) => SPECIAL_VARIABLES.has(n))
     if (special) outside(ctx, `an assignment to ${special}`)
@@ -1762,6 +1772,7 @@ function anyWordReads(ctx: Context): boolean {
       const text = word.text
       const named = /^[A-Za-z_][A-Za-z0-9_]*=([A-Za-z_][A-Za-z0-9_]*)$/.exec(text)?.[1]
       if (named !== undefined && KEY_VARIABLE.test(named)) return true
+      if (ctx.arithmetic && (text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).some((name) => KEY_VARIABLE.test(name))) return true
       const program = basename(text)
       if (isReader(program) || program in INTERPRETERS || program === "printenv") return true
       if (PRINTERS.has(program)) {
@@ -1780,7 +1791,7 @@ export function commandFindings(command: string, cwd: string, home = homedir(), 
   const findings: Finding[] = []
   const inText = secretInText(command)
   if (inText) findings.push({ rule: "secret-in-command", reason: `the command carries ${inText}` })
-  const ctx: Context = { home, vaultDirs, command, findings, outside: [], reads: false, nested: 0, words: [] }
+  const ctx: Context = { home, vaultDirs, command, findings, outside: [], reads: false, nested: 0, words: [], arithmetic: false }
   lines(ctx, { cwds: [cwd], stack: [], links: new Map() }, parseShell(command, home))
   if (ctx.outside.length && !ctx.reads) ctx.reads = anyWordReads(ctx)
   // The allowlist: a line that uses anything outside the grammar and reads

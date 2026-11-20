@@ -94,7 +94,7 @@ export const OPTION_SPECS: Record<string, OptionSpec> = {
   strings: spec({ ...arities("adfow", "flag"), ...arities("ntTesU", "value") }, { ...names("all data print-file-name include-all-whitespace", "flag"), ...names("bytes radix target encoding output-separator unicode", "value") }, "files", true),
   tr: spec(arities("cCdst", "flag"), names("complement delete squeeze-repeats truncate-set1", "flag"), "none"),
   cp: spec(
-    { ...arities("abdfHilLnPpRrsTuvxZ", "flag"), ...arities("St", "value") },
+    { ...arities("abdfHilLnPpRrsTuvxZ", "flag"), t: "value" },
     {
       ...names("archive attributes-only copy-contents dereference force interactive link no-clobber no-dereference parents recursive remove-destination strip-trailing-slashes symbolic-link no-target-directory verbose one-file-system", "flag"),
       ...names("backup preserve reflink update context", "optional"),
