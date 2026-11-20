@@ -1092,6 +1092,11 @@ describe("sixth review: reproductions", () => {
     for (const command of ["grep -r --include='.e[[:digit:]]v' x .", "grep -r --include='*.[[:alpha:]]d' x ."]) none("proj", command)
   })
 
+  test("a class the guard cannot decide never hides a file: an --exclude it cannot decide leaves the file in", () => {
+    for (const command of ["grep -r --exclude='[[:nonsense:]]*' x .", "grep -r --exclude='.e[![:nonsense:]]v' x .", "grep -r --exclude-dir='[[:nonsense:]]*' x ."]) expect(refused("proj", command)).toEqual(yes(command))
+    none("proj", "grep -r --exclude='.e[[:alpha:]]v' x .")
+  })
+
   test("braces are expanded before options are read, as the shell does", () => {
     for (const command of ["grep -f.{e..e}nv README.md", "grep --file=.{e..e}nv README.md", "grep -f.{e,n}nv README.md", "grep x {-f,-x}.env README.md", "sort --files0-from=.{e..e}nv"]) expect(refused("proj", command)).toEqual(yes(command))
     for (const command of ["echo {1..3}", "git add {a,b}.md", "cat {README,a}.md"]) none("proj", command)

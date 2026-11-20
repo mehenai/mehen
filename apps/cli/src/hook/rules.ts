@@ -404,9 +404,11 @@ function lnPairs(ln: LnArgs, cwd: string): { target: Word; link: string }[] {
 type GlobMatcher = { test(text: string): boolean }
 type GlobToken = { kind: "star" } | { kind: "one"; test: (c: string) => boolean }
 
-// POSIX classes as the C locale has them. A character past ASCII is in
-// every class, and a class name fnmatch does not know matches anything,
-// so the guard never matches fewer files than the program would.
+// POSIX classes as the C locale has them. Whether a character past ASCII
+// is in a class, or in a class fnmatch does not know, the guard cannot
+// say; it then answers the way that never lets a read through: a pattern
+// that selects files (`more`) matches, and one that leaves files out
+// (grep --exclude) does not.
 const POSIX_CLASSES: Record<string, RegExp> = {
   alpha: /[A-Za-z]/,
   digit: /[0-9]/,
@@ -431,10 +433,17 @@ function posixEnd(text: string, at: number): number {
   return end === -1 ? -1 : end + 2
 }
 
-function globClass(body: string, ignoreCase: boolean): (c: string) => boolean {
+// In the set, out of it, or not known (null).
+type Membership = boolean | null
+
+function either(a: Membership, b: Membership): Membership {
+  return a === true || b === true ? true : a === null || b === null ? null : false
+}
+
+function globClass(body: string, ignoreCase: boolean, more: boolean): (c: string) => boolean {
   const negate = body.startsWith("!") || body.startsWith("^")
   const items: [string, string][] = []
-  const classes: ((c: string) => boolean)[] = []
+  const classes: ((c: string) => Membership)[] = []
   const set = negate ? body.slice(1) : body
   // \ makes the next character a plain member, as fnmatch reads it.
   const member = (k: number): [string, number] => (set[k] === "\\" && k + 1 < set.length ? [set[k + 1] as string, k + 1] : [set[k] as string, k])
@@ -443,9 +452,9 @@ function globClass(body: string, ignoreCase: boolean): (c: string) => boolean {
     if (end !== -1) {
       const name = set.slice(k + 2, end - 2)
       const known = set[k + 1] === ":" ? POSIX_CLASSES[name] : undefined
-      if (known) classes.push((c) => c.charCodeAt(0) > 0x7f || known.test(c))
+      if (known) classes.push((c) => (c.charCodeAt(0) > 0x7f ? null : known.test(c)))
       else if (set[k + 1] !== ":" && name.length === 1) items.push([name, name])
-      else classes.push(() => true)
+      else classes.push(() => null)
       k = end - 1
       continue
     }
@@ -457,11 +466,17 @@ function globClass(body: string, ignoreCase: boolean): (c: string) => boolean {
       k = end2
     } else items.push([lo, lo])
   }
-  const inSet = (c: string) => items.some(([lo, hi]) => c >= lo && c <= hi) || classes.some((test) => test(c))
-  return (c) => (ignoreCase ? inSet(c.toLowerCase()) || inSet(c.toUpperCase()) : inSet(c)) !== negate
+  const inSet = (c: string): Membership => {
+    if (items.some(([lo, hi]) => c >= lo && c <= hi)) return true
+    return classes.reduce<Membership>((found, test) => either(found, test(c)), false)
+  }
+  return (c) => {
+    const found = ignoreCase ? either(inSet(c.toLowerCase()), inSet(c.toUpperCase())) : inSet(c)
+    return found === null ? more : found !== negate
+  }
 }
 
-function globMatcher(glob: string, ignoreCase = false): GlobMatcher {
+function globMatcher(glob: string, ignoreCase = false, more = true): GlobMatcher {
   const fold = (c: string) => (ignoreCase ? c.toLowerCase() : c)
   const literal = (ch: string): GlobToken => {
     const folded = fold(ch)
@@ -487,7 +502,7 @@ function globMatcher(glob: string, ignoreCase = false): GlobMatcher {
       if (close >= glob.length) close = -1
       if (close === -1) tokens.push(literal("["))
       else {
-        tokens.push({ kind: "one", test: globClass(glob.slice(i + 1, close), ignoreCase) })
+        tokens.push({ kind: "one", test: globClass(glob.slice(i + 1, close), ignoreCase, more) })
         i = close
       }
     } else tokens.push(literal(ch))
@@ -546,8 +561,8 @@ function grepArgs(args: Word[]): GrepArgs {
     // A filter whose glob the shell decides is left out: checking more files
     // than grep reads is the safe side.
     if (value === undefined || value.dynamic) return
-    if (name === "--exclude" || name === "--include") parsed.filters.push({ include: name === "--include", re: globMatcher(value.text) })
-    if (name === "--exclude-dir") parsed.excludeDirs.push(globMatcher(value.text.replace(/\/+$/, "")))
+    if (name === "--exclude" || name === "--include") parsed.filters.push({ include: name === "--include", re: globMatcher(value.text, false, name === "--include") })
+    if (name === "--exclude-dir") parsed.excludeDirs.push(globMatcher(value.text.replace(/\/+$/, ""), false, false))
   }
   for (let i = 0; i < args.length; i++) {
     const word = args[i] as Word
