@@ -97,3 +97,28 @@ describe("xai second review fixes", () => {
     expect(decide("POST", `${API}/v1/batches/b1/requests`, { batch_requests: [{ batch_request_id: "1", batch_request: { responses: plain } }] })).toBe("allow")
   })
 })
+
+describe("xai third review fixes", () => {
+  const fileBatch = { name: "nightly", input_file_id: "file_abc" }
+  const inline = { name: "nightly" }
+
+  it("holds creating any batch, since it may run requests from an uploaded file the vault never reads, whatever the item's policy says", () => {
+    for (const body of [fileBatch, inline, "not json"]) {
+      expect({ body, policy: decide("POST", `${API}/v1/batches`, body) }).toEqual({ body, policy: "approve" })
+      expect({ body, relay: underBroadAllow(xai, "POST", `${API}/v1/batches`, body) }).toEqual({ body, relay: "approve" })
+    }
+  })
+
+  it("holds file uploads, which can hold batch requests, and making a file public, whatever the item's policy says", () => {
+    for (const path of ["/v1/files", "/v1/files/file_abc/public-url", "/v1/files/file_abc/public-url/revoke"]) {
+      expect({ path, policy: decide("POST", `${API}${path}`) }).toEqual({ path, policy: "approve" })
+      expect({ path, relay: underBroadAllow(xai, "POST", `${API}${path}`) }).toEqual({ path, relay: "approve" })
+    }
+  })
+
+  it("still lets requests added inline to a batch through unless they name a remote MCP server", () => {
+    const plain = { batch_requests: [{ batch_request_id: "1", batch_request: { responses: { model: "grok-4", input: "hi" } } }] }
+    expect(underBroadAllow(xai, "POST", `${API}/v1/batches/b1/requests`, plain)).toBe("allow")
+    expect(decide("POST", `${API}/v1/batches/b1/requests`, plain)).toBe("allow")
+  })
+})

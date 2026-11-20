@@ -45,6 +45,8 @@ const CASES: Case[] = [
   ["replicate", "GET", "https://api.replicate.com/v1/webhooks/default/secret", "approval_required"],
   ["xai", "GET", "https://api.x.ai/v1/responses/r1", "approval_required"],
   ["xai", "POST", "https://api.x.ai/v1/responses", "approval_required", MCP],
+  ["xai", "POST", "https://api.x.ai/v1/batches", "approval_required", { name: "nightly", input_file_id: "file_abc" }],
+  ["xai", "POST", "https://api.x.ai/v1/files", "approval_required", { purpose: "batch" }],
   ["xai", "GET", "https://api.x.ai/v1/api-key", "approval_required"],
   ["supabase", "GET", "https://api.supabase.com/v1/projects/ref/api-keys", "approval_required"],
   ["supabase", "GET", "https://api.supabase.com/v1/branches/br1", "approval_required"],
