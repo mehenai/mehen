@@ -101,7 +101,24 @@ test("the skill covers the six core tools, the ask-and-wait loop, exit 7's outco
   expect(skill).toContain("mehen guide <topic>")
   expect(skill).toContain("--toolsets")
   expect(skill).toContain("https://docs.mehen.dev/guide.md")
-  for (const [, topic] of skill.matchAll(/`mehen guide ([a-z-]+)`/g)) expect(Object.keys(GUIDE_TOPICS)).toContain(topic ?? "")
+  const topics = [...(skill.match(/Topics: ([^\n]*)/)?.[1] ?? "").matchAll(/`([a-z-]+)`/g)].map(([, topic]) => topic ?? "")
+  expect(topics.length).toBeGreaterThan(10)
+  for (const topic of topics) expect(Object.keys(GUIDE_TOPICS)).toContain(topic)
+})
+
+// The rules the short sheet keeps carry their exceptions: the commands
+// that take no --json, the push that must not be repeated, the sandbox
+// refusal that is not exit 7, and the nevers an agent hits first.
+test("the skill keeps each rule's exceptions", async () => {
+  const skill = await Bun.file(new URL("../../../skills/mehen/SKILL.md", import.meta.url)).text()
+  expect(skill).toContain("pass `--json` wherever supported and read it; `mehen run`, `mehen env set` and `mehen mcp` do not accept it")
+  expect(skill).not.toMatch(/After an approval, send exactly the same request/)
+  expect(skill).toContain("After an approved fetch or run, send exactly the same request again, byte for byte, from the same machine")
+  expect(skill).toContain("A push is the exception: its wait ends once the vault has pushed, so never push again unless the human asks.")
+  expect(skill).toMatch(/\| 3 \| Approval required \|[^\n]*held fetch or run/)
+  expect(skill).toMatch(/\| 7 \|[^\n]*A sandbox refusal is not exit 7: do not retry it\./)
+  expect(skill).toMatch(/\| 2 \|[^\n]*`workspace_not_allowed` and `pin_outdated`/)
+  for (const never of ["Never open, print or grep a `.env`", "never write a secret to a file", "never type a credential into a page", "never print the environment inside `mehen run`", "never guess one", "never `MEHEN_ENV=prod`", "unless your harness draws vault cards"]) expect(skill).toContain(never)
 })
 
 // 0.3.2's skill carried "Bringing existing credentials in" twice, from two
