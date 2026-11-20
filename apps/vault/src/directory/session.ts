@@ -151,6 +151,31 @@ function cleanCity(value: unknown): string | null {
   return city === "" ? null : city
 }
 
+// Whether the connection came from this machine: a local vault (apps/local)
+// puts the peer's address in cf-connecting-ip, which Cloudflare sets for
+// itself and which is never loopback there. Only that one answer is read
+// from the address; nothing keeps or shows it.
+export function loopbackPeer(request: Request): boolean {
+  const ip = request.headers.get("cf-connecting-ip") ?? ""
+  return /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.test(ip)
+}
+
+// Whether the browser is on the vault's own machine: the vault answers on a
+// loopback origin (`mehen up` or `mehen serve` without --origin), which no
+// other machine can reach, and the peer is loopback. Behind a proxy on an
+// https origin (Caddy, Tailscale serve) every peer is the proxy on
+// loopback, whoever's browser it carries, so a loopback peer alone says
+// nothing there.
+export function onThisMachine(request: Request, vaultOrigin: string): boolean {
+  let url: URL
+  try {
+    url = new URL(vaultOrigin)
+  } catch {
+    return false
+  }
+  return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) && loopbackPeer(request)
+}
+
 // "Amsterdam, NL" from Cloudflare's view of the connection; null when it
 // says nothing. The address itself is never read.
 export function placeOf(request: Request): string | null {

@@ -71,7 +71,7 @@ describe("checks before signing", () => {
   })
 
   it("item actions name the shown credential's stable id; a replacement or a changed revision refuses", () => {
-    const shown = { id: "itm_1", version: 3, configRevision: 2, dependencyRevision: 1 }
+    const shown = { id: "itm_1", kind: "api-key", version: 3, configRevision: 2, dependencyRevision: 1 }
     const before = { kind: "workspace" as const }
     const after = { kind: "project" as const, project: "prj_a" }
     expect(itemDeleteAction(shown)).toEqual({ type: "item.delete", item: "itm_1" })
@@ -84,10 +84,15 @@ describe("checks before signing", () => {
     expect(itemChangedRefusal(shown, { ...shown, id: "itm_2" })?.message).toBe("This name now belongs to a different credential than the one this page showed.")
     expect(itemChangedRefusal(shown, { ...shown, configRevision: 3 })?.error).toBe("conflict")
     expect(itemChangedRefusal(shown, { ...shown, version: 4 })?.error).toBe("conflict")
+    // The vault renews a connection's token on its own: that is not a change.
+    const connection = { ...shown, kind: "oauth-connection" }
+    expect(itemChangedRefusal(connection, { ...connection, version: 4 })).toBeNull()
+    expect(itemChangedRefusal(connection, { ...connection, version: 4, configRevision: 3 })?.error).toBe("conflict")
+    expect(itemRestoreRefusal(connection, 2, { ...connection, version: 4, previous: { version: 2 } })).toEqual(CHANGED_SINCE_SHOWN)
   })
 
   it("a restore signs the shown credential's id, its version and the kept version, and refuses once either moved", async () => {
-    const shown = { id: "itm_1", version: 3, configRevision: 2, dependencyRevision: 1 }
+    const shown = { id: "itm_1", kind: "api-key", version: 3, configRevision: 2, dependencyRevision: 1 }
     const restore = await itemRestoreAction(shown, 2)
     expect(restore).toEqual({ type: "item.restore", item: "itm_1", digest: await stepUpDigest({ item: "itm_1", version: 3, previous: 2 }) })
     expect(sameAction(restore, await itemRestoreAction({ ...shown, version: 4 }, 2))).toBe(false)
@@ -248,8 +253,10 @@ describe("the In web pages card's change", () => {
   })
 
   it("signs the digest item.update rebuilds from the change, the version and the configuration shown", async () => {
-    const item = { id: "itm_githublogin", version: 3, configRevision: 2 }
+    const item = { id: "itm_githublogin", kind: "password-login", version: 3, configRevision: 2 }
     const change = { ceiling: "relay", browser: null }
     expect(await itemUpdateAction(item, change)).toEqual({ type: "item.update", item: item.id, digest: await stepUpDigest({ change, version: 3, configRevision: 2 }) })
+    // An OAuth connection's renewals do not move what its settings pin.
+    expect(await itemUpdateAction({ ...item, kind: "oauth-connection" }, change)).toEqual(await itemUpdateAction({ ...item, kind: "oauth-connection", version: 9 }, change))
   })
 })

@@ -196,6 +196,7 @@ export const requestCommand: Command = {
     "Naming a credential this machine can already reach asks the human to rotate it instead: --home and --provider must match it, only its secret fields are replaced, and its binding and policy stay.",
     "Without --provider, the item holds every request for a human's approval unless the human lets reads through on the page.",
     "Without --provider, --host and --header, a generic, database-url, file or other kind the relay never sends is lease-only: it has no host, the vault never sends it anywhere, and only mehen run delivers it into a process. Use this for secrets such as JWT_SECRET or DATABASE_URL. An api-key, bearer-token, basic-auth, custom-headers or oauth-connection needs --host, and so does --header.",
+    "A google-service-account or github-app is refused (bad_request): minting tokens from one is not built, so nothing could use it.",
     "--home says who the credential belongs to: private (only the owner, the default), project (needs --project or the checkout's mehen.toml) or workspace. The human may change it on the page.",
     "A machine accepted without private credentials (a team's machine, a guest's by default, or a member's whose tick was cleared; private: no in mehen status, scope.privateCredentials false in mehen status --json) cannot ask for a private one: it is refused forbidden (exit 5). Ask with --home project --project <prj_id> for a project the person can edit, or --home workspace if they are a workspace owner or admin, or ask the human to open this machine's page under Machines in the web app and allow it to use their private credentials.",
   ],
@@ -287,7 +288,7 @@ export const connectCommand: Command = {
     ["connect", "google-gmail", "--name", "gmail-personal", "--expect", "you@example.com", "--reason", "read and draft replies in your inbox", "--request-client", "--json"],
     ["connect", "github-oauth", "--name", "github-personal", "--scopes", "read:user,repo", "--reason", "open pull requests for you"],
   ],
-  notes: ["With no OAuth client in the vault it exits 4 (client_missing) with the mehen request to run; --request-client asks for the client first, in one chain.", "--home as for mehen request: private by default, project with --project or the checkout's mehen.toml, or workspace. A machine without private credentials (private: no in mehen status, scope.privateCredentials false in mehen status --json) needs --home project or --home workspace."],
+  notes: ["With no OAuth client in the vault it exits 4 (client_missing) with the mehen request to run; --request-client asks for the client first, in one chain.", "--name naming an existing connection of the same provider reconnects it, pinned to the account it holds. A reconnect keeps the connection's scopes; --scopes adds to them, and never drops one.", "--home as for mehen request: private by default, project with --project or the checkout's mehen.toml, or workspace. A machine without private credentials (private: no in mehen status, scope.privateCredentials false in mehen status --json) needs --home project or --home workspace."],
   async run({ args, json, env }) {
     const name = args.string("name")
     const reason = args.string("reason")

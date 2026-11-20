@@ -142,7 +142,7 @@ function livePage(shell: WorkspaceShell, view: WorkspaceEnrolView, data: Machine
           <dt>Host</dt><dd>${view.host !== null ? cardText(view.host) : html`<span class="muted">not given</span>`}</dd>
           <dt>Key</dt><dd>${keyWords(view.backend)}</dd>
           <dt>Asked</dt><dd data-region="enrol-start">${formatTime(view.start.at)}${view.start.place !== null ? html` from ${cardText(view.start.place)}` : ""} by ${cardText(view.start.clientLabel)}</dd>
-          <dt>You are</dt><dd data-region="enrol-acceptor">${view.acceptorPlace !== null ? html`in ${cardText(view.acceptorPlace)}` : "somewhere the vault cannot place"}</dd>
+          <dt>You are</dt><dd data-region="enrol-acceptor">${view.acceptorPlace !== null ? html`in ${cardText(view.acceptorPlace)}` : view.acceptorLocal === true ? "on this machine" : "somewhere the vault cannot place"}</dd>
           ${view.owner !== null ? html`<dt>Accepted by</dt><dd>${ownerLine(view.owner)}</dd>` : ""}
           <dt>This link</dt><dd>${countdownTimer(view.expiresAt, ENROL_SECONDS, data.now)}</dd>
         </dl>
@@ -200,7 +200,7 @@ function closedPage(shell: WorkspaceShell, view: WorkspaceEnrolView, data: Machi
   const successor = view.state === "expired" ? view.successor : null
   const lead =
     view.state === "active"
-      ? html`<b>${cardText(view.name)}</b> is enrolled in ${cardText(view.workspace.name)}. Its agent's <code>mehen wait</code> finishes by itself; restart the agent once so its Mehen tools load. Review the machine from the machines page.`
+      ? html`<b>${cardText(view.name)}</b> is enrolled in ${cardText(view.workspace.name)}. ${view.startedByAgent === true ? html`Its agent's <code>mehen wait</code> finishes by itself; restart the agent once so its Mehen tools load.` : "The terminal that asked carries on by itself."} Review the machine from the machines page.`
       : view.state === "rejected"
         ? html`Nothing was enrolled. If you did not expect <b>${cardText(view.name)}</b>, check which agents can reach your machines.`
         : successor !== null

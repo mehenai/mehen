@@ -90,6 +90,24 @@ describe("mehen wait: polling", () => {
     expect(result.stderr).toBe("")
   })
 
+  // A server or proxy that drops a held poll: Bun's fetch would resend the
+  // same request, proof and all, on a reused connection; every poll is sent
+  // once and the next one signed afresh.
+  test("a long poll whose connection drops is polled again with a fresh proof, and the wait carries on to the answer", async () => {
+    await enrolled()
+    const done = { intake: "int_drop", status: "completed", item: item("openai-new") }
+    vault.sequences.set("intake:int_drop", [{ intake: "int_drop", status: "open" }, done])
+    vault.drops.set("GET /v1/intakes/int_drop?wait=1", 1)
+    const before = vault.seen.length
+    const result = await runJv(["wait", "int_drop", "--json"], env)
+    expect(vault.replays).toEqual([])
+    expect(result.code).toBe(EXIT.ok)
+    expect(json(result)).toMatchObject({ id: "int_drop", kind: "intake", status: "completed" })
+    const polls = vault.seen.slice(before)
+    expect(polls.map((p) => `${p.path}${p.search}`)).toEqual(["/v1/intakes/int_drop", "/v1/intakes/int_drop?wait=1", "/v1/intakes/int_drop?wait=1"])
+    expect(new Set(polls.map((p) => p.claims.jti)).size).toBe(3)
+  })
+
   test("durations: 10m, 2h and 0 are accepted; soon is a usage error", async () => {
     await enrolled()
     vault.sequences.set("approval:apr_ok", [APPROVED])

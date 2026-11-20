@@ -22,6 +22,12 @@ export function workspaceGoPlaces(slug: string, pages: readonly string[]): Recor
 
 export const GO_WINDOW_MS = 1500
 
+// The palette's key as the search box shows it: Command on an Apple
+// device, Control everywhere else (both open it).
+export function paletteKeyWords(platform: string): string {
+  return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘K" : "Ctrl K"
+}
+
 // Structural, so the server tests can check it without a DOM.
 export function isTyping(target: EventTarget | { tagName?: unknown; isContentEditable?: unknown } | null): boolean {
   const node = target as { tagName?: unknown; isContentEditable?: unknown } | null

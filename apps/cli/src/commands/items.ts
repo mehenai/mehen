@@ -9,7 +9,7 @@
 // never their notes, because nothing in an ItemDescription proves the policy
 // is a verified template binding.
 
-import { EXIT, type ItemDescription, type ItemSummary } from "@mehen/protocol/api"
+import { EXIT, type ItemConnection, type ItemDescription, type ItemSummary } from "@mehen/protocol/api"
 import { checkBinding, isLeaseOnly, leaseOnlyDelivery, leaseOnlyWords, parseDestination } from "@mehen/protocol/binding"
 import { type PolicySummary, summarisePolicy } from "@mehen/protocol/policy-summary"
 import type { PushRecordView } from "@mehen/protocol/push"
@@ -281,6 +281,12 @@ export function pushLine(push: PushRecordView, timeZone?: string): string {
   return `  push to ${push.words} ${PUSH_STATE_WORDS[push.state] ?? push.state} (version ${push.version}${said}) ${at}`
 }
 
+// What an OAuth connection may do: the scopes it holds and its token's end.
+export function connectionLines(connection: ItemConnection, timeZone?: string): Text[] {
+  const expires = connection.expiresAt === null ? "does not expire" : `expires ${localStamp(connection.expiresAt, timeZone) ?? connection.expiresAt}`
+  return [field("scopes", connection.scopes.length ? connection.scopes.join(", ") : "none recorded"), field("token", `${expires}${connection.refreshing ? "; renewing failed, retrying" : ""}`)]
+}
+
 // The show page (UX-MEHEN-TOOLS 2.7): every line it had, the policy count
 // followed by the three summary lines, a relative last used, and a try: line.
 export function showLines(item: ItemDescription, slug: string, colour: Styler, options: ShowOptions = {}): Text[] {
@@ -301,6 +307,7 @@ export function showLines(item: ItemDescription, slug: string, colour: Styler, o
   lines.push(field("Effective floors", item.policyFloor === undefined ? "unavailable from this vault" : item.policyFloor.length ? "Stronger than a saved base allow:" : "none reported"))
   for (const floor of item.policyFloor ?? []) lines.push(segments(`    ${floor.action}: ${floor.host} ${JSON.stringify(floor.rule)} (${floor.reason}; ${floor.id})`))
   lines.push(segments(`  Read mehen policy show ${item.slug} for current policy state. A saved base allow does not remove a floor.`))
+  if (item.connection) lines.push(...connectionLines(item.connection, options.timeZone))
   const careful = postureText(item.posture)
   if (careful !== null) lines.push(`  How careful: ${careful}`)
   if (item.tags.length) lines.push(field("tags", item.tags.join(", ")))

@@ -11,22 +11,29 @@ import { hostname } from "node:os"
 import { join } from "node:path"
 import { DEFAULT_PORT, LocalConfigError, resolveConfig } from "../../../local/src/config.ts"
 import type { Command } from "../command.ts"
+import { fingerprintOf } from "@mehen/protocol/fingerprint"
+import { type DeviceJwk, jwkThumbprint } from "@mehen/protocol/proof"
+import { fingerprintLines } from "../commands/enrol.ts"
 import { homeDir } from "../config.ts"
+import { readEnrolmentRecord } from "../enrolment-record.ts"
 import { CliError, usageError } from "../errors.ts"
 import { ensureSafeDirectory, ensureSafeRoot, resolveHome } from "../home.ts"
 import { selfExecutable } from "../install-state.ts"
+import { LOCAL_VAULT_RECORD, keyringAdvice, keyringHost } from "../local-vault.ts"
 import { printJson, printLine } from "../output.ts"
+import { type Segment, type Text, colourEnabled, styler } from "../tty.ts"
 import { openUrl } from "./browser.ts"
-import { type ServiceKind, ServiceError, installService, removeService, serviceKind } from "./service.ts"
+import { type ServiceKind, ServiceError, installService, removeService, serviceEnvironment, serviceKind } from "./service.ts"
 
 const USAGE = "mehen up [--port <port>] [--data <dir>] [--no-agents] [--timeout <seconds>] | mehen up --remove"
-const RECORD_FILE = "local-vault.json"
+const RECORD_FILE = LOCAL_VAULT_RECORD
 const POLL_MS = 1000
 const DEFAULT_TIMEOUT_SECONDS = 900
 
 type Record_ = { origin: string; data: string; port: number; service: ServiceKind }
 type Custody = "secure-enclave" | "keyring" | "file"
-type State = { origin: string; instance: string; accounts: boolean; bootstrap: boolean; custody?: Custody; workspaces: { slug: string; name: string }[] }
+// A vault from before 0.4.1 lists its workspaces without their ids.
+type State = { origin: string; instance: string; accounts: boolean; bootstrap: boolean; custody?: Custody; workspaces: { id?: string; slug: string; name: string }[] }
 type Env = Record<string, string | undefined>
 
 const CUSTODY_WORDS: Record<Custody, string> = {
@@ -40,8 +47,11 @@ function custodyOf(state: State): Custody | null {
   return state.custody !== undefined && Object.hasOwn(CUSTODY_WORDS, state.custody) ? state.custody : null
 }
 
-function custodyLine(custody: Custody | null): string {
-  return custody === null ? "" : ` ${CUSTODY_WORDS[custody]}`
+// On a Linux desktop that could keep the key in the login keyring, a file
+// custody says what moves it there.
+export function custodyLine(custody: Custody | null, advice: string | null = null): string {
+  if (custody === null) return ""
+  return custody === "file" && advice !== null ? ` ${CUSTODY_WORDS.file} ${advice}` : ` ${CUSTODY_WORDS[custody]}`
 }
 
 // How this process runs itself again: the installed binary, or bun and the
@@ -52,11 +62,18 @@ export function selfCommand(env: Env): string[] {
   return [process.execPath, Bun.main]
 }
 
+// Plain text is the CLI's own words, one line per line break, or lines as
+// given: a name the vault sent goes in a list, so a line feed in it is
+// spelled out rather than starting a line.
+export function textLines(text: string | readonly Text[]): readonly Text[] {
+  return typeof text === "string" ? text.split("\n") : text
+}
+
 function emitter(json: boolean) {
   return {
-    event(event: string, fields: Record<string, unknown>, text: string | null) {
+    event(event: string, fields: Record<string, unknown>, text: string | readonly Text[] | null) {
       if (json) printJson({ event, ...fields })
-      else if (text !== null) printLine(text)
+      else if (text !== null) for (const line of textLines(text)) printLine(line)
     },
   }
 }
@@ -123,14 +140,42 @@ export function agentLines(setup: Record<string, unknown> | null, guard: Record<
 
 // What a person at the terminal needs for the enrolment page: the link, and
 // the fingerprint, since the page hides one of its groups and accepts only
-// once that group is typed from here.
-export function enrolLines(url: string, opened: boolean, fingerprint: string | null): string {
-  const check = fingerprint ? `\nThis machine's fingerprint is ${fingerprint}. The page shows all but one of its groups: type the one it hides, then accept with your passkey.` : "\nAccept this machine with your passkey."
-  return `${opened ? "Opened" : "Open"} ${url}${check}\nThis carries on by itself.`
+// once that group is typed from here. `words` are mehen enrol's lines for
+// the fingerprint's coloured words and the hidden group.
+export function enrolLines(url: string, opened: boolean, fingerprint: string | null, words: readonly Segment[][] = []): Text[] {
+  const check = fingerprint ? `This machine's fingerprint is ${fingerprint}. The page shows all but one of its groups: type the one it hides, then accept with your passkey.` : "Accept this machine with your passkey."
+  return [`${opened ? "Opened" : "Open"} ${url}`, check, ...(fingerprint ? words : []), "This carries on by itself."]
 }
 
-function timedOut(what: string, url: string | null): CliError {
-  return new CliError("timeout", `Still waiting for ${what}.`, { ...(url ? { url } : {}), say: "Run `mehen up` again when it is done; it picks up where it stopped." })
+// The words and hidden group for the pending enrolment, from the key in its
+// own slot, and only when that key is the one whose fingerprint enrol
+// reported: nothing here is taken from the vault.
+async function fingerprintWordLines(slot: unknown, enrolment: string, code: unknown, fingerprint: string | null, colour: boolean): Promise<Segment[][]> {
+  if (typeof slot !== "string" || typeof code !== "string" || fingerprint === null) return []
+  try {
+    const read = await readEnrolmentRecord(slot)
+    if (read === null || !("record" in read) || read.record.id !== enrolment) return []
+    const thumbprint = await jwkThumbprint(read.record.jwk as DeviceJwk)
+    if (fingerprintOf(thumbprint) !== fingerprint) return []
+    return await fingerprintLines({ thumbprint, code }, styler(colour))
+  } catch {
+    return []
+  }
+}
+
+// The enrolment's context names the workspace it joins. `mehen enrol` alone
+// leaves it null until the slot is verified, since it knows only the slug it
+// asked for; here the workspace comes from the vault up checked by its
+// instance token, read from that vault's own database.
+export function enrolContext(origin: string, workspace: State["workspaces"][number]): { origin: string; workspace: { id: string; slug: string; name: string } | null; device: null } {
+  return { origin, workspace: typeof workspace.id === "string" ? { id: workspace.id, slug: workspace.slug, name: workspace.name } : null, device: null }
+}
+
+// The link stays in the message: it is the local vault's own page, which a
+// next.url would have checked against the vault this machine is enrolled
+// with, and refused before enrolment ends.
+export function timedOut(what: string, url: string | null): CliError {
+  return new CliError("timeout", url ? `Still waiting for ${what} on ${url}.` : `Still waiting for ${what}.`, { say: "Run `mehen up` again when it is done; it picks up where it stopped." })
 }
 
 async function remove(env: Env, json: boolean, root: string): Promise<number> {
@@ -162,17 +207,19 @@ export const upCommand: Command = {
     "--remove stops the vault and removes its service; the data stays.",
   ],
   async run({ args, json, env }) {
-    const { root } = resolveHome(env)
+    const { root, source } = resolveHome(env)
     ensureSafeRoot(root)
     if (args.bool("remove")) return remove(env, json, root)
 
     let config
+    let savedService: string | null = null
     try {
       // Run again with no flags, it carries on with the vault it set up.
       const recordPath = join(root, RECORD_FILE)
       const saved = existsSync(recordPath) ? (JSON.parse(readFileSync(recordPath, "utf8")) as Partial<Record_>) : {}
       const port = args.string("port") ?? (typeof saved.port === "number" ? String(saved.port) : undefined)
       const dataDir = args.string("data") ?? (typeof saved.data === "string" ? saved.data : undefined)
+      savedService = typeof saved.service === "string" ? saved.service : null
       config = resolveConfig({ dataDir, port }, { ...env, MEHEN_SERVE_ORIGIN: undefined, MEHEN_SERVE_HOST: undefined })
     } catch (error) {
       if (error instanceof LocalConfigError) throw usageError(error.message, USAGE)
@@ -200,6 +247,7 @@ export const upCommand: Command = {
     }
     let state = await ours()
     const kind = serviceKind(env, process.platform, selfExecutable(env) !== null)
+    const advice = (service: string | null) => keyringAdvice(keyringHost(env), service)
     if (state === null) {
       ensureSafeDirectory(config.dataDir, (path, why) => new CliError("key_insecure", `Refusing to keep the vault in ${path}: it ${why}.`, { say: "Give it a data directory only this user can write (--data), then run `mehen up` again." }))
       // Written before the service exists, so an interrupted install can
@@ -207,7 +255,7 @@ export const upCommand: Command = {
       writeFileSync(join(root, RECORD_FILE), JSON.stringify({ origin, data: config.dataDir, port: config.port, service: kind } satisfies Record_), { mode: 0o600 })
       let service
       try {
-        service = installService({ kind, command: [...command, "serve", "--port", String(config.port), "--data", config.dataDir], dataDir: config.dataDir, home: homeDir(env), logFile: join(config.dataDir, "serve.log") }, env)
+        service = installService({ kind, command: [...command, "serve", "--port", String(config.port), "--data", config.dataDir], dataDir: config.dataDir, home: homeDir(env), logFile: join(config.dataDir, "serve.log"), environment: serviceEnvironment({ ...env, MEHEN_HOME: source === "default" ? undefined : root }) }, env)
       } catch (error) {
         if (error instanceof ServiceError) throw new CliError("failed", error.message, { say: `Start the vault yourself with \`mehen serve --port ${config.port}\`, then run \`mehen up\` again.` })
         throw error
@@ -216,10 +264,10 @@ export const upCommand: Command = {
       if (state === null) throw new CliError("failed", `The vault did not answer at ${origin} within 20 seconds.`, { say: `${service.kind === "systemd" ? "Read `journalctl --user -u mehen-vault.service`" : `Read ${join(config.dataDir, "serve.log")}`}, or start it yourself with \`mehen serve --port ${config.port}\` to see why.` })
       writeFileSync(join(root, RECORD_FILE), JSON.stringify({ origin, data: config.dataDir, port: config.port, service: service.kind } satisfies Record_), { mode: 0o600 })
       const custody = custodyOf(state)
-      out.event("vault", { origin, data: config.dataDir, service: service.kind, startsAtLogin: service.startsAtLogin, custody }, `Vault running at ${origin} (${service.startsAtLogin ? `${service.kind} service, starts when you log in` : "until this machine restarts; run mehen up again after a restart"}).${custodyLine(custody)}`)
+      out.event("vault", { origin, data: config.dataDir, service: service.kind, startsAtLogin: service.startsAtLogin, custody }, `Vault running at ${origin} (${service.startsAtLogin ? `${service.kind} service, starts when you log in` : "until this machine restarts; run mehen up again after a restart"}).${custodyLine(custody, advice(service.kind))}`)
     } else {
       const custody = custodyOf(state)
-      out.event("vault", { origin, data: config.dataDir, service: null, startsAtLogin: null, custody }, `Vault running at ${origin}.${custodyLine(custody)}`)
+      out.event("vault", { origin, data: config.dataDir, service: null, startsAtLogin: null, custody }, `Vault running at ${origin}.${custodyLine(custody, advice(savedService))}`)
     }
 
     // 2. The person's account and workspace, made in the browser.
@@ -238,7 +286,7 @@ export const upCommand: Command = {
     const wanted = env.MEHEN_WORKSPACE
     const workspace = wanted ? state.workspaces.find((w) => w.slug === wanted) : state.workspaces[0]
     if (!workspace) throw usageError(`This vault has no workspace ${wanted}; it has ${state.workspaces.map((w) => w.slug).join(", ")}.`, USAGE)
-    out.event("workspace", { slug: workspace.slug, name: workspace.name }, `Workspace: ${workspace.name} (${workspace.slug})`)
+    out.event("workspace", { slug: workspace.slug, name: workspace.name }, [`Workspace: ${workspace.name} (${workspace.slug})`])
 
     // 3. This machine, accepted on the page with the passkey.
     const childEnv: Env = { ...env, MEHEN_VAULT_URL: origin, MEHEN_WORKSPACE: undefined }
@@ -250,7 +298,9 @@ export const upCommand: Command = {
       const ask = machine.ask as { url: string; check?: { value: string } } | undefined
       const id = String(machine.enrolment)
       const opened = ask ? openUrl(ask.url, env) : false
-      out.event("ask", { ask: { ...(ask ?? {}), opened } }, enrolLines(ask?.url ?? "", opened, ask?.check?.value ?? null))
+      const fingerprint = ask?.check?.value ?? null
+      const words = json ? [] : await fingerprintWordLines(machine.slot, id, machine.code, fingerprint, colourEnabled(process.stdout, env))
+      out.event("ask", { ask: { ...(ask ?? {}), opened, context: enrolContext(origin, workspace) } }, enrolLines(ask?.url ?? "", opened, fingerprint, words))
       const remaining = Math.max(1, Math.ceil((deadline - Date.now()) / 1000))
       const waited = await self(command, ["wait", id, "--timeout", String(remaining), "--json"], childEnv)
       if (waited.code !== 0) {
@@ -260,7 +310,7 @@ export const upCommand: Command = {
       }
       machine = lastJson(waited.out)
     }
-    out.event("machine", { device: machine?.device ?? null, name }, `This machine: ${name}`)
+    out.event("machine", { device: machine?.device ?? null, name }, [`This machine: ${name}`])
 
     // 4. The agents, where an installed mehen can register itself.
     if (args.bool("no-agents")) out.event("agents", { skipped: "no-agents" }, null)

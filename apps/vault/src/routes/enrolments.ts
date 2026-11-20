@@ -8,7 +8,7 @@ import { connectCodesOffered } from "../cli-version.ts"
 import { directoryWorkspaceClient } from "../directory/workspace-client.ts"
 import { requireWorkspaceStepUp } from "../directory/workspace-stepup.ts"
 import { StepUpAssertionProofSchema } from "@mehen/protocol/step-up-proof"
-import { placeOf } from "../directory/session.ts"
+import { onThisMachine,placeOf } from "../directory/session.ts"
 import { json,VaultError } from "../http.ts"
 import type { Route } from "../router.ts"
 import { workspaceCall,type RequestContext,type WorkspaceRequest } from "./context.ts"
@@ -115,7 +115,7 @@ async function publicView(rc: RequestContext,ws: WorkspaceRequest,o: Opened,valu
   const claimed = row.claimed_account === null ? null : { account: row.claimed_account,name: (await rc.env.DB.prepare("SELECT name FROM accounts WHERE id=?").bind(row.claimed_account).first<{ name: string }>())?.name ?? "" }
   const reason = state === "expired" ? expiredReason(row) : null
   return WorkspaceEnrolViewSchema.parse({
-    workspace: ws.workspace,enrolment: row.id,ref: o.ref,...(o.code !== null ? { code: o.code } : {}),name: row.name,host: row.host,backend: row.backend,start: value?.start ?? registration.start,acceptorPlace: placeOf(rc.request),requestedOwner,owner: value?.owner ?? null,
+    workspace: ws.workspace,enrolment: row.id,ref: o.ref,...(o.code !== null ? { code: o.code } : {}),name: row.name,host: row.host,backend: row.backend,start: value?.start ?? registration.start,acceptorPlace: placeOf(rc.request),...(onThisMachine(rc.request,rc.env.VAULT_ORIGIN) ? { acceptorLocal: true as const } : {}),...(row.start_session !== null && row.start_session !== "" ? { startedByAgent: true as const } : {}),requestedOwner,owner: value?.owner ?? null,
     // Built from the row alone, the digest is the one registration would
     // have recorded: the same terms through the same function.
     scope: planning?.scope ?? value?.scope ?? registered,digest: planning?.digest ?? value?.digest ?? digest({ ...registration,scope: registered }),

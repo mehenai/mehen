@@ -12,9 +12,9 @@
 // read every 60 s fills the hidden Needs you count, and on a workspace's
 // own pages the "n more in other workspaces" line. A count is shown only
 // once the vault gave one, never zero; once the tab is stale it stops.
-// On a workspace's home, an answer that knows more than its Needs you
-// card shows redraws the card the same way, from the home page as the
-// server renders it now.
+// On a workspace's home the read comes every 20 s, as on /needs-you, and
+// an answer that knows more than its Needs you card shows redraws the
+// card the same way, from the home page as the server renders it now.
 //
 // The rules (counts, groups, validator, sequence numbers) are in
 // needs-you-logic.ts.
@@ -24,7 +24,7 @@ import type { InboxResponse } from "@mehen/protocol/inbox"
 import { type Boot, all, find, must, showError } from "../dom.ts"
 import { SHELL_CHANNEL, type ShellIdentity, type ShellState, parseShellMessage, readShellIdentity } from "../shell-logic.ts"
 import { wireRings, wireTimes } from "../wires.ts"
-import { BADGE_POLL_MS, CHECKING_AFTER_MS, type HomeNeedsShown, InboxPoll, rowFate, NEEDS_YOU_API, NEEDS_YOU_POLL_MS, type PollAnswer, type PollOutcome, countWords, elsewhere, elsewhereWords, homeNeedsRedraw, homeNeedsShown, homeNeedsStep, needsYouTitle, nextPollIn, updatedWords } from "./needs-you-logic.ts"
+import { CHECKING_AFTER_MS, badgePollMs, type HomeNeedsShown, InboxPoll, rowFate, NEEDS_YOU_API, NEEDS_YOU_POLL_MS, type PollAnswer, type PollOutcome, countWords, elsewhere, elsewhereWords, homeNeedsRedraw, homeNeedsShown, homeNeedsStep, needsYouTitle, nextPollIn, updatedWords } from "./needs-you-logic.ts"
 
 async function fetchInbox(headers: Record<string, string>): Promise<PollAnswer | null> {
   try {
@@ -142,10 +142,11 @@ export function initNeedsBadge(boot: Boot, shell: ShellState | null): void {
   if (account === null) return
   const poll = new InboxPoll()
   const workspaceId = shell?.identity.workspace.id ?? null
-  const homeNeeds = shell !== null && find(HOME_NEEDS) !== null ? homeNeedsRedrawer(shell, () => poll.ended) : null
+  const interval = badgePollMs(shell !== null && find(HOME_NEEDS) !== null)
+  const homeNeeds = shell !== null && find(HOME_NEEDS) !== null ? homeNeedsRedrawer(shell, () => poll.ended, interval) : null
   const poller = startPoller(
     poll,
-    BADGE_POLL_MS,
+    interval,
     async (outcome) => {
       if (outcome.kind === "changed") {
         fillCounts(outcome.inbox.count, outcome.inbox.complete)
@@ -231,7 +232,7 @@ function shownOn(card: HTMLElement): HomeNeedsShown {
 // leave at once, and when the answer knows more than it shows it is
 // redrawn from the page as the server renders it now, with focus kept as
 // on /needs-you. Resolves whether the answer's validator may be committed.
-function homeNeedsRedrawer(shell: ShellState, ended: () => boolean): (inbox: InboxResponse) => Promise<boolean> {
+function homeNeedsRedrawer(shell: ShellState, ended: () => boolean, gapMs: number): (inbox: InboxResponse) => Promise<boolean> {
   const id = shell.identity.workspace.id
   let spent = false
   let rereadAt: number | null = null
@@ -239,7 +240,7 @@ function homeNeedsRedrawer(shell: ShellState, ended: () => boolean): (inbox: Inb
     const card = find(HOME_NEEDS)
     if (card === null) return true
     const now = Date.now()
-    const step = homeNeedsStep(inbox, id, shownOn(card), { visible: document.visibilityState === "visible", now, rereadAt, spent })
+    const step = homeNeedsStep(inbox, id, shownOn(card), { visible: document.visibilityState === "visible", now, rereadAt, spent, gapMs })
     if (step.prune) pruneRows(card, inbox)
     if (!step.reread) return step.commit
     rereadAt = now

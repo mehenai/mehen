@@ -9,6 +9,7 @@ import type { TeamView, WorkspaceDeviceView, WorkspaceEnrolView, WorkspaceMember
 import type { WorkspaceInviteView } from "../vault/areas/workspace-runtime.ts"
 import { cliAdvice } from "../cli-version.ts"
 import { emailInvitesCompletable } from "../directory/invite-email.ts"
+import { onThisMachine } from "../directory/session.ts"
 import type { PeopleViewer } from "../ui/client/people-logic.ts"
 import { type CredentialHomeOf, delegatedCredentials, elevated } from "../ui/client/people-logic.ts"
 import { type PageInput, errorBody, pageResponse } from "../ui/layout.ts"
@@ -147,7 +148,11 @@ export const PEOPLE_PAGES: WorkspacePage[] = [
       const [view, list] = await Promise.all([workspaceApiGet<WorkspaceEnrolView>(rc, page.workspace, `/enrolments/${param(rc, "ref")}`), projects(rc, page)])
       if (!view.ok) return refused(page.shell, view)
       const delegation = view.value.actions.includes("admit") ? await teamDelegation(rc, page, view.value, list) : []
-      return pageResponse(enrolmentPage(page.shell, view.value, { viewer: peopleViewer(page.shell), projects: list, now: Date.now(), delegation }))
+      // The page's read is dispatched inside the Worker, without the
+      // browser's connection; whether that came from this machine is the
+      // page request's own.
+      const enrol = onThisMachine(rc.request, rc.env.VAULT_ORIGIN) ? { ...view.value, acceptorLocal: true as const } : view.value
+      return pageResponse(enrolmentPage(page.shell, enrol, { viewer: peopleViewer(page.shell), projects: list, now: Date.now(), delegation }))
     },
   },
   { key: "connect-agent", path: "/connect-agent", reads: [""], render: async (_rc, page) => pageResponse(connectAgentPage(page.shell)) },

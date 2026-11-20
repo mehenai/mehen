@@ -13,9 +13,25 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
-### 19 November 2026: a relayed write the upstream did not answer no longer says retry later, and a relay refusal says whether anything was sent
+### 20 November 2026: a relayed write the upstream did not answer no longer says retry later, and a relay refusal says whether anything was sent
 
 Every `/v1/relay` refusal now carries `Mehen-Forwarded`: `no` when the vault refused before it sent anything upstream, `yes` when it refused after (`upstream_failed`, or `too_large` for the upstream's answer to a write, which now says the request was sent and to check first). `mehen` sends a write again only after a refusal marked `no`. See [HTTP](reference/http.md#headers). When the vault could not get an answer from the upstream for a relayed request with a method other than `GET`, `HEAD` or `OPTIONS`, `upstream_failed` now says the request may have reached the service and to check whether it took effect before sending it again, and carries no `retryAfter`. A read still says to retry later, with `retryAfter: 5`. See [`upstream_failed`](reference/errors.md#upstream_failed).
+
+### 20 November 2026: an approval shows the agent's session
+
+The page for a request held for a person, and its row in Needs you, now show the session label the agent signed the request with (`MEHEN_SESSION`), marked as the agent's own words, as an intake's page already did. Before, an approval always said "Session: not given".
+
+### 19 November 2026: connections survive network errors, keep their scopes and say when one dies
+
+A workspace OAuth connection whose renewal fails on a network error, a timeout, throttling or the provider's own failure now keeps using its current token while it lasts and retries, backing off from 30 seconds to an hour and waiting out a provider's `Retry-After` (up to 24 hours). It needs a reconnect only when the provider says the grant is gone, such as Google's `invalid_grant`, GitHub's `bad_refresh_token` or Microsoft's sign-in-again errors, and the reason is named: the person who connected it left, its OAuth client was replaced, a Testing-mode app's 7 days ran out, or an interrupted refresh had already used the token. A renewal that keeps failing for four days is flagged for review and the people who may reconnect it are told once, while the vault keeps trying. Those people also get one notice when a connection stops, and Needs you shows one **Reconnect** row with the reason, which opens the agent's reconnect link when there is one. An OAuth client its provider rejects pauses every connection that uses it and shows one **Replace the client secret** row instead; replacing or restoring the secret clears it. A reconnect keeps every scope the connection held. A person's signed settings change is no longer refused because the vault renewed the token meanwhile. A rule or task grant that ends with its credential says it was replaced, reconnected or edited. A credential's page lists only the policy floors on paths its binding admits. Asking for a Google service account key or a GitHub App is refused, since nothing could use one yet. See [When a refresh fails](guides/oauth.md#when-a-refresh-fails).
+
+### 19 November 2026: a first run on a local vault reads right
+
+The pages a person sees during `mehen up` say what is true on a vault on their own machine. The enrolment page says "You are: on this machine" when the browser is on the vault's machine, and an accepted machine's page says the terminal that asked carries on by itself, unless an agent asked. A vault with no account yet welcomes its owner by name in the tab, does not look the sign-up code up as an invitation, and offers no sign-in. The recovery codes have Copy and Download (`mehen-recovery-codes.txt`) beside them, and a second passkey is offered below them; one code is still typed back. A new workspace's short name follows its name as it is typed until it is edited. A workspace's home checks Needs you every 20 seconds while it is open, so a machine waiting just after the workspace is made appears without a reload, and its Get started card stops offering to connect a machine once one of yours is enrolled. The search box shows Ctrl K off a Mac, and the fingerprint field on the enrolment page scrolls clear of the Accept bar.
+
+### 19 November 2026: the installer checks the release's signature
+
+`https://mehen.dev/install` checks the release manifest's ES256 signature against Mehen's release keys before it trusts any checksum in it, so a changed manifest or binary on the way is refused with nothing installed. It needs `openssl`. See [Keys, proofs and signing](security/keys-and-signing.md#releases).
 
 ### 19 November 2026: one passkey from sign-in to approve, one code for Review together, and owners told about unshared projects
 

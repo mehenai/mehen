@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
+import { canonicalJson } from "../../../packages/protocol/src/canonical-json.ts"
 import { installedPath, installUrl, isNative, run, unsupported } from "./lib.mjs"
 
 let dir: string
@@ -61,6 +62,69 @@ describe("run", () => {
       expect(readFileSync(join(dir, "installer-args"), "utf8")).toBe("--yes")
     } finally {
       server.stop(true)
+    }
+  })
+
+  // The real installer, served as mehen.dev serves it, with a release
+  // signed by a test key it trusts only on loopback: verified, installed,
+  // then run; and a manifest changed after signing installs nothing.
+  async function realRelease(tampered: boolean) {
+    const native = new Uint8Array(readFileSync(realpathSync(Bun.which("true")!)))
+    const gz = Bun.gzipSync(native)
+    const sha = (b: Uint8Array) => new Bun.CryptoHasher("sha256").update(b).digest("hex")
+    const key = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair
+    const spki = Buffer.from(await crypto.subtle.exportKey("spki", key.publicKey)).toString("base64")
+    const os = process.platform === "darwin" ? "darwin" : "linux"
+    const files = ["arm64", "x64"].map((arch) => ({ name: `mehen-${os}-${arch}`, os, arch, url: `https://mehen.dev/dl/v9.9.9/mehen-${os}-${arch}.gz`, sha256: sha(native), size: native.length, gzSha256: sha(gz), gzSize: gz.length }))
+    const unsigned = { version: "9.9.9", commit: "c0ffee0", builtAt: "2026-11-19T00:00:00.000Z", files }
+    const signature = Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key.privateKey, new TextEncoder().encode(canonicalJson(unsigned)))).toString("base64url")
+    const served = tampered ? { ...unsigned, commit: "deadbee" } : unsigned
+    const manifest = JSON.stringify({ ...served, signatures: [{ keyId: "rk-test", alg: "ES256", signature }] }, null, 2)
+    // In a process of its own: the launcher runs the installer with
+    // spawnSync, which would hold up a server in this one.
+    writeFileSync(join(dir, "manifest.json"), manifest)
+    writeFileSync(join(dir, "binary.gz"), gz)
+    const log = join(dir, "asked.log")
+    const serverScript = join(dir, "server.ts")
+    const installer = join(import.meta.dir, "../../../tools/release/install.sh")
+    writeFileSync(serverScript, [
+      'import { appendFileSync, readFileSync } from "node:fs"',
+      "const server = Bun.serve({ port: 0, hostname: \"127.0.0.1\", fetch: (request) => {",
+      "  const path = new URL(request.url).pathname",
+      `  appendFileSync(${JSON.stringify(log)}, path + "\\n")`,
+      `  const file = path === "/install" ? ${JSON.stringify(installer)} : path.endsWith(".json") ? ${JSON.stringify(join(dir, "manifest.json"))} : ${JSON.stringify(join(dir, "binary.gz"))}`,
+      "  return new Response(readFileSync(file))",
+      "} })",
+      "console.log(server.port)",
+      "",
+    ].join("\n"))
+    const proc = Bun.spawn([process.execPath, serverScript], { stdout: "pipe", stderr: "inherit" })
+    const port = new TextDecoder().decode((await proc.stdout.getReader().read()).value).trim()
+    const server = { stop: () => proc.kill() }
+    const asked = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [])
+    const base = `http://127.0.0.1:${port}`
+    return { server, asked, env: env({ MEHEN_INSTALL_DIR: join(dir, "bin"), MEHEN_INSTALL_URL: `${base}/install`, MEHEN_DL_BASE: base, MEHEN_INSTALL_TEST_RELEASE_KEY: `rk-test ${spki}`, MEHEN_NO_RC: "1", SHELL: "/bin/sh" }) }
+  }
+
+  test("runs the real installer, which verifies the signed release before installing what it then runs", async () => {
+    const release = await realRelease(false)
+    try {
+      expect(await run([], release.env)).toBe(0)
+      expect(isNative(join(dir, "bin", "mehen"))).toBe(true)
+      expect(release.asked().some((p) => p.endsWith(".gz"))).toBe(true)
+    } finally {
+      release.server.stop()
+    }
+  })
+
+  test("with the real installer, a release changed after signing installs and runs nothing", async () => {
+    const release = await realRelease(true)
+    try {
+      expect(await run([], release.env)).toBe(1)
+      expect(existsSync(join(dir, "bin", "mehen"))).toBe(false)
+      expect(release.asked().some((p) => p.endsWith(".gz"))).toBe(false)
+    } finally {
+      release.server.stop()
     }
   })
 

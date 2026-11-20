@@ -522,6 +522,13 @@ describe("the pieces", () => {
     expect(showLines({ ...leaseOnly, kind: "hmac-key", ceiling: "sign" }, "jwt-secret", plainStyler(), { now, timeZone: "UTC" }).map(plainText)).toContain("  goes to:   no host: stored only; a human can allow mehen run by setting its ceiling to lease")
   })
 
+  test("show says what a connection may do: its scopes and when its token ends", () => {
+    const shown = (connection: { scopes: string[]; expiresAt: string | null; refreshing: boolean }) => showLines(gmailAlex({ connection }), "gmail-alex", plainStyler(), { now, timeZone: "UTC" }).map(plainText)
+    expect(shown({ scopes: ["https://www.googleapis.com/auth/gmail.modify"], expiresAt: "2026-11-09T10:00:00.000Z", refreshing: false })).toEqual(expect.arrayContaining(["  scopes:    https://www.googleapis.com/auth/gmail.modify", expect.stringMatching(/^  token: +expires 2026-11-09 10:00/)]))
+    expect(shown({ scopes: [], expiresAt: null, refreshing: true })).toEqual(expect.arrayContaining(["  scopes:    none recorded", expect.stringMatching(/^  token: +does not expire; renewing failed, retrying$/)]))
+    expect(showLines(gmailAlex(), "gmail-alex", plainStyler(), { now, timeZone: "UTC" }).map(plainText).join("\n")).not.toContain("scopes:")
+  })
+
   test("showLines never puts a style on text that came from the vault", () => {
     const lines = showLines(gmailAlex({ slug: `x${ESC}[31m` }), "x", styler(true), { now, timeZone: "UTC" })
     const styled = lines.flatMap((line) => (typeof line === "string" ? [] : Array.isArray(line) ? line : [line])).filter((s) => s.style !== undefined)

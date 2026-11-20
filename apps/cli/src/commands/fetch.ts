@@ -17,6 +17,7 @@ import {
   readChunk,
   readLimited,
   fetchContext,
+  rejectedHint,
   relayReplaces,
   relayRequest,
   replacingRefused,
@@ -169,6 +170,7 @@ export const fetchCommand: Command = {
   ],
   notes: [
     "The response body goes to stdout as the vault returns it; the status and Mehen-Item go to stderr, and so does the rule or mandate, when one allowed the request without asking. Any upstream status exits 0 unless --fail.",
+    "When the service rejects the credential itself (401, or a 403 saying its scope is too narrow), stderr and --json's hint say how to replace or reconnect it.",
     "The vault may already have decompressed or scrubbed the body and removed response headers; it is not a byte-for-byte copy of the original upstream response.",
     "Never set an auth header yourself: the vault injects the credential where the item says.",
     "--project and --env name the project environment the credential is used for; a protected, team or guest credential needs them. They never change the workspace.",
@@ -222,7 +224,9 @@ export const fetchCommand: Command = {
       for (const level of postures ?? []) note(`mehen: ${postureAllowedText(level)}`)
       const mandate = mandateAllowed(response)
       if (mandate) note(`mehen: ${mandateAllowedText(mandate)}`)
-      const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}) }
+      const hint = await rejectedHint(api, upstream, item, controller.signal)
+      if (hint) note(`mehen: ${hint}`)
+      const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}), ...(hint ? { hint } : {}) }
       if (select !== null) {
         const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
         const chosen = selectBody(bytes, head.status, request.method, select)

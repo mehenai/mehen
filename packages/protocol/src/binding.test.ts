@@ -16,6 +16,8 @@ import {
   parseDestination,
   pathMatches,
   pathMatchWork,
+  pathPatternsOverlap,
+  restrictivePathMayMeet,
   validHostPattern,
 } from "./binding.ts"
 import { BindingSchema, PolicySchema } from "./api.ts"
@@ -231,6 +233,38 @@ describe("hostMatches", () => {
     expect(hostMatches("*.stripe.com", ".stripe.com")).toBe(false)
     expect(hostMatches("*.stripe.com", "evilstripe.com")).toBe(false)
     expect(hostMatches("*.stripe.com", "stripe.com.evil.example")).toBe(false)
+  })
+})
+
+describe("pathPatternsOverlap", () => {
+  test("two globs overlap when some path matches both, with * and ** on either side", () => {
+    expect(pathPatternsOverlap("/drive/v3/files/*/permissions", "/drive/v3/**")).toBe(true)
+    expect(pathPatternsOverlap("/drive/v3/**/watch", "/drive/v3/**")).toBe(true)
+    expect(pathPatternsOverlap("/calendar/v3/**/watch", "/drive/v3/**")).toBe(false)
+    expect(pathPatternsOverlap("/calendar/v3/calendars/*", "/upload/drive/v3/**")).toBe(false)
+    expect(pathPatternsOverlap("/v1/*/x", "/v1/a/*")).toBe(true)
+    expect(pathPatternsOverlap("/v1/*", "/v1/a/b")).toBe(false)
+    expect(pathPatternsOverlap("/v1/**", "/v1")).toBe(true)
+    expect(pathPatternsOverlap("/**/a", "/b/**")).toBe(true)
+    // Without case, as a floor matches: it may show one it need not, never hide one.
+    expect(pathPatternsOverlap("/Drive/v3/files", "/drive/**")).toBe(true)
+  })
+})
+
+describe("restrictivePathMayMeet", () => {
+  test("a restrictive pattern meets a binding path through a suffix, matrix parameters, an escape or case, as the relay reads it", () => {
+    for (const bound of ["/drive/v3/files/123/watch.json", "/drive/v3/files/123/watch;alt=json", "/drive/v3/files/123/%57atch", "/Drive/V3/files/123/WATCH"]) expect(restrictivePathMayMeet("/drive/v3/**/watch", bound), bound).toBe(true)
+    expect(restrictivePathMayMeet("/drive/v3/**/watch", "/drive/v3/files/123")).toBe(false)
+    expect(restrictivePathMayMeet("/calendar/v3/**/watch", "/drive/v3/files/123/watch.json")).toBe(false)
+    // A * admits one segment, which loose reading may split into several.
+    expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/files/*")).toBe(true)
+    expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/about/*")).toBe(false)
+    // A glob still meets what it could cover.
+    expect(restrictivePathMayMeet("/drive/v3/files/*/permissions", "/drive/v3/**")).toBe(true)
+    // A * segment may also end the path under loose reading (a fullwidth "#"
+    // or "?" normalises to one), dropping what the binding puts after it.
+    expect(restrictivePathMayMeet("/v1.0/$batch", "/v1.0/*/tail")).toBe(true)
+    expect(restrictivePathMayMeet("/v1.0/$batch", "/v2.0/*/tail")).toBe(false)
   })
 })
 

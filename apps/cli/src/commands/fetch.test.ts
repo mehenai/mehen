@@ -7,7 +7,7 @@ import { OUTCOME_UNKNOWN_SAY } from "../errors.ts"
 import { grantView, ruleView } from "../testing/policy-rules-fixtures.ts"
 import { mandateView } from "../testing/mandate-fixtures.ts"
 import { base64UrlDecode, fromUtf8 } from "@mehen/protocol/bytes"
-import { MOCK_TENANT, MOCK_WORKSPACE, MockVault, vaultError } from "../testing/mock-vault.ts"
+import { item, MOCK_TENANT, MOCK_WORKSPACE, MockVault, vaultError } from "../testing/mock-vault.ts"
 import { type JvResult, runJv, tempDir } from "../testing/run-mehen.ts"
 
 let vault: MockVault
@@ -126,6 +126,27 @@ describe("mehen fetch", () => {
     }
   })
 
+  // A connection that drops once the relay request was sent (an idle
+  // timeout at a server or proxy): the write may have landed, so it is
+  // outcome_unknown and never sent again, by Bun's fetch or by mehen; a
+  // read is never sent twice with one proof either.
+  test("a write whose connection drops after it was sent is outcome_unknown and sent once; no proof is sent twice", async () => {
+    await enrolled()
+    vault.drops.set("POST /v1/relay", 1)
+    const before = vault.seen.length
+    const write = await runJv(["fetch", "openai-personal", "POST", "https://api.openai.com/v1/x", "-d", "{}", "--json"], env)
+    expect(write.code).toBe(EXIT.transient)
+    expect(json(write)).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+    expect(vault.seen.slice(before).filter((s) => s.path === "/v1/relay")).toHaveLength(1)
+    expect(vault.replays).toEqual([])
+    vault.drops.set("POST /v1/relay", 1)
+    const mid = vault.seen.length
+    const read = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/x", "--json"], env)
+    expect(json(read).error).not.toBe("outcome_unknown")
+    expect(vault.seen.slice(mid).filter((s) => s.path === "/v1/relay")).toHaveLength(1)
+    expect(vault.replays).toEqual([])
+   }, 20_000)
+
   test("a write whose answer breaks off mid-stream is outcome_unknown, in every output; a read's is not", async () => {
     await enrolled()
     vault.relay = () => new Response(new ReadableStream<Uint8Array>({
@@ -143,6 +164,34 @@ describe("mehen fetch", () => {
     }
     const read = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/x", "--json"], env)
     expect(`${read.stdout}${read.stderr}`).not.toContain("outcome_unknown")
+  })
+
+  test("a 401 says how to replace the key, on stderr and as --json's hint; other statuses say nothing", async () => {
+    await enrolled()
+    vault.relay = () => new Response("bad key", { status: 401, headers: { [UPSTREAM_HEADER]: "1" } })
+    const plain = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/models"], env)
+    expect(plain.code).toBe(EXIT.ok)
+    expect(plain.stderr).toContain("mehen: The service rejected openai-personal. If its value was revoked or expired, ask a human to replace it: mehen request api-key --name openai-personal --provider openai --reason '<why>'.")
+    const asJson = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/models", "--json"], env)
+    expect(json(asJson)).toMatchObject({ status: 401, hint: expect.stringContaining("mehen request api-key --name openai-personal") })
+    vault.relay = () => new Response("nope", { status: 403, headers: { [UPSTREAM_HEADER]: "1" } })
+    const forbidden = await runJv(["fetch", "openai-personal", "GET", "https://api.openai.com/v1/models", "--json"], env)
+    expect(json(forbidden)).not.toHaveProperty("hint")
+    expect(forbidden.stderr).not.toContain("rejected")
+  })
+
+  test("a connection's 403 insufficient_scope names the reconnect with the scope the service asked for", async () => {
+    await enrolled()
+    vault.items.push({ ...item("gmail-alex", { kind: "oauth-connection", provider: "google-gmail", hosts: ["gmail.googleapis.com"] }), connection: { scopes: [], expiresAt: null, refreshing: false, client: "google-client" } })
+    try {
+      vault.relay = () => new Response("{}", { status: 403, headers: { [UPSTREAM_HEADER]: "1", "www-authenticate": 'Bearer realm="x", error="insufficient_scope", scope="https://www.googleapis.com/auth/gmail.send"' } })
+      const result = await runJv(["fetch", "gmail-alex", "POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", "--json"], env)
+      expect(json(result).hint).toBe("The service said gmail-alex lacks a scope it needs. Ask a human to reconnect it with more: mehen connect google-gmail --client google-client --name gmail-alex --scopes https://www.googleapis.com/auth/gmail.send --reason '<why>'; mehen show gmail-alex lists the scopes it holds.")
+      vault.relay = () => new Response("{}", { status: 401, headers: { [UPSTREAM_HEADER]: "1" } })
+      expect(json(await runJv(["fetch", "gmail-alex", "GET", "https://gmail.googleapis.com/gmail/v1/users/me/profile", "--json"], env)).hint).toBe("The service rejected gmail-alex's sign-in. If it was revoked, ask a human to reconnect it: mehen connect google-gmail --client google-client --name gmail-alex --reason '<why>'.")
+    } finally {
+      vault.items.splice(vault.items.findIndex((i) => i.slug === "gmail-alex"), 1)
+    }
   })
 
   test("--json returns status, headers and body", async () => {

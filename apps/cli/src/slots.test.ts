@@ -577,6 +577,29 @@ describe("knownVault", () => {
   })
 })
 
+describe("the local vault mehen up set up", () => {
+  function localVault(origin = "http://localhost:7787"): void {
+    mkdirSync(root(), { recursive: true, mode: 0o700 })
+    writeFileSync(join(root(), "local-vault.json"), JSON.stringify({ origin, data: join(home.path, "vault"), port: 7787, service: "process" }), { mode: 0o600 })
+  }
+
+  test("is the vault links are checked against until MEHEN_VAULT_URL or an enrolment names another", async () => {
+    localVault()
+    expect(await knownVault(env)).toEqual({ vaultUrl: "http://localhost:7787", workspaceSlug: null })
+    expect(await knownVault({ ...env, MEHEN_VAULT_URL: "https://vault.example" })).toEqual({ vaultUrl: ORIGIN, workspaceSlug: null })
+    await enrolSlot(WORK)
+    expect(await knownVault(env)).toEqual({ vaultUrl: ORIGIN, workspaceSlug: "northwind" })
+  })
+
+  test("is the vault an unknown enrolment is said to be missing from", async () => {
+    localVault()
+    const refused = await failure(() => selectSlot(env, { waitId: "enr_unknown" }))
+    expect(refused).toMatchObject({ code: "not_found", message: "No open enrolment enr_unknown is recorded on this machine for http://localhost:7787." })
+    const overridden = await failure(() => selectSlot({ ...env, MEHEN_VAULT_URL: "https://vault.example" }, { waitId: "enr_unknown" }))
+    expect(overridden.message).toBe(`No open enrolment enr_unknown is recorded on this machine for ${ORIGIN}.`)
+  })
+})
+
 describe("managed hosts (WORKLOAD 2.2)", () => {
   // The marker and map live under an owner-only root; the test's root
   // stands in for the passwd home through the files seam.

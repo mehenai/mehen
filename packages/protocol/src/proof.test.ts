@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { type Bytes, base64UrlDecode, base64UrlEncode, fromUtf8, sha256B64, utf8 } from "./bytes.ts"
 import {
+  fetchSignedOnce,
   type DeviceJwk,
   type ProofCheck,
   PROOF_MAX_SKEW_SECONDS,
@@ -407,4 +408,54 @@ test("a device proof's header, claims and signature segments are unchanged", asy
   expect(s).toBe(base64UrlEncode(fixed))
   const short = { deviceId: "dev_laptop", sign: async () => new Uint8Array(63) }
   await expect(createProof(short, { method: "GET", url: URL_A }, { tenant: "tn_abcdefgh12" })).rejects.toThrow("device signer must return a 64-byte r||s signature")
+})
+
+// A server that answers the first request on each connection and drops the
+// connection on the next one before answering, as an idle timeout does.
+async function droppingServer(): Promise<{ url: string; seen: string[]; stop: () => void }> {
+  const seen: string[] = []
+  const state = new WeakMap<object, { n: number; buffer: string }>()
+  const server = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) { state.set(socket, { n: 0, buffer: "" }) },
+      data(socket, chunk) {
+        const s = state.get(socket) as { n: number; buffer: string }
+        s.buffer += chunk.toString()
+        for (let end = s.buffer.indexOf("\r\n\r\n"); end >= 0; end = s.buffer.indexOf("\r\n\r\n")) {
+          const head = s.buffer.slice(0, end)
+          const length = Number(/content-length: (\d+)/i.exec(head)?.[1] ?? 0)
+          if (s.buffer.length < end + 4 + length) return
+          s.buffer = s.buffer.slice(end + 4 + length)
+          s.n += 1
+          seen.push(head.split("\r\n")[0] ?? "")
+          if (s.n === 1) socket.write("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: keep-alive\r\n\r\nok")
+          else setTimeout(() => socket.end(), 100)
+        }
+      },
+    },
+  })
+  return { url: `http://127.0.0.1:${server.port}`, seen, stop: () => server.stop(true) }
+}
+
+describe("fetchSignedOnce", () => {
+  test("Bun's own fetch sends a GET again on a reused connection that drops, so the test can tell", async () => {
+    const server = await droppingServer()
+    try {
+      await (await fetch(`${server.url}/warm`)).text()
+      await fetch(new Request(`${server.url}/held`)).then((r) => r.text()).catch(() => null)
+      expect(server.seen.filter((line) => line.startsWith("GET /held"))).toHaveLength(2)
+    } finally { server.stop() }
+  })
+
+  test.each(["GET", "PUT", "DELETE"])("sends a %s once, on a connection of its own, so its proof is never sent twice", async (method) => {
+    const server = await droppingServer()
+    try {
+      await (await fetch(`${server.url}/warm`)).text()
+      const response = await fetchSignedOnce(new Request(`${server.url}/held`, { method, ...(method === "PUT" ? { body: "{}" } : {}) }))
+      expect(response.status).toBe(200)
+      expect(server.seen.filter((line) => line.startsWith(`${method} /held`))).toHaveLength(1)
+    } finally { server.stop() }
+  })
 })

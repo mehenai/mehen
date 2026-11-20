@@ -51,6 +51,20 @@ function between(text: string, from: string, to: string): string {
   return text.slice(start, end === -1 ? undefined : end)
 }
 
+describe("a connect whose OAuth client the provider rejected", () => {
+  it("says so, links to the client only when the reader may see it, and keeps Continue off", () => {
+    const seen = rendered("ws-connect-client-rejected")
+    expect(seen).toContain('data-region="connect-client-rejected"')
+    expect(seen).toContain('href="/w/northwind/items/google-client"')
+    expect(seen).toContain("&quot;blocked&quot;:true")
+    expect(seen).toMatch(/data-action="start-connect"[^>]* disabled/)
+    const hidden = rendered("ws-connect-client-rejected-hidden")
+    expect(hidden).toContain('data-region="connect-client-rejected"')
+    expect(hidden).not.toContain("/items/google-client")
+    expect(rendered("ws-connect")).not.toContain('data-region="connect-client-rejected"')
+  })
+})
+
 describe("the workspace asks gallery", () => {
   it("is registered in the gallery script, with every page kind once per id", () => {
     expect(GALLERY_SCRIPT).toContain('import { workspaceAsksGallery } from "../src/ui/workspace-asks-gallery.ts"')
@@ -288,10 +302,24 @@ describe("enrolment", () => {
   })
 
   it("an enrolled machine's link says it is enrolled and what the agent does next", () => {
-    const body = renderDocument(enrolmentPage(peopleShell("member", { member: "mem_tom01" }), { ...PEOPLE_ENROL, state: "active", lease: "terminal", owner: { kind: "member", member: "mem_tom01", name: "Tom" }, actions: [] }, { viewer: { member: "mem_tom01", role: "member", blocked: false }, projects: null, now: 0 })).value
+    const enrolled = (view: Partial<typeof PEOPLE_ENROL>) => renderDocument(enrolmentPage(peopleShell("member", { member: "mem_tom01" }), { ...PEOPLE_ENROL, state: "active", lease: "terminal", owner: { kind: "member", member: "mem_tom01", name: "Tom" }, actions: [], ...view }, { viewer: { member: "mem_tom01", role: "member", blocked: false }, projects: null, now: 0 })).value
+    const body = enrolled({ startedByAgent: true })
     expect(body).toContain("<h1>Enrolled</h1>")
     expect(body).not.toContain("Already enrolled")
     expect(body).toContain("restart the agent once so its Mehen tools load")
+    expect(body).not.toContain("The terminal that asked carries on by itself.")
+    // No agent is known to have asked (mehen up in a terminal): no agent to restart.
+    const terminal = enrolled({})
+    expect(terminal).toContain("The terminal that asked carries on by itself.")
+    expect(terminal).not.toContain("restart the agent")
+  })
+
+  it("names where the acceptor is: a place, this machine on a local vault, or nowhere it can place", () => {
+    const acceptor = (body: string) => /data-region="enrol-acceptor">([^<]*)</.exec(body)?.[1]
+    expect(acceptor(rendered("enrol-accept"))).toBe("in Amsterdam, NL")
+    expect(acceptor(rendered("enrol-accept-local"))).toBe("on this machine")
+    const nowhere = renderDocument(enrolmentPage(peopleShell("member", { member: "mem_tom01" }), { ...PEOPLE_ENROL, acceptorPlace: null }, { viewer: { member: "mem_tom01", role: "member", blocked: false }, projects: null, now: 0 })).value
+    expect(acceptor(nowhere)).toBe("somewhere the vault cannot place")
   })
 
   it("carries three groups and the hidden one's check, never the hidden group, the thumbprint or the key", () => {
@@ -577,7 +605,7 @@ describe("allow this from now on", () => {
     const ttls = panel.match(/data-input="rule-ttl" value="\d+"( checked)?><span>[^<]+/g) ?? []
     expect(ttls).toEqual(['data-input="rule-ttl" value="86400"><span>1 day', 'data-input="rule-ttl" value="604800" checked><span>7 days', 'data-input="rule-ttl" value="2592000"><span>30 days'])
     expect(panel).toContain("<dt>Still asks</dt><dd>Anything else on this credential, and any request that sends, pays, shares or deletes</dd>")
-    expect(panel).toContain("<dt>Ends sooner</dt><dd>if access changes or this credential is edited</dd>")
+    expect(panel).toContain("<dt>Ends sooner</dt><dd>if access changes or this credential is replaced, reconnected or edited</dd>")
     expect(panel).toContain('<p class="small refused" id="rule-mismatch" aria-live="polite" data-region="rule-mismatch" hidden>')
     expect(panel).not.toContain('data-region="rule-cosign"')
     expect(panel).not.toContain('data-region="rule-context"')

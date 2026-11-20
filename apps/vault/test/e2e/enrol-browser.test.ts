@@ -117,6 +117,17 @@ describe("the enrolment page by id", () => {
     expect(closed.text).toContain("<h1>Enrolled</h1>")
   })
 
+  it("enrol: behind a proxy on an https origin, a loopback peer is the proxy, so the page never says the browser is on this machine", async () => {
+    const f = await workJourney()
+    const start = await f.startMachine(f.work)
+    // What Caddy or Tailscale in front of `mehen serve --origin https://...` looks like: every peer is 127.0.0.1.
+    const proxied = await f.request(`/w/northwind/e/${start.started.code}`, f.alex, undefined, { accept: "text/html", "cf-connecting-ip": "127.0.0.1" })
+    const text = await proxied.text()
+    expect(/data-region="enrol-acceptor">([^<]*)</.exec(text)?.[1]).toBe("somewhere the vault cannot place")
+    const view = await body<WorkspaceEnrolView>(await f.request(`/api/w/northwind/enrolments/${start.started.code}`, f.alex, undefined, { "cf-connecting-ip": "::1" }))
+    expect(view.acceptorLocal).toBeUndefined()
+  })
+
   it("enrol: a lapsed link by id shows the lapsed card with Reject for an owner, and Reject works on the lapsed lease", async () => {
     const f = await workJourney()
     const start = await f.startMachine(f.work)
