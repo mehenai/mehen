@@ -56,9 +56,9 @@ describe("continuing workspace run authorisation", () => {
     await inAccess(f.tenant, async (ctx) => {
       const run = await protectedRun(ctx)
       if (change === "device-revoked") ctx.sql.exec("UPDATE devices SET revoked_at=? WHERE id='dev_kim'", ctx.now())
-      if (change === "decider-role") ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_owner'")
+      if (change === "decider-role") fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_owner'")
       if (change === "reference") ctx.sql.exec("UPDATE environments SET reference_rev=reference_rev+1 WHERE project='prj_a' AND name='prod'")
-      if (change === "requester-share") ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_kim'")
+      if (change === "requester-share") fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id='shr_kim'")
       if (change === "device-scope") ctx.sql.exec("UPDATE devices SET scope=json_set(scope,'$.maxEnvironment','unprotected') WHERE id='dev_kim'")
       const open = vi.spyOn(ctx, "openField"), send = vi.spyOn(globalThis, "fetch")
       const before = canonicalJson(ctx.sql.exec("SELECT * FROM runs").toArray())
@@ -94,7 +94,7 @@ describe("workspace run final-await boundaries", () => {
   it("share loss during decryption loses the race: no run, value release, exposure or upstream send", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
       const invocation = await projectDeviceInvocation(ctx, "dev_member"), principal = { kind: "device" as const, deviceId: "dev_member" }
       let entered!: () => void, release!: () => void
       const opening = new Promise<void>((resolve) => { entered = resolve }), barrier = new Promise<void>((resolve) => { release = resolve })
@@ -103,7 +103,7 @@ describe("workspace run final-await boundaries", () => {
       const send = vi.spyOn(globalThis, "fetch")
       const pending = workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...INPUT, env: "dev" }, invocation)
       await opening
-      ctx.sql.exec("DELETE FROM project_shares WHERE subject_id IN('mem_member','tm_engineering')")
+      fixtureSql(ctx).exec("DELETE FROM project_shares WHERE subject_id IN('mem_member','tm_engineering')")
       release()
       await expect(pending).rejects.toThrow("has not been shared")
       expect(open).toHaveBeenCalled() // Prepared plaintext is not a released value.
@@ -115,7 +115,7 @@ describe("workspace run final-await boundaries", () => {
   it("a lease audit failure rolls all capability and exposure writes back", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
       const invocation = await projectDeviceInvocation(ctx, "dev_member"), principal = { kind: "device" as const, deviceId: "dev_member" }
       const originalAudit = ctx.audit.bind(ctx), audit = vi.spyOn(ctx, "audit").mockImplementation((event) => { if (event.action === "run.lease") throw new Error("lease audit failed"); originalAudit(event) })
       await expect(workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...INPUT, env: "dev" }, invocation)).rejects.toThrow("lease audit failed")
@@ -148,7 +148,7 @@ describe("workspace consent graph provenance", () => {
     await inAccess(f.tenant, async (ctx) => {
       const run = await protectedRun(ctx)
       const replacement = { id: "shr_new_grant", project: "prj_a", subject: { kind: "member", member: "mem_kim" }, level: "manage", protected: true, expiresAt: null }
-      ctx.sql.exec("UPDATE project_shares SET id=?,value=? WHERE id='shr_kim'", replacement.id, canonicalJson(replacement))
+      fixtureSql(ctx).exec("UPDATE project_shares SET id=?,value=? WHERE id='shr_kim'", replacement.id, canonicalJson(replacement))
       expect(() => assertRunUse(ctx, projectState(ctx), run, { kind: "device" as const, deviceId: "dev_kim" }, ctx.now())).toThrow("Access changed")
     })
   })
@@ -158,7 +158,7 @@ describe("workspace lease-only runs", () => {
   it("uses and renews a lease-only run without granting metadata or losing exposure attribution", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
       ctx.sql.exec("UPDATE devices SET scope=json_set(scope,'$.modes',json('[\"lease\"]')) WHERE id='dev_member'")
       const invocation = await projectDeviceInvocation(ctx, "dev_member"), principal = { kind: "device" as const, deviceId: "dev_member" }
       const result = await workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...INPUT, env: "dev" }, invocation) as import("@mehen/protocol").WorkspaceRunCreated
@@ -196,6 +196,7 @@ describe("protected run lifetime is separate from the start-grant window", () =>
 import { workspaceRunPlaceholders } from "../src/vault/areas/runs-workspace.ts"
 import { setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import { approvedProjectRun, projectSecurityRows } from "./projects-workspace-fixture.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 describe("run-use checks", () => {
   it("refuses every use of a frozen run before opening, exposure or sending", async () => {
     const f = await projectFixture()

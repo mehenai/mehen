@@ -12,8 +12,8 @@ import { waitForStorageWrite } from "../storage-waits.ts"
 import { devicePolicyState } from "./devices.ts"
 import { relayServices } from "../../relay/services.ts"
 import { authoriseRelay,parseRelayRequest, type Checked } from "./relay.ts"
-import { assertCredentialCurrent, credentialAudit, credentialOps, openCredentialSecrets, visibleCredential, type CheckedCredential } from "./items-workspace.ts"
-import { workspaceTokenRead } from "./oauth-workspace.ts"
+import { assertCredentialCurrent, checkedCredential, credentialAudit, credentialOps, openCredentialSecrets, visibleCredential, type CheckedCredential } from "./items-workspace.ts"
+import { connectionNeedsReauth, workspaceTokenRead } from "./oauth-workspace.ts"
 import { assertApprovedUse, consumeApprovedUse, prepareApprovedUse, assertRunUse, type ProtectedSnapshot } from "./projects-workspace.ts"
 import { accessState, authorise, managedSetting, openAskCount, openWorkloadAskCount, setting, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 import { managedPolicyView } from "../managed-platform.ts"
@@ -23,7 +23,7 @@ import { assertAreaGrantCurrent, assertRuleCurrent, coveringAreaGrant, coveringR
 import { bindingCode, digestOf, parseOpInput } from "./approvals.ts"
 import { assertPostureCurrent, countPostureAsk, coveringPosture, recordPostureUse, type PostureUse } from "./postures-workspace.ts"
 import { assertDialCurrent, coveringDial, dialRefusal, recordDialUse, approvalDial, type DialUse } from "./approval-dial-workspace.ts"
-import { assertMandateCurrent, coveringMandate, mandateCoverHint, newMandateReservation, recordMandateCappedAsk, recordMandateCoverAsk, recordMandateUse } from "./mandates-workspace.ts"
+import { addMandatePlanned, assertMandateCurrent, coveringMandate, settleBeforeMandateUse, mandateCoverHint, newMandatePlanned, newMandateReservation, type MandatePlanned, recordMandateCappedAsk, recordMandateCoverAsk, recordMandateUse } from "./mandates-workspace.ts"
 import type { PolicyFloorView } from "@mehen/protocol/policy-mode"
 import { POLICY_FLOOR, classifyPolicyRequest, evaluatePolicyFloor, policyPathFloorReasons } from "@mehen/protocol/policy-safety"
 
@@ -53,7 +53,9 @@ export function authoriseWorkspaceRelay(ctx: VaultContext, principal: AccessPrin
 // later identical request spends), and whether it reached a member-private
 // credential, whose rows go to that member's private audit.
 // cover: on an ask, whether a mandate could let it through (mandateCoverHint).
-type RelayPlan = { bundle: string; asked: WorkspaceApprovalRow | null; cover: MandateCoverHint | null; granted: string | null; private: boolean }
+// planned: what the bundle's requests before this one would debit of the
+// machine's mandate, this one's added once it is covered.
+type RelayPlan = { bundle: string; asked: WorkspaceApprovalRow | null; cover: MandateCoverHint | null; granted: string | null; private: boolean; planned: MandatePlanned }
 
 async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, input: unknown, invocation: WorkspaceInvocationContext, plan: RelayPlan | null): Promise<RelayMaterial> {
   if (principal.kind !== "device" || invocation.auth.kind !== "device")
@@ -115,7 +117,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
       if (plan && item.home.kind === "member") plan.private = true
       return item
     },
-    reauth(item) { throw new VaultError("needs_reauth", `"${item.slug}" needs to be connected again.`, { next: managed ? { say: "The platform reconnects this account." } : { url: `${ctx.env.VAULT_ORIGIN}/w/${invocation.workspace.slug}/items/${item.slug}`, say: "Reconnect this credential in the workspace." } }); },
+    reauth(item) { if (managed) throw new VaultError("needs_reauth", `"${item.slug}" needs to be connected again.`, { next: { say: "The platform reconnects this account." } }); throw connectionNeedsReauth(ctx, item, plan ? undefined : { principal, invocation }) },
     prepare(entries: Checked[]) {
       for (const { item, mode } of entries)
         authorise(ctx, invocation, { type: "item.use", context }, { credential: item.id, mode: mode === "reveal" ? "relay" : mode }, ctx.now())
@@ -162,7 +164,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
           dialed.set(credential.slug, dialUse)
           return true
         }
-        if (coveringMandate(ctx, principal, credential, held, reservation, { plan: plan !== null, shape: heldRequestShape(credential.id, held) })) return true
+        if (coveringMandate(ctx, principal, credential, held, reservation, { plan: plan !== null, shape: heldRequestShape(credential.id, held), ...(plan ? { planned: plan.planned } : {}) })) return true
       }
       // Only a cap kept the mandate from covering it: the ask says which.
       const capped = ruleable ? reservation.capped : null
@@ -176,7 +178,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
       const batch = { floor: heldRequestFloor(held), shape: heldRequestShape(credential.id, held), replaces: req.replaces ?? null, ...(plan ? { bundle: plan.bundle } : {}) }
       const askedFrom = ctx.now()
       const noAsk = dial === "work" ? { noAsk: () => dialRefusal(ctx, principal, credential, held, invocation.workspace.slug, req.run ?? null) } : {}
-      const approved = prepareApprovedUse(guarded, accessState(ctx), { principal, workspace: invocation.workspace, presentation, mode: req.run ? "placeholder" : "relay", batch, ...noAsk }, projection, context ? { project: context.project, env: context.environment } : null, subject, req.approval ?? null, ctx.now())
+      const approved = prepareApprovedUse(guarded, accessState(ctx), { principal, workspace: invocation.workspace, presentation, mode: req.run ? "placeholder" : "relay", batch, session: legacy.session, ...noAsk }, projection, context ? { project: context.project, env: context.environment } : null, subject, req.approval ?? null, ctx.now())
       if (approved.kind === "required") {
         // The binding code, expiry and wait command a machine shows beside the link, as a protected run's ask carries them.
         // No command for a workload: mehen wait signs with the device's key, which cannot see a workload's approval.
@@ -207,11 +209,18 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
       if (!credential)
         throw new VaultError("not_found", "No such credential.")
       if (item.kind !== "oauth-connection") return { secrets: await openCredentialSecrets(ctx, credential), item: credential }
-      const { accessToken, item: refreshed } = await workspaceTokenRead(ctx, credential)
+      // The first failure carries the reconnect link too, as every later one does.
+      const { accessToken, item: refreshed } = await workspaceTokenRead(ctx, credential).catch((error: unknown) => {
+        if (!(error instanceof VaultError) || error.code !== "needs_reauth" || managed) throw error
+        throw connectionNeedsReauth(ctx, checkedCredential(ctx, credential.slug) ?? credential, { principal, invocation })
+      })
       if (!refreshed || refreshed.id !== credential.id || refreshed.configRev !== credential.configRev || canonicalJson(refreshed.home) !== canonicalJson(credential.home))
         throw new VaultError("conflict", "The credential changed; review and try again.")
       checked.set(item.slug, refreshed)
       return { secrets: { access_token: accessToken }, item: refreshed }
+    },
+    settle() {
+      settleBeforeMandateUse(ctx, reservation)
     },
     assertCurrent() {
       const current = accessState(ctx)
@@ -258,6 +267,7 @@ async function workspaceRelay(ctx: VaultContext, principal: AccessPrincipal, inp
   // Mehen-Rule names a task grant as it names a rule, but only to a mehen
   // that reads grants: to an older one or one of unknown version a grant
   // does not exist, so the answer is as if nothing standing allowed it.
+  if (plan && !plan.asked) addMandatePlanned(plan.planned, reservation)
   const allowedBy = [...ruled, ...(readsGrants(principal, invocation) ? granted.map((g) => g.id) : [])]
   const postures = [...new Set([...postured.values()].map(({ use }) => use.level))]
   return { ...material, workspaceAudit: auditContext, ...(allowedBy.length ? { rules: allowedBy } : {}), ...(postures.length ? { postures } : {}), ...(reservation.mandate !== null ? { mandate: reservation.mandate } : {}) }
@@ -290,8 +300,9 @@ async function createApprovalBundle(ctx: VaultContext, principal: AccessPrincipa
   const results: ApprovalBundleCreated["results"] = []
   // The workspace's row counts only the requests its audit already shows.
   const shown: ApprovalBundleCreated["results"] = []
+  const planned = newMandatePlanned()
   for (const [index, request] of input.requests.entries()) {
-    const plan: RelayPlan = { bundle, asked: null, cover: null, granted: null, private: false }
+    const plan: RelayPlan = { bundle, asked: null, cover: null, granted: null, private: false, planned }
     let result: ApprovalBundleCreated["results"][number]
     try {
       await workspaceRelay(ctx, principal, request, invocation, plan)

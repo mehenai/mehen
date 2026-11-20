@@ -22,5 +22,6 @@ export const browserbase: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "BROWSERBASE_API_KEY",
   fields: { key: { label: "API key" } },
 }

@@ -48,6 +48,16 @@ async function seedLedger(): Promise<void> {
   })
 }
 
+// The vault's own list confirming the two seeded asks, so they are current
+// rather than stale.
+function confirmLedger(): void {
+  const requested = { device: vault.lastDevice ?? "test-box", deviceName: "test-box", session: "pi-1" }
+  vault.pending = [
+    { kind: "intake", id: "int_3kQ9", url: `${vault.url}/w/mock-space/i/int_3kQ9`, expiresAt: inAnHour(), requestedBy: requested, item: "openai-new", provider: "openai", kindRequested: "api-key" },
+    { kind: "approval", id: "apr_7Hq2", url: `${vault.url}/w/mock-space/a/apr_7Hq2`, title: "Send an email to sam@example.com", expiresAt: inAnHour(), requestedBy: requested, item: "gmail-alex", bindingCode: "K7Q2MX" },
+  ]
+}
+
 describe("mehen pending", () => {
   test("with nothing open it says so, enrolled or not", async () => {
     const before = await runJv(["pending"], env)
@@ -58,21 +68,22 @@ describe("mehen pending", () => {
     expect(json(await runJv(["pending", "--json"], env))).toEqual({ pending: [] })
   })
 
-  test("lists the ledger's asks as a table when the server has no /v1/pending (404)", async () => {
+  test("lists the ledger's asks as a table, marked stale, when the server has no /v1/pending (404)", async () => {
     await vault.enrolSoftware(dir.path)
     await seedLedger()
     const result = await runJv(["pending"], env)
     expect(result.code).toBe(EXIT.ok)
     const lines = result.stdout.trimEnd().split("\n")
     expect(lines[0]).toMatch(/^KIND\s+ID\s+WHAT\s+EXPIRES\s+THEN$/)
-    expect(lines[1]).toMatch(/^intake\s+int_3kQ9\s+add openai-new \(OpenAI API key, goes to api.openai.com\)\s+in (59|60) min \((tomorrow )?\d\d:\d\d\)\s+mehen wait int_3kQ9 --timeout 60 --json$/)
-    expect(lines[2]).toMatch(/^approval\s+apr_7Hq2\s+send an email to sam@example.com, from gmail-alex\s+in (59|60) min \((tomorrow )?\d\d:\d\d\)\s+mehen wait apr_7Hq2 --timeout 60 --json$/)
+    expect(lines[1]).toMatch(/^intake\s+int_3kQ9\s+add openai-new \(OpenAI API key, goes to api.openai.com\)\s+in (59|60) min \((tomorrow )?\d\d:\d\d\) \(stale\)\s+mehen wait int_3kQ9 --timeout 60 --json$/)
+    expect(lines[2]).toMatch(/^approval\s+apr_7Hq2\s+send an email to sam@example.com, from gmail-alex\s+in (59|60) min \((tomorrow )?\d\d:\d\d\) \(stale\)\s+mehen wait apr_7Hq2 --timeout 60 --json$/)
     expect(vault.seen.at(-1)).toMatchObject({ method: "GET", path: "/v1/pending" })
   })
 
   test("re-shows one ask by id or by the slug it creates, as the ask block, without a QR off a TTY", async () => {
     await vault.enrolSoftware(dir.path)
     await seedLedger()
+    confirmLedger()
     const byId = await runJv(["pending", "apr_7Hq2"], env)
     expect(byId.code).toBe(EXIT.ok)
     const lines = byId.stdout.trimEnd().split("\n")
@@ -90,6 +101,7 @@ describe("mehen pending", () => {
   test("--json lists { pending: Ask[] } and one ask as { ask, next }, with notices only when there are any", async () => {
     await vault.enrolSoftware(dir.path)
     await seedLedger()
+    confirmLedger()
     const list = json(await runJv(["pending", "--json"], env)) as { pending: { id: string; kind: string }[] }
     expect(list.pending.map((a) => a.id)).toEqual(["int_3kQ9", "apr_7Hq2"])
     expect(Object.keys(list.pending[0] ?? {}).sort()).toEqual(["account", "check", "context", "expiresAt", "id", "kind", "requestedBy", "title", "url", "wait", "what"])
@@ -112,6 +124,8 @@ describe("mehen pending", () => {
     const before = vault.seen.length
     const result = await runJv(["pending", "enr_9m2kQ"], env)
     expect(result.code).toBe(EXIT.ok)
+    // Its key is not on this machine, so the vault cannot be asked: stale.
+    expect(result.stdout.split("\n")[0]).toBe("(stale: may be settled)")
     expect(result.stdout).toContain("Human needed: approve this machine")
     // The fingerprint is the one of the key the pending slot holds, never the recorded text.
     const computed = fingerprintOf(await jwkThumbprint({ kty: "EC", crv: "P-256", x: "x".repeat(43), y: "y".repeat(43) }))
@@ -204,7 +218,8 @@ describe("mehen pending", () => {
     expect(human.stdout).toContain("send\\u001B[2K\\u001B[32m allowed[RLO U+202E]")
     const block = await runJv(["pending", "apr_ok"], env)
     expect(block.stdout).not.toContain("\u001b")
-    expect(block.stdout.split("\n")[0]).toBe("Human needed: approve\\u001B[31m a request[ZWSP U+200B][NONCHAR U+FFFE][31m")
+    // Only the vault could confirm it, and it has no list: it is stale.
+    expect(block.stdout.split("\n").slice(0, 2)).toEqual(["(stale: may be settled)", "Human needed: approve\\u001B[31m a request[ZWSP U+200B][NONCHAR U+FFFE][31m"])
     expect(block.stdout).not.toContain("\uFFFE")
     expect(block.stdout).toContain("the page shows code K7[ZWSP U+200B]Q2")
     expect(block.stdout).toContain("then:    mehen wait apr_ok\\u001B[A")
@@ -482,7 +497,7 @@ test("mehen pending displays only the own workspace ask and own machine notice, 
     expect(json(result)).toEqual({ pending: [expected], notices: [fixture.machine] })
     const human = await runJv(["pending"], env)
     expect(human.code).toBe(0)
-    expect(human.stdout.split("\n")[0]).toBe(`Machine added: workspace-machine (${vault.lastDevice}) in Mock Space (mock-space) at ${vault.url}. Open ${fixture.machine.url} to review this machine.`)
+    expect(human.stdout.split("\n")[0]).toBe(`Machine added on 2026-10-27: this machine, workspace-machine (${vault.lastDevice}), in Mock Space (mock-space) at ${vault.url}. Open ${fixture.machine.url} to review it.`)
     expect(human.stdout).not.toMatch(/foreign|int_stopped|unknown|int_other|dev_other/)
   } finally { vault.overrides.clear() }
 })
@@ -539,23 +554,105 @@ describe("mehen pending across workspaces", () => {
     expect(result.stderr).toContain(`the vault for ${vault.slotDir(dir.path)} could not be asked (device_revoked`)
   })
 
-  test("a workspace whose vault refuses is listed from its ledger with a warning; when every vault refuses, the refusal is the answer", async () => {
+  test("offline, the asks this machine recorded are listed marked stale with a warning, not refused", async () => {
+    const shared = vault
+    vault = new MockVault()
+    try {
+      const offline = { ...env, MEHEN_VAULT_URL: vault.url }
+      await vault.enrolSoftware(dir.path)
+      await seedLedger()
+      vault.stop()
+      const result = await runJv(["pending", "--json"], offline)
+      expect(result.code).toBe(EXIT.ok)
+      const listed = (json(result) as { pending: { id: string; stale?: boolean }[] }).pending
+      expect(listed.map((p) => [p.id, p.stale])).toEqual([["int_3kQ9", true], ["apr_7Hq2", true]])
+      expect(result.stderr).toContain("could not be asked (network")
+      const human = await runJv(["pending"], offline)
+      expect(human.stdout.split("\n").filter((line) => line.includes("(stale)")).map((line) => line.split(/\s+/)[1])).toEqual(["int_3kQ9", "apr_7Hq2"])
+      expect(json(await runJv(["pending", "apr_7Hq2", "--json"], offline))).toMatchObject({ ask: { id: "apr_7Hq2", stale: true } })
+    } finally {
+      vault = shared
+    }
+  })
+
+  test("offline, mehen pending <id> hands a stale ask over as a check-first step, never as a live link", async () => {
+    const shared = vault
+    vault = new MockVault()
+    try {
+      const offline = { ...env, MEHEN_VAULT_URL: vault.url }
+      await vault.enrolSoftware(dir.path)
+      await seedLedger()
+      vault.stop()
+      const result = await runJv(["pending", "apr_7Hq2", "--json"], offline)
+      expect((json(result) as { next: unknown }).next).toEqual({ say: "The vault did not confirm this ask is open; it may already be settled. Do not hand the link over as live: run mehen pending again once the vault answers." })
+      expect(result.stderr).toContain("the vault may have settled them")
+      const human = await runJv(["pending", "apr_7Hq2"], offline)
+      expect(human.stdout.split("\n")[0]).toBe("(stale: may be settled)")
+    } finally {
+      vault = shared
+    }
+  })
+
+  test("a workspace whose vault refuses is listed from its ledger with a warning; when every vault refuses, the recorded asks are still listed, stale", async () => {
     const a = await vault.enrolSoftware(dir.path)
     await seedLedger()
     const b = await vault.enrolSoftware(dir.path, { config: { tenant: SECOND.id, workspaceSlug: SECOND.slug, workspaceName: SECOND.name } })
-    vault.pending = []
+    const secondScope = { vaultUrl: vault.url, workspace: SECOND.id, device: b, workspaceSlug: SECOND.slug }
+    const secondLink = (askUrl(`${vault.url}/w/${SECOND.slug}/a/apr_second1`, { vaultUrl: vault.url, workspaceSlug: SECOND.slug }) as { url: AskUrl }).url
+    await addLedgerEntry(vault.slotDir(dir.path, SECOND.id), secondScope, { ask: approvalAsk({ id: "apr_second1", url: secondLink, summary: "Deploy", bindingCode: "Q2MXK7", expiresAt: inAnHour(), requestedBy: by }) })
+    // The first vault answers and lists one of its two; the second refuses.
+    confirmLedger()
+    vault.pending = vault.pending!.filter((p) => p.id === "int_3kQ9")
     const record = vault.devices.get(b)
     if (record) record.revoked = true
     const partly = await runJv(["pending", "--json"], env)
     expect(partly.code).toBe(EXIT.ok)
-    expect((json(partly) as { pending: { id: string }[] }).pending.map((p) => p.id)).toEqual(["int_3kQ9", "apr_7Hq2"])
+    // Only what a vault confirmed is current; the rest may be settled.
+    expect((json(partly) as { pending: { id: string; stale?: true }[] }).pending.map((p) => [p.id, p.stale])).toEqual([["int_3kQ9", undefined], ["apr_7Hq2", true], ["apr_second1", true]])
+    for (const id of ["apr_7Hq2", "apr_second1"]) expect(json(await runJv(["pending", id, "--json"], env))).toMatchObject({ ask: { stale: true }, next: { say: expect.stringContaining("Do not hand the link over as live") } })
     expect(partly.stderr).toContain(`the vault for ${vault.slotDir(dir.path, SECOND.id)} could not be asked (device_revoked`)
     const other = vault.devices.get(a)
     if (other) other.revoked = true
     const none = await runJv(["pending", "--json"], env)
-    expect(none.code).toBe(EXIT.identity)
-    expect(json(none)).toMatchObject({ error: "device_revoked" })
+    expect(none.code).toBe(EXIT.ok)
+    expect((json(none) as { pending: { id: string; stale?: true }[] }).pending.map((p) => [p.id, p.stale])).toEqual([["int_3kQ9", true], ["apr_7Hq2", true], ["apr_second1", true]])
+    expect(none.stderr).toContain("could not be asked (device_revoked")
   })
+
+  test("one revoked workspace: its recorded asks are listed stale, never refused; with nothing recorded the refusal is the answer", async () => {
+    const a = await vault.enrolSoftware(dir.path)
+    const record = vault.devices.get(a)
+    if (record) record.revoked = true
+    const empty = await runJv(["pending", "--json"], env)
+    expect(empty.code).toBe(EXIT.identity)
+    expect(json(empty)).toMatchObject({ error: "device_revoked" })
+    await seedLedger()
+    const recorded = await runJv(["pending", "--json"], env)
+    expect(recorded.code).toBe(EXIT.ok)
+    expect((json(recorded) as { pending: { id: string; stale?: true }[] }).pending.map((p) => [p.id, p.stale])).toEqual([["int_3kQ9", true], ["apr_7Hq2", true]])
+    expect(recorded.stderr).toContain("could not be asked (device_revoked")
+  })
+
+  test("a pending enrolment is handed over only while the vault says it waits for its owner; approved, rejected or unreachable, it is stale", async () => {
+    const enrolled = async () => (json(await runJv(["enrol", "--workspace", "personal", "--json"], env)) as { enrolment: string }).enrolment
+    vault.enrolOutcome = { pendingPolls: 1000, result: "active" }
+    const waiting = await enrolled()
+    const listed = json(await runJv(["pending", "--json"], env)) as { pending: { id: string; stale?: true }[] }
+    expect(listed.pending.map((p) => [p.id, p.stale])).toEqual([[waiting, undefined]])
+    const before = (vault.seen.length)
+    for (const result of ["active", "rejected"] as const) {
+      vault.enrolOutcome = { pendingPolls: 0, result }
+      const stale = json(await runJv(["pending", "--json"], env)) as { pending: { id: string; stale?: true }[] }
+      expect(stale.pending.map((p) => [p.id, p.stale]), result).toEqual([[waiting, true]])
+      const one = json(await runJv(["pending", waiting, "--json"], env)) as { ask: { stale?: true }; next: { command?: string; say: string } }
+      expect(one, result).toMatchObject({ ask: { stale: true }, next: { command: `mehen wait ${waiting} --timeout 60 --json` } })
+      expect(one.next.say, result).toContain("Do not hand its link over")
+    }
+    // Reading the status never finished the enrolment on this machine.
+    expect(vault.seen.slice(before).every((s) => s.method === "GET")).toBe(true)
+    expect(json(await runJv(["status", "--json"], env))).toMatchObject({ workspaces: [expect.objectContaining({ state: "pending" })] })
+  })
+
 })
 
 test("pending lists an open rule proposal as a policy ask titled Allow from now on, in JSON and in the table", async () => {

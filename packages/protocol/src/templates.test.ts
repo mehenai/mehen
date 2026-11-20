@@ -6,8 +6,8 @@ import { describe, expect, it } from "bun:test"
 import { type BindingInput, PolicySchema, type PolicyInput } from "./api.ts"
 import { type Binding, type Policy, type RuleAction, checkBinding, evaluatePolicy, parseDestination, validHostPattern } from "./binding.ts"
 import { resolvePolicyRequest } from "./policy-safety.ts"
-import { isReservedHeader } from "./headers.ts"
 import { blanketReadAllows } from "../test/template-policy.ts"
+import { isReservedHeader } from "./headers.ts"
 import { secretPrefix } from "./placeholder.ts"
 import { ClientSetupStepSchema } from "./platform.ts"
 import { CLIENT_SETUP_CALLBACK, OAUTH_PROVIDERS, TEMPLATES, TEMPLATE_CATEGORIES, connectionPolicy, getOAuthProvider, getTemplate } from "./templates.ts"
@@ -219,7 +219,7 @@ describe("every template and provider, checked the same way", () => {
           // A GraphQL rule with no body matcher is reached by a plain query,
           // which a fail-closed mutation rule on the same path lets by.
           // An allowed write is sent with an empty JSON object, which a
-          // fail-closed JSON matcher on the same route lets by.
+          // fail-closed JSON field matcher on the same route lets by.
           for (const method of rule.action === "allow" ? methods.slice(0, 1) : methods) {
             const body = rule.body === undefined && path.toLowerCase().endsWith("/graphql") ? { query: "query { __typename }" } : rule.action === "allow" && !READS.includes(method.toUpperCase()) ? {} : undefined
             const request = `${s.id}: ${method} ${path}`
@@ -263,6 +263,15 @@ describe("every template and provider, checked the same way", () => {
     }
   })
 
+  it("names a default environment variable only for a credential the relay sends, as an upper-case shell name", () => {
+    for (const t of Object.values(TEMPLATES)) {
+      if (t.defaultEnvVar === undefined) continue
+      expect({ id: t.id, name: t.defaultEnvVar, valid: /^[A-Z][A-Z0-9_]{1,63}$/.test(t.defaultEnvVar) }).toEqual({ id: t.id, name: t.defaultEnvVar, valid: true })
+      expect({ id: t.id, client: t.kind === "oauth-client", injects: t.injection !== null }).toEqual({ id: t.id, client: false, injects: true })
+    }
+    expect([TEMPLATES.openai?.defaultEnvVar, TEMPLATES.anthropic?.defaultEnvVar, TEMPLATES["github-pat"]?.defaultEnvVar, TEMPLATES.stripe?.defaultEnvVar]).toEqual(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "STRIPE_API_KEY"])
+  })
+
   it("keeps every placeholder template's prefixes in the placeholder list, so a placeholder has the shape an SDK checks", () => {
     for (const t of Object.values(TEMPLATES).filter((x) => x.ceiling === "placeholder")) {
       for (const prefix of t.prefixes ?? []) expect({ id: t.id, prefix, kept: secretPrefix(`${prefix}0123456789abcdef`) }).toEqual({ id: t.id, prefix, kept: prefix })
@@ -300,6 +309,23 @@ describe("every template policy", () => {
       expect({ id, default: policy.default }).toEqual({ id, default: "approve" })
       for (const method of WRITES) expect({ id, method, action: decide(policy, method, url).action }).toEqual({ id, method, action: "approve" })
     }
+  })
+
+  // Reads by allowlist: these templates' APIs have reads that hand back
+  // tokens, passwords and signing secrets, and the relay lets a base-allowed
+  // read past generic-only holds, so a blanket read allow leaks every one a
+  // template forgets to name.
+  it("allows reads only on named routes in huggingface, replicate, deepseek, xai, supabase, digitalocean, railway, render, upstash and planetscale", () => {
+    for (const id of ["huggingface", "replicate", "deepseek", "xai", "supabase", "digitalocean", "railway", "render", "upstash", "planetscale"]) {
+      const template = getTemplate(id)
+      if (!template) throw new Error(id)
+      expect({ id, blanket: blanketReadAllows(template) }).toEqual({ id, blanket: [] })
+    }
+    expect(blanketReadAllows(getTemplate("openai")!)).toEqual(["reads"])
+  })
+
+  it("names OpenRouter's documented key variable", () => {
+    expect(getTemplate("openrouter")?.defaultEnvVar).toBe("OPENROUTER_API_KEY")
   })
 
   it("no template or provider puts its credential into a reserved header, or a header map", () => {

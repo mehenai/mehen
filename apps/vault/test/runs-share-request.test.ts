@@ -12,6 +12,7 @@ import { accessMember } from "./workspace-fixtures.ts"
 import { noticeRows } from "../src/ui/pages/needs-you.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { projectDeviceInvocation, projectFixture, projectState, inAccess } from "./projects-workspace-fixture.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const UNSHARED = { project: "prj_b", env: "dev", envSource: "flag", remote: null, worktree: "/fixture", head: null, vars: [], command: "test", argv: ["test"] }
 const DAY = 86_400_000
@@ -54,9 +55,9 @@ describe("runs.create refused project_unshared", () => {
       // Shared with Kim, the request resolves: it leaves Needs you and pending.
       expect(noticeScan(ctx, accessMember(projectState(ctx), "owner"), null).notices.map((n) => n.payload.kind)).toContain("project_share_requested")
       const share = { id: "shr_kim_b", project: "prj_b", subject: { kind: "member", member: "mem_kim" }, level: "use", protected: false, expiresAt: null }
-      ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", share.id, share.project, "member", "mem_kim", JSON.stringify(share))
+      fixtureSql(ctx).exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", share.id, share.project, "member", "mem_kim", JSON.stringify(share))
       expect(noticeScan(ctx, accessMember(projectState(ctx), "owner"), null).notices.map((n) => n.payload.kind)).not.toContain("project_share_requested")
-      ctx.sql.exec("DELETE FROM project_shares WHERE id=?", share.id)
+      fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id=?", share.id)
       // The next UTC day raises one more.
       const now = ctx.now
       ctx.now = () => now() + DAY
@@ -72,7 +73,7 @@ describe("runs.create refused project_unshared", () => {
   it("tells a member who manages the project by a share, not only owners and admins, and not a member who only uses it", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      const share = (id: string, member: string, level: "manage" | "use") => ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", id, "prj_b", "member", member, JSON.stringify({ id, project: "prj_b", subject: { kind: "member", member }, level, protected: false, expiresAt: null }))
+      const share = (id: string, member: string, level: "manage" | "use") => fixtureSql(ctx).exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", id, "prj_b", "member", member, JSON.stringify({ id, project: "prj_b", subject: { kind: "member", member }, level, protected: false, expiresAt: null }))
       share("shr_member_b", "mem_member", "manage")
       share("shr_guest_b", "mem_guest", "use")
       expect((await refused(ctx)).code).toBe("project_unshared")
@@ -83,7 +84,7 @@ describe("runs.create refused project_unshared", () => {
   it("tells only those who may share with a guest when the refused machine is a guest's: not a member who manages the project", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", "shr_member_b", "prj_b", "member", "mem_member", JSON.stringify({ id: "shr_member_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: false, expiresAt: null }))
+      fixtureSql(ctx).exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", "shr_member_b", "prj_b", "member", "mem_member", JSON.stringify({ id: "shr_member_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: false, expiresAt: null }))
       const error = await refused(ctx, UNSHARED, "dev_guest")
       expect(error.code).toBe("project_unshared")
       expect(error.extra.next?.url).toBe(`${ctx.env.VAULT_ORIGIN}/w/work/projects/prj_b`)
@@ -95,7 +96,7 @@ describe("runs.create refused project_unshared", () => {
   // A share request queued to someone who may no longer share the project
   // is not listed to them: the right is checked again when Needs you is read.
   const CHANGES: [string, string, (ctx: VaultContext) => void][] = [
-    ["their Manage share was removed", "member", (ctx) => ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_member_b'")],
+    ["their Manage share was removed", "member", (ctx) => fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id='shr_member_b'")],
     ["a recovery restriction began", "admin", (ctx) => { installSecurity(ctx, "acc_admin", 0, null); updateRestriction(ctx, "acc_admin", 0, { reason: "recovery", until: ctx.now() + 86_400_000, notice: "ntc_recovery" }) }],
     ["a security change is pending", "admin", (ctx) => installSecurity(ctx, "acc_admin", 0, { transitionId: "ast_pending", reservedEpoch: 1, revokedSessionIds: [], removedFactorIds: [], restriction: null })],
   ]
@@ -103,7 +104,7 @@ describe("runs.create refused project_unshared", () => {
     it(`stops listing a queued share request to a recipient once ${change}, and keeps it for the others`, async () => {
       const f = await projectFixture()
       await inAccess(f.tenant, async (ctx) => {
-        ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", "shr_member_b", "prj_b", "member", "mem_member", JSON.stringify({ id: "shr_member_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: false, expiresAt: null }))
+        fixtureSql(ctx).exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", "shr_member_b", "prj_b", "member", "mem_member", JSON.stringify({ id: "shr_member_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "manage", protected: false, expiresAt: null }))
         await refused(ctx)
         const listed = (who: string) => noticeScan(ctx, accessMember(projectState(ctx), who), null).notices.filter((n) => n.payload.kind === "project_share_requested").length
         expect([listed(role), listed("owner")]).toEqual([1, 1])

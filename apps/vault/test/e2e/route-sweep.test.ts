@@ -110,6 +110,8 @@ it("fresh schema route sweep: every /v1 route called by the CLI and its real wor
     expect(await body(await call("GET", "/v1/mandates/asked"))).toEqual({ items: [], classes: [] })
     expect(await body(await call("POST", "/v1/mandates/proposals", "/v1/mandates/proposals", { terms: { items: "all", classes: ["read"], caps: { read: 100, change: 0, send: 0, delete: 0 }, ttlDays: 7, schedule: null, note: "Smoke test" }, reason: "Smoke test" }), 403)).toMatchObject({ error: "forbidden", mandateRefused: "items_all" })
     expect(await body(await call("GET", "/v1/mandates"))).toEqual({ mandates: [], proposals: [] })
+    // A proposal's state for its wait, read for one that does not exist.
+    expect((await call("GET", "/v1/mandates/proposals/:id", "/v1/mandates/proposals/mdp_missing123?wait=1")).status).toBe(404)
     expect((await call("GET", "/v1/mandates/:id", "/v1/mandates/mdt_missing123")).status).toBe(404)
     expect((await call("GET", "/v1/mandates/:id/uses", "/v1/mandates/mdt_missing123/uses")).status).toBe(404)
     expect((await call("POST", "/v1/mandates/:id/pause", "/v1/mandates/mdt_missing123/pause", { rev: 1 })).status).toBe(404)

@@ -15,6 +15,7 @@ export const githubPat: Template = {
   injection: BEARER(),
   policy: { default: "approve", rules: [...GITHUB_ALLOWED, ...GITHUB_SENSITIVE] },
   ceiling: "placeholder",
+  defaultEnvVar: "GITHUB_TOKEN",
   check: { method: "GET", path: "/user" },
   fields: { key: { label: "Token", pattern: "^(github_pat_|ghp_)" } },
   prefixes: ["github_pat_", "ghp_"],

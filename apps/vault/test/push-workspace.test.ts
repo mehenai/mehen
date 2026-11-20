@@ -15,6 +15,8 @@ import { workspacePendingOps, type WorkspaceInboxAnswer } from "../src/vault/are
 import { applyMigrations } from "../src/vault/tenant-vault.ts"
 import { editAccessFixture } from "./access-test-support.ts"
 import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 export const switchedPush = (ctx: VaultContext, value: string): VaultContext => Object.assign(Object.create(ctx) as VaultContext, { env: { ...ctx.env, PUSH: value } })
 
@@ -110,10 +112,10 @@ describe("the allowance to put a credential into other services' secret stores",
       const index = itemsArea.migrations.findIndex((migration) => migration.includes("ADD COLUMN pushable"))
       expect(index).toBe(itemsArea.migrations.length - 2)
       // The posture tables come after it.
-      for (const table of ["posture_nudge_quiet", "posture_ask_counts", "item_postures"]) ctx.sql.exec(`DROP TABLE ${table}`)
-      ctx.sql.exec("ALTER TABLE items DROP COLUMN pushable")
+      for (const table of ["posture_nudge_quiet", "posture_ask_counts", "item_postures"]) withTrustedSchema(ctx, () => ctx.sql.exec(`DROP TABLE ${table}`))
+      withTrustedSchema(ctx, () => ctx.sql.exec("ALTER TABLE items DROP COLUMN pushable"))
       ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='items'", index)
-      applyMigrations(ctx.sql, ctx.storage, [itemsArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [itemsArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='items'").toArray()[0]!.applied).toBe(itemsArea.migrations.length)
       expect(ctx.sql.exec("SELECT id,slug,pushable FROM items").toArray()).toEqual([{ id: item.id, slug: "openai-prod", pushable: 0 }])
     })
@@ -207,7 +209,7 @@ describe("asking for a push", () => {
       expect(await prepare(ctx, { ...pushRequest(), to: { provider: "fly", app: "api", name: "KEY" } })).toMatchObject({ code: "bad_request", message: "Pushing to Fly is not available yet." })
       await seedGitHubVia(ctx, "gh-other")
       expect(await prepare()).toMatchObject({ code: "ambiguous", extra: { choices: [{ slug: "gh-other", account: "acme-bot" }, { slug: "gh-token", account: "acme-bot" }] } })
-      ctx.sql.exec("DELETE FROM items WHERE provider='github-pat'")
+      fixtureSql(ctx).exec("DELETE FROM items WHERE provider='github-pat'")
       expect(await prepare()).toMatchObject({ code: "not_found", message: "This machine may use no GitHub credential to push with." })
     })
   })
@@ -217,11 +219,11 @@ describe("asking for a push", () => {
     await inAccess(f.tenant, async (ctx) => {
       await pushReady(ctx)
       const prepare = () => refusal(async () => workspacePushOps["push.prepare"]!.handler(ctx, devicePrincipal(), pushRequest(), await deviceInvocation(ctx)))
-      ctx.sql.exec("UPDATE items SET policy=? WHERE slug='gh-token'", JSON.stringify({ default: "allow", rules: [{ action: "deny", methods: ["PUT"], paths: ["/repos/*/*/actions/secrets/*"], note: "writing secrets" }] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='gh-token'", JSON.stringify({ default: "allow", rules: [{ action: "deny", methods: ["PUT"], paths: ["/repos/*/*/actions/secrets/*"], note: "writing secrets" }] }))
       expect(await prepare()).toMatchObject({ code: "policy_denied", message: '"gh-token" may not be used for PUT /repos/acme/api/actions/secrets/OPENAI_API_KEY (writing secrets).' })
-      ctx.sql.exec("UPDATE items SET policy=?,binding=? WHERE slug='gh-token'", JSON.stringify({ default: "allow", rules: [] }), JSON.stringify({ hosts: ["api.github.com"], paths: ["/user"] }))
+      fixtureSql(ctx).exec("UPDATE items SET policy=?,binding=? WHERE slug='gh-token'", JSON.stringify({ default: "allow", rules: [] }), JSON.stringify({ hosts: ["api.github.com"], paths: ["/user"] }))
       expect(await prepare()).toMatchObject({ code: "binding_refused" })
-      ctx.sql.exec("UPDATE items SET binding=? WHERE slug='gh-token'", JSON.stringify({ hosts: ["api.github.com"] }))
+      fixtureSql(ctx).exec("UPDATE items SET binding=? WHERE slug='gh-token'", JSON.stringify({ hosts: ["api.github.com"] }))
       ctx.sql.exec("UPDATE item_secrets SET length=? WHERE item=(SELECT id FROM items WHERE slug='openai-prod')", 65 * 1024)
       expect(await prepare()).toMatchObject({ code: "too_large" })
       ctx.sql.exec("UPDATE item_secrets SET length=? WHERE item=(SELECT id FROM items WHERE slug='openai-prod')", 32)
@@ -249,9 +251,9 @@ describe("asking for a push", () => {
       expect(asked).toMatchObject({ code: "approval_required" })
       expect(JSON.parse(workspaceApproval(ctx, asked.extra.approval as string)!.presentation).push).toMatchObject({ via: "gh-token" })
       // The previewed via gone, with one other left: refused, never carried by the other.
-      ctx.sql.exec("DELETE FROM items WHERE slug='gh-other'")
+      fixtureSql(ctx).exec("DELETE FROM items WHERE slug='gh-other'")
       const second = await prepare()
-      ctx.sql.exec("DELETE FROM items WHERE slug='gh-token'")
+      fixtureSql(ctx).exec("DELETE FROM items WHERE slug='gh-token'")
       await seedGitHubVia(ctx, "gh-other")
       expect(await refusal(async () => ask(second))).toMatchObject({ code: "not_found", message: 'No credential called "gh-token".' })
     })
@@ -263,7 +265,7 @@ describe("asking for a push", () => {
       await pushReady(ctx)
       const prepared = await workspacePushOps["push.prepare"]!.handler(ctx, devicePrincipal(), pushRequest(), await deviceInvocation(ctx)) as PushPrepared
       const before = ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug='gh-token'").toArray()[0]!.id
-      ctx.sql.exec("DELETE FROM items WHERE slug='gh-token'")
+      fixtureSql(ctx).exec("DELETE FROM items WHERE slug='gh-token'")
       await seedGitHubVia(ctx)
       expect(ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug='gh-token'").toArray()[0]!.id).not.toBe(before)
       expect(await refusal(async () => workspacePushOps["push.ask"]!.handler(ctx, { kind: "system" }, { ticket: prepared.ticket, preview: null }, systemInvocation(ctx)))).toMatchObject({ code: "not_found", message: 'No credential called "gh-token".' })
@@ -280,7 +282,7 @@ describe("asking for a push", () => {
       if (!("approval" in asked)) throw new Error("Expected approval_required")
       const status = () => workspaceApprovalStatus(ctx, workspaceApproval(ctx, asked.approval)!)
       expect(status()).toBe("pending")
-      ctx.sql.exec("UPDATE items SET version=version+1 WHERE slug='gh-token'")
+      fixtureSql(ctx).exec("UPDATE items SET version=version+1 WHERE slug='gh-token'")
       expect(status()).toBe("stale")
     })
   })
@@ -350,7 +352,7 @@ describe("an approved push", () => {
       const first = await askPush(ctx)
       if (!("approval" in first)) throw new Error("Expected approval_required")
       await approvePush(ctx, first.approval)
-      ctx.sql.exec("UPDATE items SET version=version+1 WHERE slug='openai-prod'")
+      fixtureSql(ctx).exec("UPDATE items SET version=version+1 WHERE slug='openai-prod'")
       const refused = await workspacePushOps["push.execute"]!.handler(ctx, { kind: "system" }, { approval: first.approval }, systemInvocation(ctx)) as PushHandOut
       expect(refused).toMatchObject({ sent: false, reason: "The credential or the one carrying it changed before Mehen sent it; nothing was sent." })
       expect(pushOf(ctx, first.approval)?.state).toBe("not_sent")
@@ -438,7 +440,7 @@ async function pushedThenRotated(ctx: VaultContext): Promise<string> {
   await approvePush(ctx, asked.approval)
   const handOut = await workspacePushOps["push.execute"]!.handler(ctx, { kind: "system" }, { approval: asked.approval }, systemInvocation(ctx)) as PushHandOut
   await workspacePushOps["push.record"]!.handler(ctx, { kind: "system" }, { push: handOut.push, state: "done", outcome: "created", providerStatus: 201 }, systemInvocation(ctx))
-  ctx.sql.exec("UPDATE items SET version=version+1 WHERE slug='openai-prod'")
+  fixtureSql(ctx).exec("UPDATE items SET version=version+1 WHERE slug='openai-prod'")
   return handOut.push
 }
 
@@ -503,7 +505,7 @@ async function pushedProjectCredential(ctx: VaultContext): Promise<PushHandOut> 
   await approvePush(ctx, asked.approval)
   const handOut = await workspacePushOps["push.execute"]!.handler(ctx, { kind: "system" }, { approval: asked.approval }, systemInvocation(ctx)) as PushHandOut
   await workspacePushOps["push.record"]!.handler(ctx, { kind: "system" }, { push: handOut.push, state: "done", outcome: "created", providerStatus: 201 }, systemInvocation(ctx))
-  ctx.sql.exec("UPDATE items SET version=version+1 WHERE slug='openai-prod'")
+  fixtureSql(ctx).exec("UPDATE items SET version=version+1 WHERE slug='openai-prod'")
   return handOut
 }
 
@@ -524,7 +526,7 @@ describe("who may push a credential again", () => {
       const queued = (await again("kim")).pushes
       expect(queued).toHaveLength(1)
       // Checked again when it is sent: a manager who now only edits sends nothing.
-      ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','edit') WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','edit') WHERE id='shr_kim'")
       expect(await workspacePushOps["push.execute"]!.handler(ctx, { kind: "system" }, { push: queued[0]! }, systemInvocation(ctx))).toMatchObject({ sent: false, reason: "You may no longer push this credential; nothing was sent." })
     })
   })
@@ -602,7 +604,7 @@ describe("the pushes a credential lists", () => {
       const queued = await workspacePushOps["push.again"]!.handler(ctx, memberPrincipal(ctx, "kim"), { slug: "openai-prod", records: [first] }, memberInvocation(ctx, "kim", action)) as { pushes: string[] }
       const handOut = await workspacePushOps["push.execute"]!.handler(ctx, { kind: "system" }, { push: queued.pushes[0]! }, systemInvocation(ctx)) as PushHandOut
       await workspacePushOps["push.record"]!.handler(ctx, { kind: "system" }, { push: handOut.push, state: "done", outcome: "replaced", providerStatus: 204 }, systemInvocation(ctx))
-      ctx.sql.exec("UPDATE members SET name=? WHERE id='mem_kim'", MEMBER)
+      fixtureSql(ctx).exec("UPDATE members SET name=? WHERE id='mem_kim'", MEMBER)
       ctx.sql.exec("UPDATE approvals SET device_name=?", MACHINE)
       const byPerson = (role: string) => (workspaceItemOps["items.describe"]!.handler(ctx, memberPrincipal(ctx, role), { slug: "openai-prod" }, memberInvocation(ctx, role)) as { pushes: Record<string, unknown>[] }).pushes
       expect(byPerson("owner").map((p) => p.by).sort()).toEqual([MACHINE, MEMBER])
@@ -618,13 +620,13 @@ describe("the pushes area", () => {
   it("creates its tables, a ticket keeping the via it was prepared with, in a migration a workspace without pushes applies", async () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("DROP TABLE pushes")
-      ctx.sql.exec("DROP TABLE push_tickets")
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP TABLE pushes"))
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP TABLE push_tickets"))
       ctx.sql.exec("DELETE FROM _migrations WHERE area='pushes'")
-      applyMigrations(ctx.sql, ctx.storage, [pushesArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [pushesArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='pushes'").toArray()[0]!.applied).toBe(1)
       expect(ctx.sql.exec("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pushes' AND sql IS NOT NULL ORDER BY name").toArray()).toEqual([{ name: "pushes_item" }, { name: "pushes_owner" }])
-      expect(ctx.sql.exec<{ name: string; type: string; notnull: number; pk: number }>("PRAGMA table_info(push_tickets)").toArray().map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk }))).toEqual([
+      expect(withTrustedSchema(ctx, () => ctx.sql.exec<{ name: string; type: string; notnull: number; pk: number }>("PRAGMA table_info(push_tickets)")).toArray().map(({ name, type, notnull, pk }) => ({ name, type, notnull, pk }))).toEqual([
         { name: "id", type: "TEXT", notnull: 0, pk: 1 },
         { name: "device", type: "TEXT", notnull: 1, pk: 0 },
         { name: "workload", type: "TEXT", notnull: 0, pk: 0 },

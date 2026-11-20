@@ -89,7 +89,7 @@ type LaneHelp = RunModule["runHelp"]
 type LaneParse = (argv: string[]) => unknown
 
 export const LANE_COMMANDS: Record<string, { summary: string; load(module: RunModule): LaneCommand; help(module: RunModule): LaneHelp; parse(module: RunModule): LaneParse }> = {
-  run: { summary: "run a command with the project's variables (mehen run [--env <env>] [--stop-grace <seconds>] [--service] -- <command>)", load: (m) => m.runCommand, help: (m) => m.runHelp, parse: (m) => m.parseRunArgs },
+  run: { summary: "run a command with the project's variables (mehen run [--env <env>] [--stop-grace <seconds>] [--service] [--stream-writes] -- <command>)", load: (m) => m.runCommand, help: (m) => m.runHelp, parse: (m) => m.parseRunArgs },
   env: { summary: "list, check or set the project's variables (mehen env ls|check|set)", load: (m) => m.envCommand, help: (m) => m.envHelp, parse: (m) => m.parseEnvArgs },
   init: { summary: "create the project, or bind this checkout to the project its remote already is, and write mehen.toml", load: (m) => m.initCommand, help: (m) => m.initHelp, parse: (m) => m.parseInitArgs },
 }

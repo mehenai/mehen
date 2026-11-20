@@ -28,6 +28,8 @@ import { betterstackUptime } from "./templates/betterstack-uptime.ts"
 import { braveSearch } from "./templates/brave-search.ts"
 import { browserbase } from "./templates/browserbase.ts"
 import { cloudflareApiToken } from "./templates/cloudflare-api-token.ts"
+import { deepseek } from "./templates/deepseek.ts"
+import { digitalocean } from "./templates/digitalocean.ts"
 import { discord } from "./templates/discord.ts"
 import { elevenlabs } from "./templates/elevenlabs.ts"
 import { fathom } from "./templates/fathom.ts"
@@ -48,6 +50,7 @@ import { groq } from "./templates/groq.ts"
 import { hetznerCloud } from "./templates/hetzner-cloud.ts"
 import { heygen } from "./templates/heygen.ts"
 import { hubspotPrivateApp } from "./templates/hubspot-private-app.ts"
+import { huggingface } from "./templates/huggingface.ts"
 import { intercom } from "./templates/intercom.ts"
 import { jira } from "./templates/jira.ts"
 import { linear } from "./templates/linear.ts"
@@ -62,9 +65,13 @@ import { ollamaCloud } from "./templates/ollama-cloud.ts"
 import { openai } from "./templates/openai.ts"
 import { openrouter } from "./templates/openrouter.ts"
 import { pagerduty } from "./templates/pagerduty.ts"
+import { planetscale } from "./templates/planetscale.ts"
 import { posthog } from "./templates/posthog.ts"
 import { postmarkServer } from "./templates/postmark-server.ts"
 import { pypi } from "./templates/pypi.ts"
+import { railway } from "./templates/railway.ts"
+import { render } from "./templates/render.ts"
+import { replicate } from "./templates/replicate.ts"
 import { resend } from "./templates/resend.ts"
 import { scaleway } from "./templates/scaleway.ts"
 import { semrush } from "./templates/semrush.ts"
@@ -74,9 +81,12 @@ import { serpapi } from "./templates/serpapi.ts"
 import { slackBot } from "./templates/slack-bot.ts"
 import { snyk } from "./templates/snyk.ts"
 import { stripe } from "./templates/stripe.ts"
+import { supabase } from "./templates/supabase.ts"
 import { together } from "./templates/together.ts"
 import { twilio } from "./templates/twilio.ts"
+import { upstash } from "./templates/upstash.ts"
 import { vercel } from "./templates/vercel.ts"
+import { xai } from "./templates/xai.ts"
 
 export { CLIENT_SETUP_CALLBACK } from "./templates/shared.ts"
 
@@ -168,10 +178,16 @@ export const TEMPLATES: Record<string, Template> = {
   groq,
   openrouter,
   together,
+  deepseek,
+  xai,
+  huggingface,
+  replicate,
   "ollama-cloud": ollamaCloud,
   snyk,
   vercel,
   fly,
+  railway,
+  render,
   npm,
   pypi,
   notion,
@@ -185,6 +201,10 @@ export const TEMPLATES: Record<string, Template> = {
   "hetzner-cloud": hetznerCloud,
   scaleway,
   neon,
+  supabase,
+  planetscale,
+  upstash,
+  digitalocean,
   "hubspot-private-app": hubspotPrivateApp,
   intercom,
   resend,

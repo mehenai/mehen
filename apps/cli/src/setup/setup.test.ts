@@ -353,7 +353,7 @@ test("the embedded skill hashes as its file's bytes do", async () => {
   const bytes = await readFile(join(import.meta.dir, "../../../../skills/mehen/SKILL.md"))
   expect(skillSha256(publishedSkill)).toBe(createHash("sha256").update(bytes).digest("hex"))
 })
-const RELEASE_COMMITS: Record<string, string> = { "0.1.0": "ecc074a", "0.2.0": "dc95a2c", "0.3.0": "f077c6c", "0.3.1": "4dd712b", "0.3.2": "bdf35ef", "0.3.3": "4fdea51", "0.3.4": "e22bf5e", "0.3.5": "cbfab8f", "0.3.6": "d34bc2e", "0.3.7": "3d2ad4c", "0.3.8": "dbe7449", "0.3.9": "958d563", "0.3.10": "d2e291a", "0.3.11": "9bba5b7", "0.3.12": "4fea471", "0.3.13": "b63ec88", "0.3.14": "8cc94de", "0.3.15": "dec7a26", "0.3.16": "d43cf71", "0.3.17": "b956b66", "0.3.18": "59845d9", "0.3.19": "97e8ade", "0.4.0": "f52635f" }
+const RELEASE_COMMITS: Record<string, string> = { "0.1.0": "ecc074a", "0.2.0": "dc95a2c", "0.3.0": "f077c6c", "0.3.1": "4dd712b", "0.3.2": "bdf35ef", "0.3.3": "4fdea51", "0.3.4": "e22bf5e", "0.3.5": "cbfab8f", "0.3.6": "d34bc2e", "0.3.7": "3d2ad4c", "0.3.8": "dbe7449", "0.3.9": "958d563", "0.3.10": "d2e291a", "0.3.11": "9bba5b7", "0.3.12": "4fea471", "0.3.13": "b63ec88", "0.3.14": "8cc94de", "0.3.15": "dec7a26", "0.3.16": "d43cf71", "0.3.17": "b956b66", "0.3.18": "59845d9", "0.3.19": "97e8ade", "0.4.0": "f52635f", "0.4.1": "a49c8aa" }
 const releasedSkill = (commit: string) => Bun.spawnSync(["git", "show", `${commit}:skills/mehen/SKILL.md`], { cwd: import.meta.dir, stderr: "ignore" })
 // A shallow or partial clone (CI) lacks some release commits; only a clone
 // with every one of them checks them.

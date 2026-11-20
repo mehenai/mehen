@@ -6,6 +6,8 @@ import { type VaultContext, one } from "../src/vault/core.ts"
 import type { NewItem } from "../src/vault/services.ts"
 import { applyMigrations } from "../src/vault/tenant-vault.ts"
 import { freshTenant } from "./helpers.ts"
+import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 const SYSTEM = { kind: "system", reason: "test" } as const
 const INPUT: NewItem = {
@@ -20,7 +22,7 @@ function auditCount(ctx: VaultContext) {
 }
 
 // The posture tables come after every migration these tests rewind to.
-const dropPostureTables = (ctx: VaultContext) => { for (const table of ["posture_nudge_quiet", "posture_ask_counts", "item_postures"]) ctx.sql.exec(`DROP TABLE ${table}`) }
+const dropPostureTables = (ctx: VaultContext) => { for (const table of ["posture_nudge_quiet", "posture_ask_counts", "item_postures"]) withTrustedSchema(ctx, () => ctx.sql.exec(`DROP TABLE ${table}`)) }
 const withVault = (fn: (ctx: VaultContext) => Promise<void>) => runInDurableObject(env.TENANT_VAULT.getByName(freshTenant()), (instance) => fn(instance.context))
 
 describe("item policy revisions", () => {
@@ -29,13 +31,13 @@ describe("item policy revisions", () => {
       await items.putItem(ctx, INPUT, SYSTEM)
       const index = itemsArea.migrations.findIndex((migration) => migration.includes("ADD COLUMN config_rev"))
       dropPostureTables(ctx)
-      ctx.sql.exec("DROP TABLE item_secret_history")
-      ctx.sql.exec("DROP TABLE credential_dependencies")
-      for (const column of ["pushable", "browser", "dependency_revision", "home_id", "home_kind", "config_rev"]) ctx.sql.exec(`ALTER TABLE items DROP COLUMN ${column}`)
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP TABLE item_secret_history"))
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP TABLE credential_dependencies"))
+      for (const column of ["pushable", "browser", "dependency_revision", "home_id", "home_kind", "config_rev"]) withTrustedSchema(ctx, () => ctx.sql.exec(`ALTER TABLE items DROP COLUMN ${column}`))
       ctx.sql.exec("UPDATE _migrations SET applied = ? WHERE area = 'items'", index)
-      applyMigrations(ctx.sql, ctx.storage, [itemsArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [itemsArea]))
       expect(items.getItem(ctx, INPUT.slug)?.configRev).toBe(0)
-      applyMigrations(ctx.sql, ctx.storage, [itemsArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [itemsArea]))
       expect(items.getItem(ctx, INPUT.slug)?.configRev).toBe(0)
     })
   })
@@ -48,11 +50,11 @@ describe("item policy revisions", () => {
       const index = itemsArea.migrations.findIndex((migration) => migration.includes("CREATE TABLE item_secret_history"))
       expect(index).toBe(itemsArea.migrations.length - 4)
       dropPostureTables(ctx)
-      ctx.sql.exec("DROP TABLE item_secret_history")
-      ctx.sql.exec("ALTER TABLE items DROP COLUMN browser")
-      ctx.sql.exec("ALTER TABLE items DROP COLUMN pushable")
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP TABLE item_secret_history"))
+      withTrustedSchema(ctx, () => ctx.sql.exec("ALTER TABLE items DROP COLUMN browser"))
+      withTrustedSchema(ctx, () => ctx.sql.exec("ALTER TABLE items DROP COLUMN pushable"))
       ctx.sql.exec("UPDATE _migrations SET applied = ? WHERE area = 'items'", index)
-      applyMigrations(ctx.sql, ctx.storage, [itemsArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [itemsArea]))
       expect(items.getItem(ctx, INPUT.slug)).toMatchObject({ id: original.id, version: 1 })
       expect(secrets()).toEqual(before)
       expect(ctx.sql.exec("SELECT count(*) AS n FROM item_secret_history").toArray()).toEqual([{ n: 0 }])
@@ -65,14 +67,14 @@ describe("item policy revisions", () => {
       const index = itemsArea.migrations.findIndex((migration) => migration.includes("ADD COLUMN browser"))
       expect(index).toBe(itemsArea.migrations.length - 3)
       dropPostureTables(ctx)
-      ctx.sql.exec("ALTER TABLE items DROP COLUMN browser")
-      ctx.sql.exec("ALTER TABLE items DROP COLUMN pushable")
+      withTrustedSchema(ctx, () => ctx.sql.exec("ALTER TABLE items DROP COLUMN browser"))
+      withTrustedSchema(ctx, () => ctx.sql.exec("ALTER TABLE items DROP COLUMN pushable"))
       ctx.sql.exec("UPDATE _migrations SET applied = ? WHERE area = 'items'", index)
-      applyMigrations(ctx.sql, ctx.storage, [itemsArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [itemsArea]))
       expect(items.getItem(ctx, INPUT.slug)).toEqual({ ...original, browser: null })
       expect(await items.openSecrets(ctx, original)).toEqual(INPUT.secretFields)
       const browser = { signinOrigins: ["https://login.example.com"], typeInto: [] }
-      ctx.sql.exec("UPDATE items SET browser = ? WHERE id = ?", JSON.stringify(browser), original.id)
+      fixtureSql(ctx).exec("UPDATE items SET browser = ? WHERE id = ?", JSON.stringify(browser), original.id)
       expect(items.getItem(ctx, INPUT.slug)?.browser).toEqual(browser)
     })
   })

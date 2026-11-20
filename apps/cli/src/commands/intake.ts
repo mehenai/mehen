@@ -196,6 +196,7 @@ export const requestCommand: Command = {
     "Naming a credential this machine can already reach asks the human to rotate it instead: --home and --provider must match it, only its secret fields are replaced, and its binding and policy stay.",
     "Without --provider, the item holds every request for a human's approval unless the human lets reads through on the page.",
     "Without --provider, --host and --header, a generic, database-url, file or other kind the relay never sends is lease-only: it has no host, the vault never sends it anywhere, and only mehen run delivers it into a process. Use this for secrets such as JWT_SECRET or DATABASE_URL. An api-key, bearer-token, basic-auth, custom-headers or oauth-connection needs --host, and so does --header.",
+    "A google-service-account or github-app is refused (bad_request): minting tokens from one is not built, so nothing could use it.",
     "--home says who the credential belongs to: private (only the owner, the default), project (needs --project or the checkout's mehen.toml) or workspace. The human may change it on the page.",
     "A machine accepted without private credentials (a team's machine, a guest's by default, or a member's whose tick was cleared; private: no in mehen status, scope.privateCredentials false in mehen status --json) cannot ask for a private one: it is refused forbidden (exit 5). Ask with --home project --project <prj_id> for a project the person can edit, or --home workspace if they are a workspace owner or admin, or ask the human to open this machine's page under Machines in the web app and allow it to use their private credentials.",
   ],
@@ -287,7 +288,7 @@ export const connectCommand: Command = {
     ["connect", "google-gmail", "--name", "gmail-personal", "--expect", "you@example.com", "--reason", "read and draft replies in your inbox", "--request-client", "--json"],
     ["connect", "github-oauth", "--name", "github-personal", "--scopes", "read:user,repo", "--reason", "open pull requests for you"],
   ],
-  notes: ["With no OAuth client in the vault it exits 4 (client_missing) with the mehen request to run; --request-client asks for the client first, in one chain.", "--home as for mehen request: private by default, project with --project or the checkout's mehen.toml, or workspace. A machine without private credentials (private: no in mehen status, scope.privateCredentials false in mehen status --json) needs --home project or --home workspace."],
+  notes: ["With no OAuth client in the vault it exits 4 (client_missing) with the mehen request to run; --request-client asks for the client first, in one chain.", "--name naming an existing connection of the same provider reconnects it, pinned to the account it holds. A reconnect keeps the connection's scopes; --scopes adds to them, and never drops one.", "--home as for mehen request: private by default, project with --project or the checkout's mehen.toml, or workspace. A machine without private credentials (private: no in mehen status, scope.privateCredentials false in mehen status --json) needs --home project or --home workspace."],
   async run({ args, json, env }) {
     const name = args.string("name")
     const reason = args.string("reason")
@@ -452,6 +453,13 @@ export function outcomeLines(result: WaitResult, s: Styler, options: { now?: Dat
     const lines = [segments(s.ok("Approved"), `: adoption ${adoption} stored ${made} credential${made === 1 ? "" : "s"}${refused?.length ? `; ${refused.length} refused` : ""}.`)]
     return [...lines, then("mehen adopt apply, then mehen adopt verify")]
   }
+  if (result.kind === "mandate") {
+    const { mandate, state } = result.status
+    // The person's decision, not a promise: the vault checks each request.
+    const checks = " The vault checks each request against it when it is sent."
+    const lead = state === "signed" ? segments(s.ok("Signed"), `: a person signed mandate ${mandate} for this machine.${checks}`) : segments(s.ok("Settled"), `: a person signed mandate ${mandate} for this machine instead, which closed this proposal.${checks}`)
+    return [lead, then(`mehen mandate show ${mandate}, then repeat the requests`)]
+  }
   if (result.kind === "enrol") {
     const { tenant, device } = result.status
     const workspace = (result.status as { workspace?: { slug?: unknown; name?: unknown } }).workspace
@@ -595,7 +603,7 @@ export const SETTLED_CODES: ReadonlySet<CliError["code"]> = new Set<CliError["co
 // the link is built from the id on this vault; check and expiry are what
 // the status says.
 function askFromPending(kind: WaitKind, id: string, value: unknown, vaultUrl: AskVault, by: Ask["requestedBy"]): Ask | null {
-  if (kind === "enrol") return null
+  if (kind === "enrol" || kind === "mandate") return null
   const v = value as { summary?: unknown; bindingCode?: unknown; account?: unknown; expiresAt?: unknown }
   const text = (field: unknown) => (typeof field === "string" ? field : null)
   if (kind === "policy") {
@@ -768,7 +776,7 @@ async function runEnrolmentWait(env: Env, id: string, options: RunWaitOptions): 
 }
 
 export const waitCommand: Command = {
-  summary: "wait for an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_) or bundle (bnd_)",
+  summary: "wait for an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_), adoption batch (adp_), bundle (bnd_) or mandate proposal (mdp_)",
   spec: {
     usage: "mehen wait <id> [--timeout <duration>] [--json [--events]]",
     flags: { timeout: { type: "string" }, events: { type: "boolean" } },
@@ -777,6 +785,7 @@ export const waitCommand: Command = {
   examples: [["wait", "int_3kQ9vXyZ7", "--timeout", "10m"], ["wait", "apr_7Hq2", "--json", "--events"]],
   notes: [
     "A human who has not acted by the timeout is exit 4 (timeout) with the ask handed back: relay it again and wait again. Ctrl-C leaves the link valid.",
+    "A mandate proposal (mdp_, from mehen mandate propose) ends once a person signs it, or signs this machine another mandate first: exit 0 with the mandate; 1 (expired) when it lapsed unsigned.",
     "A bundle (bnd_, from mehen plan submit) ends once none of its requests waits: exit 0 when all were approved, 5 when any was denied, stopped or replaced (the approved ones stay usable, and next.say names them), 4 on timeout.",
   ],
   async run({ args, json, env }) {

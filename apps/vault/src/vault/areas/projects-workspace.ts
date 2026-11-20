@@ -21,6 +21,8 @@ import * as workspaceRuntime from "./workspace-runtime.ts"
 import type { WorkspaceInvocationContext } from "./workspace-runtime.ts"
 import { auditPrivateEvent } from "../audit.ts"
 import { managedDefaultsRevision } from "../managed-platform.ts"
+import { lapseMandatesOnLostManagement, scheduleMandateSweep } from "./mandates-workspace.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 
 export type CheckedCredential = { id: string; slug: string; home: CredentialHome; version?: number; configRevision?: number }
 export type ProtectedSnapshot = {
@@ -85,7 +87,7 @@ export function approvedUseSnapshot(ctx: VaultContext, state: AccessState, princ
 
 // noAsk: where no approved grant matches and a new ask would be opened, the
 // refusal to throw instead (the approval dial's Let it work); nothing is asked.
-export function prepareApprovedUse(ctx: VaultContext, state: AccessState, caller: { principal: AccessPrincipal; workspace: WorkspaceRef; presentation: import("../services.ts").ApprovalPresentation; mode?: ApprovedUseMode; batch: ApprovalAskBatch; noAsk?: () => VaultError }, item: CheckedCredential, context: { project: string; env: string } | null, subject: import("@mehen/protocol/api").ApprovalSubject, approvalId: string | null, now: number): { kind: "approved" | "required"; snapshot: ProtectedSnapshot; approvalId: string; deciders: string[] } {
+export function prepareApprovedUse(ctx: VaultContext, state: AccessState, caller: { principal: AccessPrincipal; workspace: WorkspaceRef; presentation: import("../services.ts").ApprovalPresentation; mode?: ApprovedUseMode; batch: ApprovalAskBatch; session?: string | null; noAsk?: () => VaultError }, item: CheckedCredential, context: { project: string; env: string } | null, subject: import("@mehen/protocol/api").ApprovalSubject, approvalId: string | null, now: number): { kind: "approved" | "required"; snapshot: ProtectedSnapshot; approvalId: string; deciders: string[] } {
   const { snapshot, ask } = approvedUseSnapshot(ctx, state, caller.principal, item, context, now, caller.mode)
   snapshot.requestDigest = digestOf({ subject, presentation: caller.presentation })
   if (!ask) throw new VaultError("bad_request", "This credential needs an approval subject.")
@@ -100,7 +102,7 @@ export function prepareApprovedUse(ctx: VaultContext, state: AccessState, caller
     const checked = approvedUseSnapshot(ctx, live, caller.principal, item, context, ctx.now(), caller.mode)
     checked.snapshot.requestDigest = snapshot.requestDigest
     if (canonicalJson(checked.snapshot) !== canonicalJson(snapshot)) throw new VaultError("conflict", "Access changed; ask for a new approval.")
-    return requestWorkspaceApproval(ctx, live, ask, caller.workspace, subject, caller.presentation, snapshot, ctx.now(), caller.batch)
+    return requestWorkspaceApproval(ctx, live, ask, caller.workspace, subject, caller.presentation, snapshot, ctx.now(), caller.batch, caller.session ?? null)
   })
   const device = state.devices.find((d) => d.id === ask.device)
   const guest = device?.owner.kind === "member" && state.members.some((m) => m.id === device.owner.id && m.standing.effectiveRole === "guest")
@@ -321,6 +323,7 @@ function workspaceProjectOperations(runtime: ProjectRuntime): Record<string, Pro
       ctx.storage.transactionSync(() => {
         const decision = runtime.authorise(ctx, invocation, { type: principal.kind === "device" ? "project.init" : "project.create" }, {}, ctx.now())
         if (principal.kind === "member") runtime.requireStepUp(ctx, decision, { type: "project.create", slug: input.slug, remote: input.remote, environments: input.environments }, invocation)
+        beforeManagementChange(ctx)
         ctx.sql.exec("INSERT INTO projects(id,slug,default_env,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)", id, input.slug, input.defaultEnv, actor(principal), ctx.now(), ctx.now())
         if (remote !== null) ctx.sql.exec("INSERT INTO remotes(remote,project) VALUES(?,?)", remote, id)
         for (const e of envs) ctx.sql.exec("INSERT INTO environments(project,name,protected,fences,four_eyes) VALUES(?,?,?,'[]',?)", id, e.name, e.protected ? 1 : 0, e.fourEyes ? 1 : 0)
@@ -393,7 +396,14 @@ function workspaceProjectOperations(runtime: ProjectRuntime): Record<string, Pro
         const oldTerms = old ? { level: old.level, protected: old.protected, expiresAt: old.expiresAt } : null
         if (canonicalJson(oldTerms) !== canonicalJson(input.before)) throw new VaultError("conflict", "The expected state changed.")
         runtime.requireStepUp(ctx, decision, { type: "project.share", ...input }, invocation)
+        // A manage share that expired before the sweep came to it lapses
+        // first, so granting it again does not restore cover.
+        beforeManagementChange(ctx)
         runtime.setProjectShare(ctx, input.after ? { id: old?.id ?? randomId("shr"), project: input.project, subject: input.subject, ...input.after } : null, old)
+        // Management of the project's credentials' home taken away lapses
+        // the mandates its holders signed, for good.
+        lapseMandatesOnLostManagement(ctx, state, runtime.accessState(ctx), "share")
+        scheduleMandateSweep(ctx)
         runtime.bumpAccessRevision(ctx)
         staleWorkspaceConsent(ctx, runtime.accessState(ctx))
         ctx.audit({ actor: actor(principal), action: input.after ? "project.share" : "project.unshare", target: input.project, detail: { subject: input.subject, before: input.before, after: input.after } })
@@ -430,6 +440,7 @@ function workspaceProjectOperations(runtime: ProjectRuntime): Record<string, Pro
         const decision = runtime.authorise(ctx, invocation, { type: "project.delete" }, { project: id }, ctx.now())
         if (state.credentials.some((c) => c.home.kind === "project" && c.home.project === id)) throw new VaultError("conflict", "Delete or re-home this project's credentials before deleting the project.")
         runtime.requireStepUp(ctx, decision, { type: "project.delete", project: id }, invocation)
+        beforeManagementChange(ctx)
         const project = mustProject(ctx, id)
         for (const env of state.projects.find((p) => p.id === id)?.environments ?? []) if (env.protected && env.references.some((r) => r.home.kind === "workspace")) protectedNotice(runtime, ctx, invocation, principal, project, env.name, ["project_deleted"])
         for (const share of state.shares.filter((s) => s.project === id)) runtime.setProjectShare(ctx, null, share)

@@ -40,5 +40,6 @@ export const gitbook: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "GITBOOK_TOKEN",
   fields: { key: { label: "API token" } },
 }

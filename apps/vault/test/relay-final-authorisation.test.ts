@@ -8,6 +8,7 @@ import { setUpstreamFetch } from "../src/relay/upstream.ts"
 import { freshTenant, testDevice } from "./helpers.ts"
 import { POLICY_DEVICE, registerPolicyDevice } from "./policy-fixtures.ts"
 import { credentialInput } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 afterEach(() => setUpstreamFetch(null))
 const request = { item: "final-key", method: "GET", url: "https://api.example.com/test", headers: [] }
 describe("relay final authorisation and its honest limit", () => {
@@ -94,7 +95,7 @@ for (const race of ["freeze", "suspended-owner"] as const) it(`rechecks ${race} 
     const wrapped={...ctx,async openField(ref:Parameters<typeof ctx.openField>[0],sealed:Parameters<typeof ctx.openField>[1]){
       const value=await ctx.openField(ref,sealed);opens++
       if(race === "freeze")setSetting(ctx,"frozen",true)
-      else ctx.sql.exec("UPDATE members SET status='suspended' WHERE id='mem_member'")
+      else fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE id='mem_member'")
       return value
     }}
     await expect(authoriseWorkspaceRelay(wrapped,devicePrincipal(),request,await deviceInvocation(ctx))).rejects.toMatchObject(race === "freeze"?{code:"frozen",message:"This workspace is frozen."}:{code:"not_found",message:'No credential called "final-key".'})

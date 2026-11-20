@@ -28,21 +28,54 @@ const proposalsSent = () => vault.seen.filter((s) => s.path === "/v1/mandates/pr
 const propose = (...extra: string[]) => runJv(["mandate", "propose", "--note", "Nightly triage", ...extra], env)
 const created = () => vault.overrides.set("POST /v1/mandates/proposals", () => Response.json(mandateCreated(vault.url), { status: 201 }))
 
-test("propose with only a note asks for what this machine asked for, at the low defaults, hands over the sign page and exits 0; nothing goes in the ask ledger", async () => {
+test("propose with only a note asks for what this machine asked for, at the low defaults, hands over the sign page and exits 0; the ask ledger records it for mehen wait", async () => {
   created()
   const result = await propose("--json")
   expect(result.code).toBe(EXIT.ok)
   expect(vault.seen.some((s) => s.method === "GET" && s.path === "/v1/mandates/asked")).toBe(true)
   expect(proposalsSent()).toEqual([{ terms: { items: ["github-work", "linear-work"], classes: ["change", "read", "send"], caps: { read: 500, change: 100, send: 10, delete: 0 }, ttlDays: 30, schedule: null, note: "Nightly triage" }, reason: "Nightly triage" }])
   const url = `${vault.url}/w/mock-space/sign-mandate?proposal=mdp_new`
-  expect(json(result)).toMatchObject({ proposal: "mdp_new", url, warning: null, ask: { kind: "mandate", id: "mdp_new", url, title: "Trust this machine", wait: null }, next: { url, command: "mehen mandate ls" } })
+  expect(json(result)).toMatchObject({ proposal: "mdp_new", url, warning: null, ask: { kind: "mandate", id: "mdp_new", url, title: "Trust this machine", wait: "mehen wait mdp_new --timeout 60 --json" }, next: { url, command: "mehen wait mdp_new --timeout 60 --json" } })
   expect((json(result).ask as { what: string }).what).toBe("Let test-machine read, change and send with github-work and linear-work without asking you, for 30 days, at most 500 reads, 100 changes and 10 sends a day: Nightly triage")
-  expect(await readLedger(vault.slotDir(dir.path), vault.ledgerScope())).toEqual([])
+  expect((await readLedger(vault.slotDir(dir.path), vault.ledgerScope())).map((e) => e.ask)).toMatchObject([{ kind: "mandate", id: "mdp_new", url }])
   const human = await propose()
   expect(human.code).toBe(EXIT.ok)
   expect(human.stdout).toContain(`open:    ${url}`)
-  expect(human.stdout).toContain("then:    mehen mandate ls shows it again while it is open, and the mandate once it is signed")
+  expect(human.stdout).toContain("then:    mehen wait mdp_new --timeout 60 waits until a person signs it; mehen mandate ls shows it again while it is open")
   expect(human.stdout).not.toContain("already waiting")
+})
+
+test("with two workspaces and nothing selecting one, mehen wait mdp_ finds the one it was proposed in", async () => {
+  const home = await tempDir()
+  try {
+    const root = `${home.path}/.config/mehen`
+    const homeEnv = { HOME: home.path, MEHEN_CONFIG_DIR: "", MEHEN_VAULT_URL: vault.url, TZ: "Etc/UTC" }
+    await vault.enrolSoftware(root, { config: { tenant: "tn_second00000001", workspaceSlug: "second-space", workspaceName: "Second" } })
+    const first = await vault.enrolSoftware(root)
+    created()
+    expect((await runJv(["mandate", "propose", "--note", "Nightly triage", "--workspace", "mock-space", "--json"], homeEnv)).code).toBe(EXIT.ok)
+    vault.overrides.set("GET /v1/mandates/proposals/mdp_new", () => Response.json({ proposal: "mdp_new", state: "signed", mandate: "mdt_m1", expiresAt: "2026-11-15T09:00:00.000Z" }))
+    const before = vault.seen.length
+    const waited = await runJv(["wait", "mdp_new", "--timeout", "0", "--json"], homeEnv)
+    expect(waited.code).toBe(EXIT.ok)
+    expect(json(waited)).toMatchObject({ kind: "mandate", state: "signed", mandate: "mdt_m1" })
+    expect(vault.seen.slice(before).map((s) => s.claims.dev)).toEqual([first])
+    // Settled, so no longer recorded: with nothing selecting a workspace, mehen mandate ls is the place to look.
+    const gone = await runJv(["wait", "mdp_new", "--timeout", "0", "--json"], homeEnv)
+    expect(json(gone)).toMatchObject({ error: "not_found", next: { command: "mehen mandate ls --workspace <slug>" } })
+  } finally {
+    await home.remove()
+  }
+})
+
+test("a recorded mandate proposal is in no pending list or count: mehen pending, mehen status and mehen doctor", async () => {
+  created()
+  expect((await propose("--json")).code).toBe(EXIT.ok)
+  expect(await readLedger(vault.slotDir(dir.path), vault.ledgerScope())).toHaveLength(1)
+  expect(json(await runJv(["pending", "--json"], env))).toMatchObject({ pending: [] })
+  expect(json(await runJv(["status", "--json"], env))).toMatchObject({ workspaces: [{ check: { ok: true, status: { pending: 0 } } }] })
+  const doctor = json(await runJv(["doctor", "--json"], env)) as { workspaces: { checks: { check: string; status: string }[] }[] }
+  expect(doctor.workspaces[0]?.checks.find((c) => c.check === "pending")).toMatchObject({ status: "ok" })
 })
 
 test("propose with the same terms as an open proposal hands back that link with existing, says so and exits 0", async () => {
@@ -50,7 +83,7 @@ test("propose with the same terms as an open proposal hands back that link with 
   const result = await propose("--json")
   expect(result.code).toBe(EXIT.ok)
   const url = `${vault.url}/w/mock-space/sign-mandate?proposal=mdp_new`
-  expect(json(result)).toMatchObject({ proposal: "mdp_new", url, existing: true, next: { url, command: "mehen mandate ls", say: expect.stringContaining("These terms are already waiting for the person to sign.") } })
+  expect(json(result)).toMatchObject({ proposal: "mdp_new", url, existing: true, next: { url, command: "mehen wait mdp_new --timeout 60 --json", say: expect.stringContaining("These terms are already waiting for the person to sign.") } })
   const human = await propose()
   expect(human.code).toBe(EXIT.ok)
   expect(human.stdout.split("\n")[0]).toBe("These terms are already waiting for the person to sign; this is the same link.")
@@ -241,7 +274,7 @@ test("with mandates off, every action says so in one line and not to propose aga
     expect(human.stderr).toContain("do not propose a mandate again")
   }
   vault.overrides.set("GET /v1/mandates/mdt_gone", () => vaultError("not_found", "No such mandate."))
-  expect(json(await runJv(["mandate", "show", "mdt_gone", "--json"], env))).toMatchObject({ error: "not_found", message: "No such mandate." })
+  expect(json(await runJv(["mandate", "show", "mdt_gone", "--json"], env))).toMatchObject({ error: "not_found", message: "No such mandate.", next: { command: "mehen mandate ls" } })
 })
 
 test("ls and show print the machine's own view and nothing more: no signerCurrent, today's counts against the caps", async () => {
@@ -355,6 +388,12 @@ test("an ended mandate links its page to sign it again; ls points at the live on
   vault.overrides.set("GET /v1/mandates", () => Response.json({ mandates: [mandateView()], proposals: [] }))
   const active = await runJv(["mandate", "ls", "--json"], env)
   expect(json(active)).not.toHaveProperty("next")
+})
+
+test("a mandate its machine's revoking ended says so, with no step to sign it again", async () => {
+  vault.overrides.set("GET /v1/mandates/mdt_live", () => Response.json(mandateView({ state: "stopped", endedReason: "revoked" })))
+  expect((await runJv(["mandate", "show", "mdt_live"], env)).stdout).toContain("Ended for good: this machine was revoked.\n")
+  expect(json(await runJv(["mandate", "show", "mdt_live", "--json"], env))).not.toHaveProperty("next")
 })
 
 test("uses follows the cursor to the end, or stops at the first receipt older than --since", async () => {

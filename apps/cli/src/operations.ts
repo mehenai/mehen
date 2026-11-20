@@ -13,6 +13,7 @@ import {
   type IntakeCreated,
   type IntakeStatus,
   type ItemDescription,
+  type ItemConnection,
   type ItemDescriptionPosture,
   type ItemList,
   type ItemSummary,
@@ -22,16 +23,19 @@ import {
   RelayRequest,
   type RelayRequestInput,
 } from "@mehen/protocol/api"
+import type { MandateProposalStatus } from "@mehen/protocol/mandate-terms"
 import type { PolicyProposalStatus, PolicyRuleProposalStatus } from "@mehen/protocol/policy-mode"
 import { type PushDestination, type PushProvider, type PushRecordView, type PushResult, parsePushDestination, pushDestinationWords } from "@mehen/protocol/push"
 import { type AdoptionStatus, AdoptionStatusSchema } from "@mehen/protocol/adopt"
+import type { CredentialHome } from "@mehen/protocol/workspace"
 import { type Bytes, base64UrlEncode } from "@mehen/protocol/bytes"
 import { KINDS, isItemKind, isSlug } from "@mehen/protocol/kinds"
 import { OAUTH_PROVIDERS, type OAuthProviderTemplate, getOAuthProvider, getTemplate } from "@mehen/protocol/templates"
 import type { z } from "zod"
 import { relativeExpiry } from "./ask.ts"
-import { CliError, usageError } from "./errors.ts"
-import { type VaultApi, VaultApiError } from "./vault-api.ts"
+import { CliError, outcomeUnknown, usageError } from "./errors.ts"
+import { MANDATES_OFF_LINE } from "./mandate-operations.ts"
+import { RelayOutcomeUnknownError, type VaultApi, VaultApiError, VaultNetworkError, retrySafeMethod } from "./vault-api.ts"
 
 export function zodMessage(error: z.ZodError): string {
   return error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message)).join("; ")
@@ -99,7 +103,17 @@ function pickDescription(item: ItemDescription): ItemDescription {
     ...(item.policyFloor !== undefined ? { policyFloor: item.policyFloor } : {}),
     ...(item.posture !== undefined ? { posture: pickPosture(item.posture) } : {}),
     ...(item.pushes !== undefined ? { pushes: item.pushes.map(pickPushRecord) } : {}),
+    ...(item.connection !== undefined ? { connection: pickConnection(item.connection) } : {}),
+    ...(item.home !== undefined ? { home: pickHome(item.home) } : {}),
   }
+}
+
+function pickConnection(connection: ItemConnection): ItemConnection {
+  return { scopes: [...connection.scopes], expiresAt: connection.expiresAt, refreshing: connection.refreshing, ...(connection.client !== undefined ? { client: connection.client } : {}), ...(connection.reconnect === "platform" ? { reconnect: "platform" as const } : {}) }
+}
+
+function pickHome(home: CredentialHome): CredentialHome {
+  return home.kind === "member" ? { kind: "member", member: home.member } : home.kind === "project" ? { kind: "project", project: home.project } : { kind: "workspace" }
 }
 
 // How careful the credential is, as the vault tells this machine: the level,
@@ -432,7 +446,7 @@ export async function adoptionStatus(api: VaultApi, id: string): Promise<Adoptio
   }
 }
 
-export type WaitKind = "intake" | "approval" | "connect" | "enrol" | "policy" | "adoption" | "bundle"
+export type WaitKind = "intake" | "approval" | "connect" | "enrol" | "policy" | "adoption" | "bundle" | "mandate"
 
 export type EnrolActive = Extract<EnrolStatus, { status: "active" }>
 
@@ -444,6 +458,9 @@ export type WaitResult =
   | { kind: "policy"; status: PolicyProposalStatus | PolicyRuleProposalStatus }
   | { kind: "adoption"; status: AdoptionStatus }
   | { kind: "bundle"; status: ApprovalBundleStatus }
+  // Signed, or settled by another mandate signed for this machine first
+  // (state expired, with that mandate).
+  | { kind: "mandate"; status: MandateProposalStatus & { mandate: string } }
 
 const WAIT_PREFIXES: Record<string, { kind: WaitKind; path: string; label: string }> = {
   int: { kind: "intake", path: "/v1/intakes/", label: "Intake" },
@@ -453,19 +470,23 @@ const WAIT_PREFIXES: Record<string, { kind: WaitKind; path: string; label: strin
   enr: { kind: "enrol", path: "/v1/enrol/", label: "Enrolment" },
   adp: { kind: "adoption", path: "/v1/adoptions/", label: "Adoption" },
   bnd: { kind: "bundle", path: "/v1/approvals/bundles/", label: "Bundle" },
+  mdp: { kind: "mandate", path: "/v1/mandates/proposals/", label: "Mandate proposal" },
 }
+
+// The id prefixes mehen wait follows, for the guide's test.
+export const WAIT_ID_PREFIXES = Object.keys(WAIT_PREFIXES)
 
 export type WaitTarget = { kind: WaitKind; path: string; label: string }
 
 export function waitTarget(id: string): WaitTarget {
-  const match = /^(int|apr|con|enr|pol|adp|bnd)_[A-Za-z0-9_-]{1,60}$/.exec(id)
+  const match = /^(int|apr|con|enr|pol|adp|bnd|mdp)_[A-Za-z0-9_-]{1,60}$/.exec(id)
   const target = match ? WAIT_PREFIXES[match[1] as string] : undefined
-  if (!target) throw usageError(`${JSON.stringify(id)} is not an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_), adoption (adp_) or bundle (bnd_) id.`, "mehen wait --help")
+  if (!target) throw usageError(`${JSON.stringify(id)} is not an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_), adoption (adp_), bundle (bnd_) or mandate proposal (mdp_) id.`, "mehen wait --help")
   return { ...target, path: target.path + id }
 }
 
 export function isWaitKind(value: unknown): value is WaitKind {
-  return value === "intake" || value === "approval" || value === "connect" || value === "enrol" || value === "policy" || value === "adoption" || value === "bundle"
+  return value === "intake" || value === "approval" || value === "connect" || value === "enrol" || value === "policy" || value === "adoption" || value === "bundle" || value === "mandate"
 }
 
 // Resolves after ms, or at once when the signal aborts (the caller then
@@ -502,6 +523,7 @@ const GENERIC_REISSUE: Record<WaitKind, string> = {
   adoption: "mehen adopt submit",
   enrol: "mehen enrol --workspace <slug>",
   bundle: "mehen plan submit <plan.json>",
+  mandate: "mehen mandate propose --items <slug> --classes <class> --note <why>",
 }
 
 function policyShow(item: string | undefined): string {
@@ -554,11 +576,29 @@ function settleBundle(id: string, value: unknown): WaitResult | null {
   throw new CliError("expired", message, { say: `${kept}The others expired before a decision; submit a plan of just those to ask again, and share the link sooner.` }, extras)
 }
 
+const MANDATE_ID = /^mdt_[A-Za-z0-9_-]{1,60}$/
+
+// A mandate proposal is done once a person signs it, or signs this machine
+// another mandate first, which settles it; one that expired with no
+// mandate signed changed nothing.
+function settleMandate(id: string, value: unknown): WaitResult | null {
+  const v = value as Partial<MandateProposalStatus>
+  if (v.proposal !== id || typeof v.expiresAt !== "string" || !(v.mandate === null || (typeof v.mandate === "string" && MANDATE_ID.test(v.mandate)))) {
+    throw new CliError("internal", `The vault's status for ${id} is not one mehen can read.`, { say: "Check the vault URL and try again; if it keeps failing, report it with this message." })
+  }
+  const status = { proposal: id, state: v.state, mandate: v.mandate, expiresAt: v.expiresAt }
+  if (v.state === "open") return null
+  if ((v.state === "signed" || v.state === "expired") && status.mandate) return { kind: "mandate", status: { ...status, state: v.state, mandate: status.mandate } }
+  if (v.state === "expired") throw new CliError("expired", `Mandate proposal ${id} expired before anyone signed it; nothing changed.`, { command: GENERIC_REISSUE.mandate, say: "Carry on asking for each request; propose again, with only what the asks name, if more asks like these will follow." }, { id, expiresAt: status.expiresAt })
+  throw unexpected(id, v.state)
+}
+
 // Every outcome as a sentence. Returns the result once decided, throws for
 // a decision against (the error's message is the sentence, its next the
 // way on), and null while a human still has to act.
 export function settle(kind: WaitKind, id: string, value: unknown, ledger: WaitLedger = NO_LEDGER): WaitResult | null {
   if (kind === "bundle") return settleBundle(id, value)
+  if (kind === "mandate") return settleMandate(id, value)
   const status = (value as { status?: unknown }).status
   const again = { command: `mehen wait ${id}` }
   const reissue = ledger.reissueCommand ?? GENERIC_REISSUE[kind]
@@ -698,6 +738,10 @@ export type WaitOptions = {
   signal?: AbortSignal
 }
 
+// A long poll that fails after being held this long was dropped, not
+// refused: the vault answered the connection and then lost it.
+const DROPPED_POLL_MS = 1_000
+
 // The first poll answers at once (so the link's expiry and a settled state
 // show without delay); later ones long-poll. An enrolment status route does
 // not long-poll, so those are spaced by intervalMs.
@@ -721,7 +765,11 @@ export async function waitFor(api: VaultApi, id: string, options: WaitOptions): 
     } catch (error) {
       cancel?.throwIfAborted()
       if (pollTimeout?.aborted) break
-      throw error
+      // A held poll whose connection dropped (an idle timeout at a server or
+      // proxy): poll again, with a proof of its own, never the spent one.
+      // Never an outcome mehen cannot know: that is a write's, never redialled.
+      if (longPoll && error instanceof VaultNetworkError && !(error instanceof RelayOutcomeUnknownError) && Date.now() - started >= DROPPED_POLL_MS && Date.now() < deadline) continue
+      throw error instanceof VaultApiError && error.body.error === "not_found" ? waitNotFound(target, id, error) : error
     }
     const result = settle(target.kind, id, value, options.ledger)
     if (result) return result
@@ -745,6 +793,22 @@ export async function waitFor(api: VaultApi, id: string, options: WaitOptions): 
     command: `mehen wait ${id}`,
     say: "A human has not acted yet; wait again, and remind them of the link if needed.",
   })
+}
+
+// An id the vault does not know, in the workspace asked: a typo, another
+// workspace's ask or one long gone. mehen pending lists this machine's
+// open asks, and mehen mandate ls its mandate proposals; a vault without
+// the route (or, for a mandate proposal, without mandates) says so instead.
+function waitNotFound(target: WaitTarget, id: string, error: VaultApiError): CliError {
+  const context = error.context ? { context: error.context } : {}
+  if (error.body.message === "No such route.") {
+    if (target.kind === "mandate") return new CliError("not_found", MANDATES_OFF_LINE, { say: "Carry on asking for each request as before; do not propose a mandate again." }, context)
+    return new CliError("not_found", `This vault cannot be asked about ${id}: it is older than this kind of ask.`, { command: "mehen pending", say: "List what is still waiting for a human with mehen pending." }, context)
+  }
+  if (target.kind === "mandate") {
+    return new CliError("not_found", `No such ${target.label.toLowerCase()} ${id} in this workspace.`, { command: "mehen mandate ls", say: "`mehen mandate ls` lists this machine's open mandate proposals in this workspace; wait on the id it shows, naming another workspace with --workspace when there are several." }, context)
+  }
+  return new CliError("not_found", `No such ${target.label.toLowerCase()} ${id} in this workspace.`, { command: "mehen pending", say: "mehen pending lists this machine's open asks, in every workspace; wait on the id it shows, naming its workspace with --workspace when there are several." }, context)
 }
 
 // "Approval apr_x is still waiting for a human after 10 min; the link
@@ -837,6 +901,113 @@ export type UpstreamHead = {
   headers: Record<string, string>
 }
 
+// A WWW-Authenticate header's challenges (RFC 7235): each a scheme, then
+// a token68 (with its "=" padding) or auth-params whose values are a token
+// or a quoted string. Text inside a quoted value is never read as a scheme
+// or a parameter.
+type Challenge = { scheme: string; params: Map<string, string> }
+const AUTH_TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+function challengesOf(header: string): Challenge[] {
+  const scheme = new RegExp(`^${AUTH_TOKEN}`), param = new RegExp(`^(${AUTH_TOKEN})\\s*=\\s*`)
+  // name=value, a value being a quoted string or a token: "YIIF==" is not one.
+  const paramWithValue = new RegExp(`^${AUTH_TOKEN}\\s*=\\s*(?:"|${AUTH_TOKEN})`)
+  const token68 = /^[A-Za-z0-9\-._~+/]+=*(?=\s*(,|$))/
+  const challenges: Challenge[] = []
+  let rest = header
+  const skip = (re: RegExp) => { rest = rest.replace(re, "") }
+  while (true) {
+    skip(/^[\s,]+/)
+    const name = scheme.exec(rest)?.[0]
+    if (!name) break
+    rest = rest.slice(name.length)
+    const challenge: Challenge = { scheme: name.toLowerCase(), params: new Map() }
+    challenges.push(challenge)
+    skip(/^\s*/)
+    // A token68 stands alone; anything else that follows the scheme is params.
+    const opaque = token68.exec(rest)?.[0]
+    if (opaque !== undefined && !paramWithValue.test(rest)) {
+      rest = rest.slice(opaque.length)
+      continue
+    }
+    for (let m = paramWithValue.test(rest) ? param.exec(rest) : null; m !== null; m = param.exec(rest)) {
+      rest = rest.slice(m[0].length)
+      let value = ""
+      if (rest.startsWith('"')) {
+        let i = 1
+        for (; i < rest.length && rest[i] !== '"'; i++) value += rest[i] === "\\" && i + 1 < rest.length ? rest[++i] : rest[i]
+        rest = rest.slice(i + 1)
+      } else {
+        value = scheme.exec(rest)?.[0] ?? ""
+        rest = rest.slice(value.length)
+      }
+      challenge.params.set(m[1]!.toLowerCase(), value)
+      // A comma before another name=value continues this challenge; before
+      // anything else, the next challenge begins.
+      skip(/^\s*/)
+      if (!rest.startsWith(",") || !paramWithValue.test(rest.replace(/^[\s,]+/, ""))) break
+      skip(/^[\s,]+/)
+    }
+  }
+  return challenges
+}
+
+// The scopes an upstream's 403 says it needs (RFC 6750: a Bearer challenge
+// whose error is exactly insufficient_scope, whichever Bearer challenge
+// that is), or null when none says the token's scope was too narrow.
+export function insufficientScope(head: Pick<UpstreamHead, "status" | "headers">): string[] | null {
+  if (head.status !== 403) return null
+  const narrow = challengesOf(head.headers["www-authenticate"] ?? "").find((c) => c.scheme === "bearer" && c.params.get("error") === "insufficient_scope")
+  if (narrow === undefined) return null
+  return (narrow.params.get("scope") ?? "").split(/\s+/).filter(Boolean)
+}
+
+// The route an agent takes when the upstream refused the credential itself:
+// a 401 (revoked or expired), or a 403 saying the scope is too narrow. A key
+// is replaced by a rotation; a connection is reconnected, with the scopes
+// the upstream named (a reconnect keeps the ones it holds).
+// Each names the credential's home (and a connection its OAuth client), as
+// a rotation or reconnect must ask for the one it has. A connection only
+// its platform reconnects (a managed workspace's, or a custom provider's),
+// or whose OAuth client the reader may not see, gets no command.
+export function credentialRejectedHint(head: Pick<UpstreamHead, "status" | "headers">, item: Pick<ItemDescription, "slug" | "kind" | "provider" | "home" | "connection"> | null): string | null {
+  if (item === null) return null
+  const scopes = insufficientScope(head)
+  if (head.status !== 401 && scopes === null) return null
+  const slug = shellWord(item.slug), why = "'<why>'"
+  const home = item.home === undefined ? "" : ` ${homeWords(item.home.kind === "member" ? { home: "private" } : item.home.kind === "project" ? { home: "project", project: item.home.project } : { home: "workspace" }).map(shellWord).join(" ")}`
+  if (item.kind === "oauth-connection") {
+    // A managed workspace's connection, or one made with a custom provider
+    // (which mehen connect cannot name), only its platform reconnects.
+    if (item.connection?.reconnect === "platform" || item.provider === null) {
+      if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. The platform reconnects this account; mehen show ${slug} lists the scopes it holds.`
+      return `The service rejected ${item.slug}'s sign-in. The platform reconnects this account.`
+    }
+    // Without its OAuth client, mehen connect would use the provider's
+    // default client rather than the connection's own: the page reconnects it.
+    if (item.connection?.client === undefined) {
+      if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. Ask a human to reconnect it with more from its page in the vault; mehen show ${slug} lists the scopes it holds.`
+      return `The service rejected ${item.slug}'s sign-in. If it was revoked, ask a human to reconnect it from its page in the vault.`
+    }
+    const connect = `mehen connect ${shellWord(item.provider)} --client ${shellWord(item.connection.client)} --name ${slug}`
+    if (scopes !== null) return `The service said ${item.slug} lacks a scope it needs. Ask a human to reconnect it with more: ${connect}${scopes.length ? ` --scopes ${shellWord(scopes.join(","))}` : " --scopes <scope>"} --reason ${why}${home}; mehen show ${slug} lists the scopes it holds.`
+    return `The service rejected ${item.slug}'s sign-in. If it was revoked, ask a human to reconnect it: ${connect} --reason ${why}${home}.`
+  }
+  if (scopes !== null) return `The service said ${item.slug} lacks a permission it needs. Ask a human for a credential that has it; replacing ${item.slug}'s value keeps its name: mehen request ${shellWord(item.kind)} --name ${slug} --reason ${why}${home}.`
+  return `The service rejected ${item.slug}. If its value was revoked or expired, ask a human to replace it: mehen request ${shellWord(item.kind)} --name ${slug}${item.provider ? ` --provider ${shellWord(item.provider)}` : ""} --reason ${why}${home}.`
+}
+
+// credentialRejectedHint for a relayed response, reading the item only when
+// the upstream refused it; never for a run, which names no one item.
+export async function rejectedHint(api: VaultApi, head: UpstreamHead, item: string | null, signal?: AbortSignal): Promise<string | null> {
+  if (item === null || (head.status !== 401 && insufficientScope(head) === null)) return null
+  try {
+    const described = pickDescription(await api.request<ItemDescription>("GET", `/v1/items/${encodeURIComponent(item)}`, undefined, signal ? { signal } : {}))
+    return credentialRejectedHint(head, described)
+  } catch {
+    return null
+  }
+}
+
 export function upstreamHead(response: Response): UpstreamHead {
   const headers: Record<string, string> = {}
   response.headers.forEach((value, name) => {
@@ -846,21 +1017,38 @@ export function upstreamHead(response: Response): UpstreamHead {
 }
 
 // Reads up to `limit` bytes of a body and cancels the rest.
-export async function readLimited(response: Response, limit: number): Promise<{ bytes: Bytes; truncated: boolean; size: number | null }> {
+// An answer to a write that breaks off while it is read: the request was
+// sent, so it may have taken effect.
+export function answerBrokeOff(error: unknown): CliError {
+  return outcomeUnknown(`The answer to the request broke off while mehen read it (${error instanceof Error ? error.message : String(error)}), so only part of it arrived. The request was sent and may have taken effect.`)
+}
+// A chunk of an answer's body; for a write, a read that fails is
+// answerBrokeOff.
+export async function readChunk(reader: ReadableStreamDefaultReader<Uint8Array>, method: string): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
+  try {
+    return await reader.read()
+  } catch (error) {
+    if (!retrySafeMethod(method)) throw answerBrokeOff(error)
+    throw error
+  }
+}
+
+export async function readLimited(response: Response, limit: number, method = "GET"): Promise<{ bytes: Bytes; truncated: boolean; size: number | null }> {
   const chunks: Bytes[] = []
   let total = 0
   let truncated = false
   if (response.body) {
     const reader = response.body.getReader()
     for (;;) {
-      const { done, value } = await reader.read()
+      const { done, value } = await readChunk(reader, method)
       if (done) break
       const chunk = new Uint8Array(value)
       if (total + chunk.length > limit) {
         chunks.push(chunk.subarray(0, limit - total))
         total = limit
         truncated = true
-        await reader.cancel()
+        // Best effort: the part kept and its warning stand either way.
+        await reader.cancel().catch(() => {})
         break
       }
       chunks.push(chunk)
@@ -918,14 +1106,22 @@ export function selectJson(value: unknown, path: readonly (string | number)[]): 
   return { found: true, value: current }
 }
 
-// The upstream body parsed as JSON for --select, or a usage error saying the
-// request was sent but the body is not JSON.
-export function parseJsonBody(bytes: Bytes, status: number, { option, help }: SelectOption = FETCH_SELECT): unknown {
+// What --select picks from the upstream body. A body that is not JSON has
+// nothing to pick from: for a read, a usage error saying to run it again
+// without the option; for a write, which a second send could repeat, the
+// body as it came with a note, never advice to send it again.
+export type SelectedBody = { json: true; picked: Selected } | { json: false; note: string }
+
+export function selectBody(bytes: Bytes, status: number, method: string, path: readonly (string | number)[], { option, help }: SelectOption = FETCH_SELECT): SelectedBody {
+  let value: unknown
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))
   } catch {
-    throw usageError(`The upstream answered ${status} with a body that is not JSON, so ${option} has nothing to pick from. The request was sent; run it again without ${option} to see the body.`, help)
+    const notJson = `The upstream answered ${status} with a body that is not JSON, so ${option} has nothing to pick from.`
+    if (retrySafeMethod(method)) throw usageError(`${notJson} The request was sent; run it again without ${option} to see the body.`, help)
+    return { json: false, note: `${notJson} The request was sent and may have taken effect: here is the body as it came. Do not send it again to see it.` }
   }
+  return { json: true, picked: selectJson(value, path) }
 }
 
 export function bodyForJson(bytes: Bytes): { body: string } | { bodyBase64: string } {

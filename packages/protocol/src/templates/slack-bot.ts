@@ -78,6 +78,7 @@ export const slackBot: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "SLACK_BOT_TOKEN",
   fields: { key: { label: "Bot token", pattern: "^xoxb-" } },
   prefixes: ["xoxb-"],
 }

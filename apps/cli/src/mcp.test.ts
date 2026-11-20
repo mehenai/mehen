@@ -10,6 +10,7 @@ import { jwkThumbprint } from "@mehen/protocol/proof"
 import { OAUTH_PROVIDERS, TEMPLATES } from "@mehen/protocol/templates"
 import { type AskUrl, approvalAsk, askUrl, enrolAsk, intakeAsk, withContext } from "./ask.ts"
 import { readConfig } from "./config.ts"
+import { OUTCOME_UNKNOWN_SAY } from "./errors.ts"
 import { createDeviceKey } from "./device-key.ts"
 import { pendingSlotPath } from "./home.ts"
 import { addLedgerEntry, readLedger } from "./ledger.ts"
@@ -480,22 +481,34 @@ describe("mehen mcp tools", () => {
     await addLedgerEntry(vault.slotDir(dir.path), scope(), { ask: approvalAsk({ id: "apr_7Hq2", url: vaultLink("/a/apr_7Hq2"), summary: "Send an email to sam@example.com", item: "gmail-alex", bindingCode: "K7Q2MX", expiresAt: inMinutes(50), requestedBy: by }) })
     const made = await callTool("vault_request", { kind: "api-key", name: "openai-new", reason: "summarise mail", provider: "openai" })
     const intake = (made.structuredContent as { intake: string }).intake
-    const result = await callTool("vault_pending", {})
-    expect(result.isError).toBe(false)
-    const pending = (result.structuredContent as { pending: { id: string; kind: string }[] }).pending
-    expect(pending.map((a) => [a.kind, a.id])).toEqual([["approval", "apr_7Hq2"], ["intake", intake]])
-    expectLinksMatchAsks(result)
-    expect(text(result)).toContain("Human needed: approve a request")
-    expect(text(result)).toContain('  then:    vault_wait { "id": "apr_7Hq2" }')
-    expect(text(result)).toContain(`  then:    vault_wait { "id": "${intake}" }`)
-    // The vault's own list is merged in when the server has it.
-    vault.pending = [{ kind: "connect", id: "con_srv", url: `${vault.url}/w/mock-space/c/con_srv`, title: "Connect gmail-work to Gmail", expiresAt: null, requestedBy: { device: "d", deviceName: "sam-mac-mini", session: "pi-4f2a" }, item: "gmail-work", provider: "google-gmail", account: "work@example.com" }]
+    // With no list from the vault (404) nothing is confirmed: both are stale,
+    // with no link or block to hand over.
+    const unconfirmed = await callTool("vault_pending", {})
+    expect((unconfirmed.structuredContent as { pending: { id: string; stale?: true }[] }).pending.map((a) => [a.id, a.stale])).toEqual([["apr_7Hq2", true], [intake, true]])
+    expect(resourceLinks(unconfirmed)).toEqual([])
+    expect(text(unconfirmed)).not.toContain("Human needed")
+    const requested = { device: "d", deviceName: "test-box", session: "pi-1" }
+    vault.pending = [
+      { kind: "approval", id: "apr_7Hq2", url: `${vault.url}/w/mock-space/a/apr_7Hq2`, title: "Send an email to sam@example.com", expiresAt: inMinutes(50), requestedBy: requested, item: "gmail-alex", bindingCode: "K7Q2MX" },
+      { kind: "intake", id: intake, url: `${vault.url}/w/mock-space/i/${intake}`, expiresAt: inMinutes(50), requestedBy: requested, item: "openai-new", provider: "openai", kindRequested: "api-key" },
+    ]
     try {
+      const result = await callTool("vault_pending", {})
+      expect(result.isError).toBe(false)
+      const pending = (result.structuredContent as { pending: { id: string; kind: string }[] }).pending
+      expect(pending.map((a) => [a.kind, a.id])).toEqual([["approval", "apr_7Hq2"], ["intake", intake]])
+      expectLinksMatchAsks(result)
+      expect(text(result)).toContain("Human needed: approve a request")
+      expect(text(result)).toContain('  then:    vault_wait { "id": "apr_7Hq2" }')
+      expect(text(result)).toContain(`  then:    vault_wait { "id": "${intake}" }`)
+      // An ask the vault's list leaves out may be settled: stale, never handed over.
+      vault.pending = [{ kind: "connect", id: "con_srv", url: `${vault.url}/w/mock-space/c/con_srv`, title: "Connect gmail-work to Gmail", expiresAt: null, requestedBy: { device: "d", deviceName: "sam-mac-mini", session: "pi-4f2a" }, item: "gmail-work", provider: "google-gmail", account: "work@example.com" }]
       const merged = await callTool("vault_pending", {})
-      const all = (merged.structuredContent as { pending: { id: string; requestedBy: unknown }[] }).pending
-      expect(all.map((a) => a.id)).toEqual(["con_srv", "apr_7Hq2", intake])
+      const all = (merged.structuredContent as { pending: { id: string; requestedBy: unknown; stale?: true }[] }).pending
+      expect(all.map((a) => [a.id, a.stale])).toEqual([["con_srv", undefined], ["apr_7Hq2", true], [intake, true]])
       expect(all[0]?.requestedBy).toEqual({ device: "sam-mac-mini", session: "pi-4f2a" })
-      expectLinksMatchAsks(merged)
+      expect(resourceLinks(merged).map((l) => l.uri)).toEqual([`${vault.url}/w/mock-space/c/con_srv`])
+      expect(text(merged)).not.toContain("apr_7Hq2")
     } finally {
       vault.pending = null
     }
@@ -510,7 +523,7 @@ describe("mehen mcp tools", () => {
       const expected = withContext(intakeAsk({ id: "int_workspace", url: vaultLink("/i/int_workspace"), name: "workspace-key", kind: "api-key", provider: "openai", reason: null, expiresAt: "2030-01-01T00:00:00.000Z", requestedBy: { device: "workspace-machine", session: null } }), { origin: vault.url, workspace: MOCK_WORKSPACE, device: vault.lastDevice! })
       expect(result.isError).toBe(false)
       expect(result.structuredContent).toEqual({ pending: [expected], notices: [fixture.machine] })
-      expect(text(result)).toContain(`Machine added: workspace-machine (${vault.lastDevice}) in Mock Space (mock-space) at ${vault.url}. Open ${fixture.machine.url} to review this machine.`)
+      expect(text(result)).toContain(`Machine added on 2026-10-27: this machine, workspace-machine (${vault.lastDevice}), in Mock Space (mock-space) at ${vault.url}. Open ${fixture.machine.url} to review it.`)
       expect(text(result)).not.toMatch(/foreign|int_stopped|unknown|int_other|dev_other/)
       expectLinksMatchAsks(result)
       expect(resourceLinks(result)).toHaveLength(1)
@@ -691,6 +704,16 @@ describe("mehen mcp tools", () => {
     expect(result.structuredContent).toMatchObject({ status: 202, item: "openai-personal (alex)", truncated: false, headers: { "x-id": "1" }, body: JSON.stringify({ got: "aGk" }) })
   })
 
+  test("vault_fetch adds a hint when the service rejects the credential, and none for a status that says nothing about it", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.relay = () => new Response("bad key", { status: 401, headers: { [UPSTREAM_HEADER]: "1" } })
+    const rejected = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/models" })
+    expect(rejected.isError).toBe(false)
+    expect(rejected.structuredContent).toMatchObject({ status: 401, hint: expect.stringContaining("mehen request api-key --name openai-personal --provider openai") })
+    vault.relay = () => new Response("gone", { status: 404, headers: { [UPSTREAM_HEADER]: "1" } })
+    expect((await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/models" })).structuredContent).not.toHaveProperty("hint")
+  })
+
   test("vault_fetch carries rules when standing rules allowed the request, and ignores a malformed Mehen-Rule", async () => {
     await vault.enrolSoftware(dir.path)
     const endsAt = "2027-01-10T14:00:00.000Z"
@@ -734,7 +757,7 @@ describe("mehen mcp tools", () => {
     vault.overrides.set("POST /v1/relay", () => vaultError("approval_required", "This request needs a human's approval.", { next: { url: `${vault.url}/w/mock-space/a/apr_1`, say: "Ask the human." }, approval: "apr_1", ...({ mandateCover: { classes: ["read", "send"], state: "none", mandate: null, url: null } } as object) }))
     const none = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x" })
     const noneText = (none.content as { type: string; text?: string }[])[0]?.text ?? ""
-    expect(noneText).toContain('propose one: vault_mandate { "action": "propose", "classes": ["read", "send"], "note": "<why>" }.')
+    expect(noneText).toContain('propose one for only this credential and these kinds: vault_mandate { "action": "propose", "items": ["openai-personal"], "classes": ["read", "send"], "note": "<why>" }.')
     expect(noneText).not.toContain("mehen mandate propose")
   })
 
@@ -882,12 +905,67 @@ describe("mehen mcp tools", () => {
     expect(String((notJson.structuredContent as { message: string }).message)).toContain("so select has nothing to pick from")
   })
 
-  test("vault_fetch with timeoutSeconds stops waiting with a network error", async () => {
+  test("vault_fetch: an unmarked 502 or 504 after a write is outcome_unknown with no retry advice; after a read it stays retryable", async () => {
+    await vault.enrolSoftware(dir.path)
+    for (const status of [502, 504]) {
+      vault.relay = () => new Response("Gateway", { status })
+      const write = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", body: "{}" })
+      expect(write.isError).toBe(true)
+      expect(write.structuredContent).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+      expect(JSON.stringify(write.structuredContent)).not.toMatch(/[Rr]etry/)
+      const read = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/x" })
+      expect(read.structuredContent).toMatchObject({ error: "internal", next: { say: expect.stringContaining("Retry once") } })
+    }
+  })
+
+  test("vault_fetch select on a write whose body is not JSON gives the body as it came and never says to send it again", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.relay = () => new Response("<html>created</html>", { status: 201, headers: { [UPSTREAM_HEADER]: "1" } })
+    const result = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/apps", body: "{}", select: "data" })
+    expect(result.isError).toBe(false)
+    expect(result.structuredContent).toMatchObject({ status: 201, body: "<html>created</html>", selected: null, found: false, note: expect.stringContaining("Do not send it again") })
+    expect(JSON.stringify(result)).not.toMatch(/run it again|[Rr]etry/)
+    vault.relay = () => new Response("<html>", { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
+    const read = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/apps", select: "data" })
+    expect(read.structuredContent).toMatchObject({ error: "usage", message: expect.stringContaining("run it again without select") })
+  })
+
+  test("vault_fetch: a write whose answer breaks off mid-stream is outcome_unknown, with select or without", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.relay = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode(`{"id":`)) },
+      async pull(controller) { await Bun.sleep(100); controller.error(new Error("relay response too large")) },
+    }), { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
+    for (const select of [{}, { select: "id" }]) {
+      const write = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", body: "{}", ...select })
+      expect(write.isError).toBe(true)
+      expect(write.structuredContent).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+    }
+  })
+
+  test("vault_fetch: a write's answer over 256 KiB says the body was cut and that sending it again will not recover it", async () => {
+    await vault.enrolSoftware(dir.path)
+    vault.relay = () => new Response("x".repeat(300 * 1024), { status: 201, headers: { [UPSTREAM_HEADER]: "1", "content-length": String(300 * 1024) } })
+    const write = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/x", body: "{}" })
+    const note = String((write.structuredContent as { note: string }).note)
+    expect(write.structuredContent).toMatchObject({ status: 201, truncated: true })
+    expect(note).toContain("Sending the request again will not recover the rest")
+    expect(note).toContain("read the result back with a separate read, or ask the person")
+    expect(note).not.toMatch(/pass select|mehen fetch -o/)
+    const read = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/x" })
+    expect(String((read.structuredContent as { note: string }).note)).toContain("pass select")
+  })
+
+  test("vault_fetch with timeoutSeconds stops waiting: a read with a network error safe to resend, a write with outcome_unknown", async () => {
     await vault.enrolSoftware(dir.path)
     vault.relay = () => new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200, headers: { [UPSTREAM_HEADER]: "1" } })
     const result = await callTool("vault_fetch", { item: "openai-personal", method: "GET", url: "https://api.openai.com/v1/slow", timeoutSeconds: 1 })
     expect(result.isError).toBe(true)
-    expect(result.structuredContent).toMatchObject({ error: "network", next: { say: "The request may still have reached the upstream. Check whether it took effect before you send it again, or give `timeoutSeconds` more time." } })
+    expect(result.structuredContent).toMatchObject({ error: "network", next: { say: "A read changes nothing upstream: send it again, or give `timeoutSeconds` more time." } })
+    const write = await callTool("vault_fetch", { item: "openai-personal", method: "POST", url: "https://api.openai.com/v1/slow", body: "{}", timeoutSeconds: 1 })
+    expect(write.isError).toBe(true)
+    expect(write.structuredContent).toMatchObject({ error: "outcome_unknown", next: { say: OUTCOME_UNKNOWN_SAY } })
+    expect(write.structuredContent).not.toHaveProperty("retryAfter")
   })
 
   // An approval-needed result stays an error result: the call did not do

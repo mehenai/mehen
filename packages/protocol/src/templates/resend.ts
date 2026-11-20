@@ -24,6 +24,7 @@ export const resend: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "RESEND_API_KEY",
   fields: { key: { label: "API key", pattern: "^re_" } },
   prefixes: ["re_"],
 }

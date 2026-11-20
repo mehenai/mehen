@@ -47,8 +47,11 @@ const segmentsOf = (path: string): string[] => (path === "/" ? [] : path.slice(1
 // what a destructive mutation is called, and words only a mutation's name
 // uses for the floor's reasons.
 const FIELD_ONLY_FLOOR_WORDS: Partial<Record<keyof typeof POLICY_FLOOR_REASON_WORDS, string[]>> = { credential: ["admin"], persistence: ["subscribe"], money: ["sponsor"] }
+// What a destructive operation is called, in a GraphQL field here and in a
+// path on a service nobody has reviewed (mandateRequestFacts).
+export const POLICY_DESTRUCTIVE_WORDS = ["delete", "remove", "destroy", "archive", "purge", "revoke", "transfer", "trash", "erase", "wipe", "reset", "suspend", "force"] as const
 const FIELD_FLOOR_WORDS: [PolicyRuleRefusal, string[]][] = [
-  ["rule.destructive", ["delete", "remove", "destroy", "archive", "purge", "revoke", "transfer", "trash", "erase", "wipe", "reset", "suspend", "force"]],
+  ["rule.destructive", [...POLICY_DESTRUCTIVE_WORDS]],
   ...(Object.keys(POLICY_FLOOR_REASON_WORDS) as (keyof typeof POLICY_FLOOR_REASON_WORDS)[]).map((reason): [PolicyRuleRefusal, string[]] => [
     `rule.${reason}`, [...POLICY_FLOOR_REASON_WORDS[reason].map((w) => w.replace(/[^a-z]/g, "")), ...(FIELD_ONLY_FLOOR_WORDS[reason] ?? [])],
   ]),
@@ -274,7 +277,7 @@ function ruleShape(request: PolicyRuleRequest): RuleShape {
   return { ok: true, queryNames, graphql: floor.graphqlTerms }
 }
 
-export const holdsLiveKey = (item: PolicyRuleAnchor): boolean => item.secretPrefixes.some((p) => LIVE_KEY_PREFIXES.includes(p))
+export const holdsLiveKey = (item: Pick<PolicyRuleAnchor, "secretPrefixes">): boolean => item.secretPrefixes.some((p) => LIVE_KEY_PREFIXES.includes(p))
 
 // A rule's path within the binding's paths. A pattern must also name more
 // than the binding's own literal prefix, so its "*" never stands for the

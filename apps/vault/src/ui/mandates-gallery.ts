@@ -61,7 +61,8 @@ export const GALLERY_RECEIPTS: MandateReceiptsPage = {
 const TOM_DESK = { id: "dev_tomdesk00001", name: "tom-desk" }
 const page = (viewer: Viewer, mandate: MandateView, receipts: MandateReceiptsPage | null = GALLERY_RECEIPTS) => mandatePage(galleryShell(viewer), { viewer, mandate, receipts, now: GALLERY_NOW, others: viewer.member === TOM.member ? [TOM_DESK] : [] })
 
-const CANDIDATES: MandateCandidates = { items: [{ id: "itm_githubtom0000001", slug: "github-tom" }, { id: "itm_slackplat000001", slug: "slack-platform" }, { id: "itm_openaitom000001", slug: "openai-tom" }] }
+// The live Stripe key, which no mandate covers, is offered unticked.
+const CANDIDATES: MandateCandidates = { items: [{ id: "itm_githubtom0000001", slug: "github-tom", never: null }, { id: "itm_slackplat000001", slug: "slack-platform", never: null }, { id: "itm_openaitom000001", slug: "openai-tom", never: null }, { id: "itm_stripelive00001", slug: "stripe-live", never: "live-key" }] }
 
 const PROPOSAL: MandateProposalView = {
   id: "mdp_tomlaptop0000000001",

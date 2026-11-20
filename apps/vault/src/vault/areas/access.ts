@@ -41,6 +41,11 @@ export const ACCESS_MIGRATIONS = [
   // registers beside it. One live machine per key stays finishEnrol's rule.
   `DROP INDEX workspace_enrolments_key;
    CREATE INDEX workspace_enrolments_thumbprint ON workspace_enrolments(thumbprint);`,
+  // Each manage share's end that mandates have settled (settleShareExpiries),
+  // by the share and its terms then, exactly as project_shares.value holds
+  // them. While the terms are unchanged the share counts as ended whatever
+  // the clock says; the row goes with the share.
+  `CREATE TABLE share_ends_settled(share TEXT NOT NULL REFERENCES project_shares(id) ON DELETE CASCADE,terms TEXT NOT NULL,PRIMARY KEY(share,terms));`,
 ]
 export const AccessInitInput = z.strictObject({ member: z.string().regex(/^mem_[A-Za-z0-9_-]{1,64}$/), workspace: z.string(), slug: WorkspaceRefSchema.shape.slug, name: WorkspaceRefSchema.shape.name, owner: z.strictObject({ account: z.string(), name: z.string().min(1).max(64) }) })
 export const AccessInitOutput = z.strictObject({ member: z.string() })
@@ -67,6 +72,7 @@ function openInvite(ctx: VaultContext, hash: string): { row: InviteRow; terms: z
   return { row, terms }
 }
 import { workspaceMemberOps } from "./workspace-members.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 
 export const OperatorWorkspaceViewSchema = z.strictObject({ frozen: z.boolean(), owners: z.array(z.strictObject({ account: z.string(), name: z.string() })), unconfirmed: z.number().int().nonnegative() })
 export const OperatorFreezeAnswerSchema = z.strictObject({ frozen: z.literal(true), already: z.boolean(), notify: z.array(z.string()) })
@@ -98,7 +104,7 @@ export const accessArea: Area = {
         requireOperationIdentity(ctx, decision.principal.memberId, action, invocation.auth.operationCheck)
         const revision = setting(ctx, "identity_rule_rev", 0) + 1
         const previous = setting<import("@mehen/protocol").IdentityRule>(ctx, "identity_rule", null)
-        for (const m of memberRows(ctx)) if (previous?.roles.includes(m.role) || input.rule?.roles.includes(m.role)) lapseMandates(ctx, { member: m.id })
+        for (const m of memberRows(ctx)) if (previous?.roles.includes(m.role) || input.rule?.roles.includes(m.role)) lapseMandates(ctx, { member: m.id }, "identity_rule")
         setSetting(ctx, "identity_rule", input.rule)
         setSetting(ctx, "identity_rule_rev", revision)
         ctx.sql.exec("UPDATE members SET gate_generation=gate_generation+1,revision=revision+1")
@@ -225,6 +231,7 @@ export const accessArea: Area = {
         if (member.status !== "unconfirmed" || invite.status !== "pending_confirmation" || !one(ctx.sql.exec("SELECT id FROM members WHERE id=? AND invite=?", member.id, invite.id))) return { aborted: false }
         const state = Date.parse(InviteTermsSchema.parse(JSON.parse(invite.terms)).expiresAt) > ctx.now() ? "open" as const : "expired" as const
         ctx.sql.exec("DELETE FROM workspace_identity_checks WHERE member=?", member.id)
+        beforeManagementChange(ctx)
         ctx.sql.exec("DELETE FROM members WHERE id=? AND account=? AND status='unconfirmed'", member.id, member.account)
         ctx.sql.exec("DELETE FROM tenant_state WHERE key=?", `identity_install:${member.id}`)
         ctx.sql.exec("UPDATE invites SET status=?,used_by=NULL,member=NULL WHERE id=?", state, invite.id)

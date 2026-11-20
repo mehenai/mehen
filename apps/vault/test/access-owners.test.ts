@@ -4,6 +4,7 @@ import { newMember, noticesFor, registerOffboardingHook, WorkspaceInviteViewSche
 import { noticeRows } from "../src/ui/pages/needs-you.ts"
 
 import type { InviteTerms } from "@mehen/protocol"
+import { fixtureSql } from "./fixture-sql.ts"
 
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
@@ -114,8 +115,8 @@ describe("confirmation", () => {
     const { tenant } = await accessFixture()
     const { auth } = await pendingConfirmation(tenant)
     await inAccess(tenant, (ctx) => {
-      if (change === "demoted") ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_admin'")
-      if (change === "removed") ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_admin'")
+      if (change === "demoted") fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_admin'")
+      if (change === "removed") fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_admin'")
       if (change === "restricted") updateRestriction(ctx, "acc_admin", 0, { reason: "recovery", until: ctx.now() + 86_400_000, notice: "ntc_recovery" })
       if (change === "gated") setSetting(ctx, "identity_rule", { provider: "google", domains: ["example.com"], roles: ["admin"] })
       if (change === "pending") installSecurity(ctx, "acc_admin", 0, { transitionId: "ast_inviter", reservedEpoch: 1, revokedSessionIds: [], removedFactorIds: [], restriction: null })
@@ -129,7 +130,7 @@ describe("confirmation", () => {
       const { tenant } = await accessFixture()
       const { auth } = await pendingConfirmation(tenant)
       await inAccess(tenant, (ctx) => {
-        if (change === "team") ctx.sql.exec("DELETE FROM teams WHERE id='tm_engineering'")
+        if (change === "team") fixtureSql(ctx).exec("DELETE FROM teams WHERE id='tm_engineering'")
         if (change === "identity") setSetting(ctx, "identity_rule", { provider: "google", domains: ["example.com"], roles: ["member"] })
       })
       if (change === "digest" && auth.stepUp?.type === "member.confirm") auth.stepUp.termsDigest = "different"
@@ -182,7 +183,7 @@ describe("confirmation", () => {
 
 it("demotion to guest removes teams and caps every direct manage share immediately", async () => {
   const { tenant } = await accessFixture()
-  await inAccess(tenant, (ctx) => { registerFixtureLifecycleHooks(); ctx.sql.exec("INSERT INTO team_members(team,member) VALUES ('tm_engineering','mem_kim')") })
+  await inAccess(tenant, (ctx) => { registerFixtureLifecycleHooks(); fixtureSql(ctx).exec("INSERT INTO team_members(team,member) VALUES ('tm_engineering','mem_kim')") })
   expect(await workspaceInvoke(tenant, "access.members.role", { member: "mem_kim", role: "guest" }, accountAuth("owner", { type: "member.role", member: "mem_kim", before: "member", after: "guest" }))).toMatchObject({ ok: true, value: { role: "guest", teams: [] } })
   await inAccess(tenant, (ctx) => {
     expect(ctx.sql.exec("SELECT * FROM team_members WHERE member='mem_kim'").toArray()).toEqual([])

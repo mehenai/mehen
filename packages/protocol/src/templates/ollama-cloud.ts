@@ -41,5 +41,6 @@ export const ollamaCloud: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "OLLAMA_API_KEY",
   fields: { key: { label: "API key" } },
 }

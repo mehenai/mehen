@@ -29,6 +29,7 @@ export const fly: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "FLY_API_TOKEN",
   check: { method: "GET", path: "/v1/tokens/current" },
   fields: { key: { label: "API token" } },
   setup: {

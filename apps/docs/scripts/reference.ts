@@ -369,6 +369,7 @@ function templateSection(template: Template): string {
     `- Kind: \`${template.kind}\`; ceiling \`${template.ceiling}\``,
     `- Goes to: ${goesTo(template)}`,
     template.injection ? `- Sent as: \`${injectionText(template.injection)}\`` : null,
+    template.defaultEnvVar ? `- Environment variable its SDK or CLI reads: \`${template.defaultEnvVar}\`` : null,
     ...policyLines(policySummaryLines(templateSummary(template.policy))),
     docsLink(template.docsUrl),
     `- Ask for it: \`mehen request ${template.kind} --name <slug> --provider ${template.id} --reason "<why>"\``,

@@ -8,6 +8,7 @@ import { createWorkspaceConnect } from "../src/vault/areas/oauth-workspace.ts"
 import { nameMiss } from "../src/vault/areas/workspace-runtime.ts"
 import { postureRow, seedGithub, setPosture } from "./postures-test-support.ts"
 import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 // A machine accepted without private credentials asking in its owner's
 // private home, the CLI's default, is told why and what to ask for instead.
 const PRIVATE_CREDENTIALS_OFF = {
@@ -75,7 +76,7 @@ describe("credential homes and namespace", () => {
       const before = canonicalJson(checkedCredential(ctx, item.slug))
       const open = vi.spyOn(ctx, "openField")
       const pending = workspaceItemOps["items.update"].handler(ctx, p, { slug: item.slug, change }, i)
-      ctx.sql.exec("DELETE FROM project_shares WHERE subject_id='mem_kim'")
+      fixtureSql(ctx).exec("DELETE FROM project_shares WHERE subject_id='mem_kim'")
       await expect(pending).rejects.toMatchObject({ code: "not_found" })
       expect(canonicalJson(checkedCredential(ctx, item.slug))).toBe(before)
       expect(open).not.toHaveBeenCalled()
@@ -143,7 +144,7 @@ it("refuses an action prepared against an older configuration before mutating or
   await inAccess(f.tenant, async (ctx) => {
     const item = await seedCredential(ctx, "stale-action"), p = memberPrincipal(ctx), i = memberInvocation(ctx), change = { description: "new" }
     const action = WorkspaceStepUpActionSchema.parse(await workspaceItemOps["items.action"].handler(ctx, p, { slug: item.slug, change, action: "update" }, i))
-    ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE id=?", item.id)
+    fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE id=?", item.id)
     const before = canonicalJson(checkedCredential(ctx, item.slug)), open = vi.spyOn(ctx, "openField")
     await expect(workspaceItemOps["items.update"].handler(ctx, p, { slug: item.slug, change }, memberInvocation(ctx, "owner", action))).rejects.toMatchObject({ code: "conflict", message: "The credential changed; review and try again." })
     expect(canonicalJson(checkedCredential(ctx, item.slug))).toBe(before)
@@ -154,7 +155,7 @@ it("refuses inactive machine owners before any name probe or miss-bucket charge"
   const f = await credentialsFixture()
   await inAccess(f.tenant, async (ctx) => {
     await seedCredential(ctx, "occupied-name", { kind: "member", member: "mem_kim" })
-    ctx.sql.exec("UPDATE members SET status='suspended' WHERE id='mem_member'")
+    fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE id='mem_member'")
     const p = devicePrincipal(), i = await deviceInvocation(ctx), open = vi.spyOn(ctx, "openField")
     const error = (slug: string) => { try {
       createWorkspaceIntake(ctx, p, { kind: "api-key", slug, reason: "test", home: "project", project: "prj_a", binding: { hosts: ["api.example.com"] } }, i)

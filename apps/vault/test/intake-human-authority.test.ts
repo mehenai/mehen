@@ -4,6 +4,7 @@ import { checkedCredential } from "../src/vault/areas/items-workspace.ts"
 import { createWorkspaceIntake, submitWorkspaceIntake } from "../src/vault/areas/intake-workspace.ts"
 import { sealToVault } from "./l2-helpers.ts"
 import { credentialsFixture, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 describe("human intake final authority", () => {
   for (const race of ["removed", "cancelled"] as const)
     it(`refuses ${race} during sealing without storing a credential or completing the request`, async () => {
@@ -17,7 +18,7 @@ describe("human intake final authority", () => {
           ...ctx, async sealField(ref: Parameters<typeof ctx.sealField>[0], plain: Parameters<typeof ctx.sealField>[1]) {
             const sealed = await ctx.sealField(ref, plain)
             if (race === "removed")
-              ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_member'")
+              fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_member'")
             else
               ctx.sql.exec("UPDATE workspace_credential_requests SET status='cancelled' WHERE id=?", created.intake)
             return sealed
@@ -71,7 +72,7 @@ it("lets project users read prospective metadata but not fill, and hides it from
   const f = await credentialsFixture()
   await inAccess(f.tenant, async (ctx) => {
     const created = createWorkspaceIntake(ctx, memberPrincipal(ctx, "kim"), { provider: "openai", slug: "read-only-project", home: "project", project: "prj_a" }, memberInvocation(ctx, "kim"))
-    ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE id='shr_direct'")
+    fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE id='shr_direct'")
     const p = memberPrincipal(ctx, "member"), i = memberInvocation(ctx, "member")
     await expect(workspaceIntakeOps["intake.view"].handler(ctx, p, { intake: created.intake }, i)).resolves.toMatchObject({ intake: created.intake, slug: "read-only-project" })
     await expect(submitWorkspaceIntake(ctx, p, { intake: created.intake, slug: "read-only-project", home: { kind: "project", project: "prj_a" }, binding: { hosts: ["api.openai.com"] }, publicFields: {}, tags: [], sealed: {} }, i)).rejects.toMatchObject({ code: "forbidden", message: "You are not allowed to do that." })
@@ -98,6 +99,18 @@ it("intersects prospective metadata with the machine's stored tags", async () =>
     expect(await workspaceIntakeOps["intake.status"].handler(ctx, p, { intake: matching.intake }, i)).toMatchObject({ status: "open" })
     await expect(workspaceIntakeOps["intake.status"].handler(ctx, p, { intake: hidden.intake }, i)).rejects.toThrowError("No such credential request.")
   })
+})
+it("refuses to rotate a stored Google service account key or GitHub App, the kind read from the credential itself",async()=>{
+ const {seedCredential}=await import("./credentials-test-support.ts")
+ const f=await credentialsFixture();await inAccess(f.tenant,async ctx=>{
+  const p=memberPrincipal(ctx,"member"),i=memberInvocation(ctx,"member")
+  for(const [kind,slug,label] of [["google-service-account","gcp-adopted","Google service account key"],["github-app","app-adopted","GitHub App"]] as const){
+   const item=await seedCredential(ctx,slug,{kind:"member",member:"mem_member"})
+   ctx.sql.exec("UPDATE items SET kind=? WHERE id=?",kind,item.id)
+   expect(()=>createWorkspaceIntake(ctx,p,{slug,home:"private"},i)).toThrowError(`Mehen cannot use a ${label} yet`)
+  }
+  expect(ctx.sql.exec("SELECT count(*) AS n FROM workspace_credential_requests").toArray()[0]).toEqual({n:0})
+ })
 })
 it("rotates a generic visible credential without changing its provider, binding, policy or home",async()=>{
  const {workspaceIntakeOps}=await import("../src/vault/areas/intake-workspace.ts")
@@ -185,9 +198,9 @@ for(const kind of ["intake","connect"] as const)it(`human ${kind} cancellation r
     const own=create(`own-${kind}`,true),fillable=create(`fillable-${kind}`),unfillable=create(`unfillable-${kind}`)
     expect(cancelCredentialRequest(ctx,p,own,kind,i)).toEqual({})
     expect(cancelCredentialRequest(ctx,p,fillable,kind,i)).toEqual({})
-    ctx.sql.exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE subject_kind='member' AND subject_id='mem_member'")
+    fixtureSql(ctx).exec("UPDATE project_shares SET value=json_set(value,'$.level','use') WHERE subject_kind='member' AND subject_id='mem_member'")
     const removed=memberPrincipal(ctx,"admin"),removedInvocation=memberInvocation(ctx,"admin")
-    ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_admin'")
+    fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_admin'")
     const open=vi.spyOn(ctx,"openField"),send=vi.spyOn(globalThis,"fetch"),before=JSON.stringify(ctx.sql.exec("SELECT * FROM workspace_credential_requests ORDER BY id").toArray())
     for(const [actor,auth] of [[p,i],[removed,removedInvocation]] as const)for(const id of [unfillable,"absent-request"]){
       let failure:unknown
@@ -254,10 +267,20 @@ it("long-poll status rechecks a removed owner after its wait without revealing m
     const p=devicePrincipal(),i=await deviceInvocation(ctx),created=createWorkspaceIntake(ctx,p,{provider:"openai",kind:"api-key",slug:"wait-removed",home:"project",project:"prj_a",reason:"test"},i)
     const before=JSON.stringify(ctx.sql.exec("SELECT * FROM workspace_credential_requests").toArray()),open=vi.spyOn(ctx,"openField"),send=vi.spyOn(globalThis,"fetch")
     const refused=expect(workspaceIntakeOps["intake.status"].handler(ctx,p,{intake:created.intake,waitMs:500},i)).rejects.toMatchObject({code:"not_found",message:"No such credential request."})
-    await new Promise(resolve=>setTimeout(resolve,20));ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_member'")
+    await new Promise(resolve=>setTimeout(resolve,20));fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_member'")
     await refused
     expect(JSON.stringify(ctx.sql.exec("SELECT * FROM workspace_credential_requests").toArray())).toBe(before)
     expect(open).not.toHaveBeenCalled();expect(send).not.toHaveBeenCalled();open.mockRestore();send.mockRestore()
+  })
+})
+it("refuses to ask for a Google service account key or a GitHub App, which nothing could use until minting is built", async () => {
+  const { devicePrincipal, deviceInvocation } = await import("./credentials-test-support.ts")
+  const f = await credentialsFixture()
+  await inAccess(f.tenant, async (ctx) => {
+    const p = devicePrincipal(), i = await deviceInvocation(ctx), request = { reason: "test", home: "project", project: "prj_a" }
+    expect(() => createWorkspaceIntake(ctx, p, { ...request, kind: "google-service-account", slug: "gcp-deployer", binding: { hosts: ["oauth2.googleapis.com"] } }, i)).toThrowError("Mehen cannot use a Google service account key yet: minting tokens from it is not built, so nothing could fetch, run or lease with it. It is not asked for.")
+    expect(() => createWorkspaceIntake(ctx, p, { ...request, kind: "github-app", slug: "release-bot" }, i)).toThrowError("Mehen cannot use a GitHub App yet")
+    expect(ctx.sql.exec("SELECT count(*) AS n FROM workspace_credential_requests").toArray()[0]).toEqual({ n: 0 })
   })
 })
 it("stores a device's intake for a custom kind with no binding as lease-only, and refuses an injection with no hosts", async () => {
@@ -436,7 +459,7 @@ describe("a replaced value kept and restored", () => {
     const f = await credentialsFixture()
     await inAccess(f.tenant, async (ctx) => {
       const seededConnection = await seedOAuthConnection(ctx)
-      ctx.sql.exec("UPDATE items SET version=version+1 WHERE id=?", seededConnection.id)
+      fixtureSql(ctx).exec("UPDATE items SET version=version+1 WHERE id=?", seededConnection.id)
       const connection = checkedCredential(ctx, seededConnection.slug)!
       ctx.sql.exec("INSERT INTO item_secret_history (item, name, version, root_version, wrapped_dek, ciphertext, length, prefix, fingerprint, fp_version, replaced_at, replaced_by, expires_at) SELECT item, name, ?, root_version, wrapped_dek, ciphertext, length, prefix, fingerprint, fp_version, ?, 'member:mem_owner', ? FROM item_secrets WHERE item=?", connection.version - 1, ctx.now(), ctx.now() + 86_400_000, connection.id)
       const snapshot = () => JSON.stringify([checkedCredential(ctx, connection.slug), current(ctx, connection.id).map((r) => r.fingerprint), history(ctx, connection.id).map((r) => [r.version, r.fingerprint])])

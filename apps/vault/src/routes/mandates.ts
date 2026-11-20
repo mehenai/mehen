@@ -20,6 +20,7 @@ import type { WorkspaceHandler } from "./workspace-prefix.ts"
 const Empty = z.strictObject({})
 const UsesQuery = z.strictObject({ before: z.string().max(120).optional() })
 const DeviceQuery = z.strictObject({ device: z.string().max(80) })
+const WaitQuery = z.strictObject({ wait: z.literal("1").optional() })
 const query = (url: URL): Uint8Array => new TextEncoder().encode(JSON.stringify(Object.fromEntries(url.searchParams)))
 function available(env: Env, workspace: string): void {
   if (!mandatesOn(env, workspace)) throw new VaultError("not_found", "No such route.")
@@ -36,6 +37,13 @@ export const mandateDeviceRoutes: Route<Handler>[] = [
     available(rc.env, device.tenant)
     parseJson(Empty, query(rc.url))
     return json(await device.call("mandates.mine", {}))
+  } },
+  // A proposal's state for its wait: answered at once, ?wait=1 included.
+  { method: "GET", path: "/v1/mandates/proposals/:id", handler: async (rc) => {
+    const device = await deviceRequest(rc)
+    available(rc.env, device.tenant)
+    parseJson(WaitQuery, query(rc.url))
+    return json(await device.call("mandates.mine_proposal", { id: rc.params["id"] }))
   } },
   // What this machine may propose a mandate for: what it asked for lately.
   { method: "GET", path: "/v1/mandates/asked", handler: async (rc) => {

@@ -53,7 +53,7 @@ it("serves the mandate routes under the workspace prefix, behind MANDATES", asyn
 it("answers a machine's mandate reads as an unknown route with MANDATES off, whatever the query", async () => {
   const f = await createWorkspaceFixture()
   const off = { ...f.env, MANDATES: "tn_elsewhere0001" }
-  for (const path of ["/v1/mandates?x=1", "/v1/mandates/asked?x=1", "/v1/mandates/mdt_absent00000000000000?x=1", "/v1/mandates/mdt_absent00000000000000/uses?x=1"]) {
+  for (const path of ["/v1/mandates?x=1", "/v1/mandates/asked?x=1", "/v1/mandates/mdt_absent00000000000000?x=1", "/v1/mandates/mdt_absent00000000000000/uses?x=1", "/v1/mandates/proposals/mdp_absent00000000000000?x=1"]) {
     const proof = await createProof({ deviceId: "dev_owner", sign: async () => new Uint8Array(64) }, { method: "GET", url: `${ORIGIN}${path}` }, { tenant: f.workspaces.work })
     const answer = await fetchWorkspaceWorker(off, path, { headers: { [PROOF_HEADER]: proof } })
     expect([path, answer.status, await answer.json()]).toEqual([path, 404, { error: "not_found", message: "No such route." }])

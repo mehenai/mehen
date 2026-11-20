@@ -33,6 +33,7 @@ export const sentry: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "SENTRY_AUTH_TOKEN",
   fields: { key: { label: "Auth token", pattern: "^sntry[us]_" } },
   prefixes: ["sntryu_", "sntrys_"],
   setup: {

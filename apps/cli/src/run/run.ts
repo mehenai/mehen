@@ -1,10 +1,12 @@
-// mehen run [--env E] [--approval A] [--stop-grace S] [--service] [--] command args...
+// mehen run [--env E] [--approval A] [--stop-grace S] [--service] [--stream-writes] [--] command args...
 //
 // Creates a run in the vault, builds the child's environment from mehen.toml and
 // the vault's answer, starts the local relay when there are placeholders or
 // base URLs, renews the run while the child lives and ends it on exit. At the
 // run's maximum life the child gets SIGTERM --stop-grace seconds before the end.
-// --service asks for a service run, which has none.
+// --service asks for a service run, which has none. --stream-writes (or
+// MEHEN_RUN_STREAM_WRITES=1) has the local relay pass every write's answer
+// on as it comes instead of reading it in full first.
 
 import { constants } from "node:os"
 import { dirname } from "node:path"
@@ -20,11 +22,11 @@ import { pipeRedacted } from "./output.ts"
 import { type RunLogEntry, appendRunLog } from "./run-log.ts"
 import { MAX_STOP_GRACE_MS, signalProcessGroup, watchRunAuthority } from "./renewal.ts"
 
-export const RUN_USAGE = "mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--] <command> [args...]"
+export const RUN_USAGE = "mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--stream-writes] [--] <command> [args...]"
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM"] as const
 const VALUE_FLAGS = ["--env", "--approval", "--stop-grace"] as const
 
-type RunArgs = { env?: string; approval?: string; stopGraceMs?: number; service?: boolean; command: string[] }
+type RunArgs = { env?: string; approval?: string; stopGraceMs?: number; service?: boolean; streamWrites?: boolean; command: string[] }
 
 // The usage when `mehen run` is asked for help, else null.
 export function runHelp(argv: string[]): string | null {
@@ -51,6 +53,11 @@ function setFlag(args: RunArgs, flag: string, value: string): void {
   else args.stopGraceMs = stopGraceMs(value)
 }
 
+// Whether the local relay passes every write's answer on as it comes.
+export function streamsWrites(args: Pick<RunArgs, "streamWrites">, env: Record<string, string | undefined>): boolean {
+  return args.streamWrites === true || env.MEHEN_RUN_STREAM_WRITES === "1"
+}
+
 // The arguments of mehen run, or a usage error; cli.ts calls it before it
 // opens the vault session, so a bad line needs no enrolment to be refused.
 export function parseRunArgs(argv: string[]): RunArgs {
@@ -69,6 +76,8 @@ export function parseRunArgs(argv: string[]): RunArgs {
       setFlag(args, inline, arg.slice(inline.length + 1))
     } else if (arg === "--service") {
       args.service = true
+    } else if (arg === "--stream-writes") {
+      args.streamWrites = true
     } else if (arg.startsWith("-")) {
       throw usageError(`Unknown option ${arg} for \`${RUN_USAGE}\`.`, RUN_HELP)
     } else {
@@ -189,6 +198,7 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
         baseUrls,
         proxy: placeholders,
         parentEnv,
+        streamWrites: streamsWrites(args, parentEnv),
       }).catch((error: unknown) => {
         throw new CommandError(EXIT.error, `could not start the local relay: ${error instanceof Error ? error.message : String(error)}`, {
           say: "Nothing was run. Try again; if it keeps failing, report it with this message.",

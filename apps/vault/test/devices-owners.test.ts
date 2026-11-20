@@ -6,6 +6,7 @@ import type { PendingEnrolRecord as PendingEnrol } from "../src/vault/areas/work
 import { enrolmentWording } from "../src/vault/areas/workspace-devices.ts"
 import { beginAccessSideEffectChecks, finishAccessSideEffectChecks, accessFixture, accessSnapshot, accountAuth, inAccess, registerFixtureLifecycleHooks, workspaceInvoke, editAccessFixture } from "./access-test-support.ts"
 import { newDeviceKey, publicJwk } from "./devices.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 const system = { kind: "system", reason: "test" } as const
 export async function registerEnrolment(tenant: string, account = "acc_member", kind: "self" | "team" = "self", options: { team?: string; projects?: string[]; maxEnvironment?: "protected" | "unprotected"; requested?: EnrolRequestedScope } = {}): Promise<PendingEnrol> {
   const jwk = await publicJwk(await newDeviceKey())
@@ -26,7 +27,7 @@ describe("workspace machine ownership", () => {
     expect((await registerEnrolment(tenant)).scope.privateCredentials).toBe(false)
     expect((await registerEnrolment(tenant, "acc_guest")).scope.privateCredentials).toBe(false)
     expect((await registerEnrolment(tenant, "acc_owner", "team")).scope.privateCredentials).toBe(false)
-    await inAccess(tenant, (ctx) => ctx.sql.exec("UPDATE members SET status='suspended' WHERE role!='owner'"))
+    await inAccess(tenant, (ctx) => fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE role!='owner'"))
     const sole = await registerEnrolment(tenant, "acc_owner")
     expect(sole.scope.privateCredentials).toBe(false)
     const viewed = await workspaceInvoke(tenant, "access.enrol.view", { enrolment: sole.enrolment }, accountAuth("owner"))
@@ -176,7 +177,7 @@ describe("workspace machine ownership", () => {
   it("checks the entire effective guest scope when a manager admits an enrolment", async () => {
     const { tenant } = await accessFixture()
     await inAccess(tenant, (ctx) => {
-      ctx.sql.exec("INSERT INTO project_shares VALUES ('shr_guest_b','prj_b','member','mem_guest',?)", JSON.stringify({ id: "shr_guest_b", project: "prj_b", subject: { kind: "member", member: "mem_guest" }, level: "use", protected: true, expiresAt: null }))
+      fixtureSql(ctx).exec("INSERT INTO project_shares VALUES ('shr_guest_b','prj_b','member','mem_guest',?)", JSON.stringify({ id: "shr_guest_b", project: "prj_b", subject: { kind: "member", member: "mem_guest" }, level: "use", protected: true, expiresAt: null }))
       editAccessFixture(ctx, (state) => { state.projects.find((p) => p.id === "prj_b")!.environments[0]!.protected = true })
     })
     const pending = await registerEnrolment(tenant, "acc_guest", "self", { projects: ["prj_a", "prj_b"], maxEnvironment: "protected" })

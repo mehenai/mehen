@@ -24,7 +24,7 @@ describe("icons", () => {
   })
 
   it("renders every brand logo with its title, and no attribute from outside", () => {
-    expect(BRAND_SLUGS.length).toBe(39)
+    expect(BRAND_SLUGS.length).toBe(48)
     for (const slug of BRAND_SLUGS) {
       const out = brandLogo(slug).value
       expect(out).toContain(`class="logo brand-${slug}"`)
@@ -36,7 +36,7 @@ describe("icons", () => {
   it("maps every template and provider to a logo, except the ones Simple Icons has no mark for", () => {
     const ids = [...Object.keys(TEMPLATES), ...Object.keys(OAUTH_PROVIDERS)]
     const missing = ids.filter((id) => brandFor(id) === null)
-    expect(missing.sort()).toEqual(["browserbase", "fathom", "firecrawl", "fly", "groq", "heygen", "microsoft-graph", "microsoft-oauth-client", "postmark-server", "sendgrid", "serpapi", "together", "twilio"])
+    expect(missing.sort()).toEqual(["browserbase", "fathom", "firecrawl", "fly", "groq", "heygen", "microsoft-graph", "microsoft-oauth-client", "postmark-server", "sendgrid", "serpapi", "together", "twilio", "xai"])
     expect(brandFor("google-gemini")).toBe("googlegemini")
     expect(brandFor("hubspot-private-app")).toBe("hubspot")
     expect(serviceTile({ provider: "fathom", slug: "fathom" }).value).toContain("<span>F</span>")

@@ -20,7 +20,7 @@ export async function projectFixture() {
       for (const p of f.state.projects) for (const e of p.environments) for (const r of e.references) if (r.item === oldId) r.item = item.id
     }
     for (const p of f.state.projects) {
-      ctx.sql.exec("INSERT INTO projects(id,slug,default_env,created_by,created_at,updated_at) VALUES(?,?,'dev','member:mem_owner',?,?)", p.id, p.id.replace("prj_", "project-"), ctx.now(), ctx.now())
+      fixtureSql(ctx).exec("INSERT INTO projects(id,slug,default_env,created_by,created_at,updated_at) VALUES(?,?,'dev','member:mem_owner',?,?)", p.id, p.id.replace("prj_", "project-"), ctx.now(), ctx.now())
       for (const e of p.environments) {
         ctx.sql.exec("INSERT INTO environments(project,name,protected,fences,four_eyes) VALUES(?,?,?,?,?)", p.id, e.name, e.protected ? 1 : 0, JSON.stringify(e.fences), e.fourEyes ? 1 : 0)
         for (const r of e.references) {
@@ -46,6 +46,7 @@ import { createProof } from "@mehen/protocol"
 import { workspaceRunOps } from "../src/vault/areas/runs-workspace.ts"
 import { workspaceApproval } from "../src/vault/areas/approvals-workspace.ts"
 import { VaultError } from "../src/http.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 export const PROJECT_RUN_INPUT = { project: "prj_a", env: "prod", envSource: "flag", remote: null, worktree: "/fixture", head: null, vars: ["TOKEN"], command: "test", argv: ["test"] }
 export async function projectDeviceInvocation(ctx: VaultContext, device = "dev_kim") {
   const proof = await createProof({ deviceId: device, sign: async () => new Uint8Array(64) }, { method: "POST", url: "https://vault.test/v1/runs" }, { tenant: ctx.tenant })

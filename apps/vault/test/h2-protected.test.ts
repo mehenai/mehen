@@ -132,7 +132,7 @@ describe("workspace protection notice completeness", () => {
   it("outbox failure after audit rolls the environment and audit back too", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, (ctx) => {
-      ctx.sql.exec("CREATE TRIGGER fail_project_notice BEFORE INSERT ON notice_outbox BEGIN SELECT RAISE(ABORT,'notice unavailable'); END")
+      withTrustedSchema(ctx, () => ctx.sql.exec("CREATE TRIGGER fail_project_notice BEFORE INSERT ON notice_outbox BEGIN SELECT RAISE(ABORT,'notice unavailable'); END"))
       const before = workspaceRows(ctx), input = { project: "prj_a", env: "staging", before: { protected: true, fences: [], fourEyes: false }, protected: true, fences: ["example.com"], fourEyes: false }
       expect(() => callProject(ctx, projectState(ctx), "owner", "projects.setEnvironment", input, { type: "item.update", item: "prj_a", digest: workspaceEnvironmentDigest(input) })).toThrow("notice unavailable")
       expect(workspaceRows(ctx)).toBe(before)
@@ -143,6 +143,8 @@ describe("workspace protection notice completeness", () => {
 import { workspaceRunOps, workspaceRunPlaceholders } from "../src/vault/areas/runs-workspace.ts"
 import { assertRunUse } from "../src/vault/areas/projects-workspace.ts"
 import { projectDeviceInvocation, projectSecurityRows, PROJECT_RUN_INPUT } from "./projects-workspace-fixture.ts"
+import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 describe("protection closes unapproved runs", () => {
   for (const fourEyes of [false, true]) for (const delivery of ["lease", "placeholder"] as const) for (const restoreLiveRow of [false, true]) {
     it(`protecting staging closes ${delivery} use, fourEyes=${fourEyes}, missed-end fallback=${restoreLiveRow}`, async () => {
@@ -150,7 +152,7 @@ describe("protection closes unapproved runs", () => {
       await inAccess(f.tenant, async (ctx) => {
         ctx.sql.exec("UPDATE environments SET protected=0 WHERE project='prj_a' AND name='staging'")
         ctx.sql.exec("INSERT INTO vars(project,env,name,item,field,updated_by,updated_at) VALUES('prj_a','staging','TOKEN','key-workspace','key','member:mem_owner',?)", ctx.now())
-        if (delivery === "lease") ctx.sql.exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
+        if (delivery === "lease") fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',injection=NULL WHERE slug='key-workspace'")
         const invocation = await projectDeviceInvocation(ctx), principal = { kind: "device" as const, deviceId: "dev_kim" }
         const created = await workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...PROJECT_RUN_INPUT, env: "staging" }, invocation) as import("@mehen/protocol").WorkspaceRunCreated
         expect(created.vars[0]?.delivery).toBe(delivery)

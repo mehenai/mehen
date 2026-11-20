@@ -21,6 +21,8 @@ import { AREAS } from "../src/vault/registry.ts"
 import { applyMigrations } from "../src/vault/tenant-vault.ts"
 import { credentialInput, credentialsFixture, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
 import { freshTenant } from "./helpers.ts"
+import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 const withVault = (fn: (ctx: VaultContext) => Promise<void>) => runInDurableObject(env.TENANT_VAULT.getByName(freshTenant()), (instance) => fn(instance.context))
 const tables = (ctx: VaultContext) => ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'fill_%' ORDER BY name").toArray().map((row) => row.name)
@@ -32,17 +34,17 @@ describe("fill's storage", () => {
     await withVault(async (ctx) => {
       await items.putItem(ctx, { slug: "kept", kind: "api-key", provider: null, account: null, accountVerified: false, tags: [], ceiling: "placeholder", binding: { hosts: ["api.example.com"] }, policy: { default: "allow", rules: [] }, injection: null, publicFields: {}, secretFields: { key: "synthetic-kept-secret" }, description: null }, { kind: "system", reason: "test" })
       expect(tables(ctx)).toEqual(["fill_buckets", "fill_codes"])
-      ctx.sql.exec("DROP TABLE fill_buckets")
-      ctx.sql.exec("DROP TABLE fill_codes")
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP TABLE fill_buckets"))
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP TABLE fill_codes"))
       ctx.sql.exec("DELETE FROM _migrations WHERE area = 'browser'")
-      applyMigrations(ctx.sql, ctx.storage, AREAS)
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, AREAS))
       expect(tables(ctx)).toEqual(["fill_buckets", "fill_codes"])
       expect(items.getItem(ctx, "kept")).toMatchObject({ slug: "kept", browser: null })
       ctx.sql.exec("INSERT INTO fill_buckets (device, item, kind, window_start, count) VALUES ('dev_a', 'itm_a', 'secret', 0, 1)")
       expect(() => ctx.sql.exec("INSERT INTO fill_buckets (device, item, kind, window_start, count) VALUES ('dev_a', 'itm_a', 'secret', 0, 1)")).toThrow()
       ctx.sql.exec("INSERT INTO fill_codes (item, step, origin, device, count) VALUES ('itm_a', 1, 'https://github.com', 'dev_a', 1)")
       expect(() => ctx.sql.exec("INSERT INTO fill_codes (item, step, origin, device, count) VALUES ('itm_a', 1, 'https://github.com', 'dev_a', 1)")).toThrow()
-      applyMigrations(ctx.sql, ctx.storage, AREAS)
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, AREAS))
       expect(ctx.sql.exec("SELECT count(*) AS n FROM fill_buckets").toArray()).toEqual([{ n: 1 }])
     })
   })
@@ -110,7 +112,7 @@ async function seedLogin(ctx: VaultContext, overrides: Partial<Parameters<typeof
 }
 async function seedKey(ctx: VaultContext): Promise<void> {
   await seed(ctx, { ...credentialInput("deploy-key"), ceiling: "fill", secretFields: { key: KEY } })
-  ctx.sql.exec("UPDATE items SET browser=? WHERE slug='deploy-key'", JSON.stringify({ signinOrigins: [], typeInto: [DASHBOARD] }))
+  fixtureSql(ctx).exec("UPDATE items SET browser=? WHERE slug='deploy-key'", JSON.stringify({ signinOrigins: [], typeInto: [DASHBOARD] }))
 }
 async function fixture(): Promise<string> {
   const f = await credentialsFixture()
@@ -183,7 +185,7 @@ describe("POST /v1/fill's checks, in the design's order", () => {
   it("adds the origins a human listed to the sign-in pages", async () => {
     const tenant = await fixture()
     await inAccess(tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET browser=? WHERE slug=?", JSON.stringify({ signinOrigins: ["https://github.example.com"], typeInto: [] }), LOGIN)
+      fixtureSql(ctx).exec("UPDATE items SET browser=? WHERE slug=?", JSON.stringify({ signinOrigins: ["https://github.example.com"], typeInto: [] }), LOGIN)
       expect(filled(await fill(ctx, { field: "username", origin: "https://github.example.com" })).value).toBe("alex@example.com")
     })
   })
@@ -367,7 +369,7 @@ describe("what a fill delivers", () => {
   it("seals each box to its own workspace, item, field, origin and proof, so one fill's box does not open as another", async () => {
     const tenant = await fixture()
     await inAccess(tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET browser=? WHERE slug=?", JSON.stringify({ signinOrigins: ["https://github.example.com"], typeInto: [] }), LOGIN)
+      fixtureSql(ctx).exec("UPDATE items SET browser=? WHERE slug=?", JSON.stringify({ signinOrigins: ["https://github.example.com"], typeInto: [] }), LOGIN)
       const result = filled(await fill(ctx, { field: "username" }))
       const item = itemId(ctx, LOGIN)
       expect(result.answer.item).toBe(item)
@@ -453,7 +455,7 @@ describe("fill's limits", () => {
     await inAccess(tenant, async (rawCtx) => {
       // The start of a 30 second step, so every code below is in it.
       const ctx = at(rawCtx, Math.floor(rawCtx.now() / 30_000) * 30_000 + 1_000)
-      ctx.sql.exec("UPDATE items SET browser=? WHERE slug=?", JSON.stringify({ signinOrigins: ["https://github.example.com"], typeInto: [] }), LOGIN)
+      fixtureSql(ctx).exec("UPDATE items SET browser=? WHERE slug=?", JSON.stringify({ signinOrigins: ["https://github.example.com"], typeInto: [] }), LOGIN)
       const id = await approved(ctx, { field: "totp" })
       const codes = [filled(await fill(ctx, { field: "totp" })), filled(await fill(ctx, { field: "totp" })), filled(await fill(ctx, { field: "totp" }))]
       expect(new Set(codes.map((c) => c.value)).size).toBe(1)

@@ -12,6 +12,7 @@ import { z } from "zod"
 import { type Ask, type AskUrl, askSay, askUrl, clockText, mandateAsk, mandatePageUrlFor, mandateProposalUrlFor, refusedLinkWarning, withContext } from "./ask.ts"
 import { type Env, configWorkspace } from "./config.ts"
 import { CliError, toCliError, usageError } from "./errors.ts"
+import { addLedgerEntry } from "./ledger.ts"
 import { type VaultSession, sessionLabel } from "./session.ts"
 import { type VaultApi, VaultApiError } from "./vault-api.ts"
 
@@ -42,7 +43,7 @@ export const mandateViewSchema = z.object({
   note: z.string(),
   createdAt: timestamp,
   expiresAt: timestamp,
-  endedReason: z.enum(["stopped", "expired", "replaced"]).nullable(),
+  endedReason: z.enum(["stopped", "expired", "replaced", "revoked"]).nullable(),
   proposal: MandateProposalIdSchema.nullable().optional().catch(undefined),
 }) satisfies z.ZodType<MachineMandateView>
 const receiptSchema = z.object({
@@ -82,12 +83,15 @@ export const MANDATE_NEVER_COVERS = "minting or reading credentials, webhooks, f
 // and so does a vault from before mandates.
 export const MANDATES_OFF_LINE = "This workspace has no mandates: they are not switched on here, or this vault is older than them."
 const MANDATES_OFF_NEXT = { say: "Carry on asking for each request as before; do not propose a mandate again." }
+const MANDATE_NOT_FOUND_NEXT = { command: "mehen mandate ls", say: "mehen mandate ls (MCP vault_mandate with action list) lists this machine's mandates in this workspace; use an id it shows." }
 
 async function mandateCall<T>(call: () => Promise<T>): Promise<T> {
   try {
     return await call()
   } catch (error) {
     if (error instanceof VaultApiError && error.body.error === "not_found" && error.body.message === "No such route.") throw new CliError("not_found", MANDATES_OFF_LINE, MANDATES_OFF_NEXT)
+    // A mandate id that is not this machine's here: its own list, never the credentials.
+    if (error instanceof VaultApiError && error.body.error === "not_found" && error.body.next === undefined) throw new CliError("not_found", error.body.message, MANDATE_NOT_FOUND_NEXT, error.context ? { context: error.context } : {})
     throw error
   }
 }
@@ -149,13 +153,15 @@ export function stateText(view: Pick<MachineMandateView, "state" | "endedReason"
   if (view.state === "paused") return `Paused: nothing goes through on trust; ${resumeWords(url)}.`
   if (view.state === "tripped") return `Tripped: more than ${MANDATE_RATE_LIMIT} requests beyond reading in a minute, so nothing goes through on trust; ${resumeWords(url)}, with their passkey.`
   if (view.state === "expired") return `Ended ${clockText(view.expiresAt, options) ?? view.expiresAt}: it covers nothing.${again}`
+  if (view.endedReason === "revoked") return "Ended for good: this machine was revoked."
   return view.endedReason === "replaced" ? `Replaced by a newer mandate: it covers nothing.${url ? ` Its page: ${url}` : ""}` : `Stopped by a person: it covers nothing.${again}`
 }
 
 // The step for a mandate that covers nothing now: its page, for the person
-// who signed it. Null for an active one, or with no page to link.
+// who signed it. Null for an active one, one ended by revoking its machine,
+// which nobody can sign again, or with no page to link.
 export function mandateNext(view: Pick<MachineMandateView, "id" | "state" | "endedReason">, url: AskUrl | null): NextStep | null {
-  if (view.state === "active" || url === null) return null
+  if (view.state === "active" || view.endedReason === "revoked" || url === null) return null
   if (view.state === "paused" || view.state === "tripped") return { url, say: `Mandate ${view.id} is ${view.state}: pass ${url} to the person who signed it, who can resume it there${view.state === "tripped" ? " with their passkey" : ""}. Until then, ask for each request as usual.` }
   if (view.endedReason === "replaced") return { url, command: "mehen mandate ls", say: `Mandate ${view.id} was replaced by a newer one; mehen mandate ls shows it.` }
   return { url, say: `Mandate ${view.id} has ended: pass ${url} to the person who signed it to sign it again, or propose a new one. Until then, ask for each request as usual.` }
@@ -361,9 +367,6 @@ function openProposalsRefused(session: MandateSession, error: unknown, surface: 
   return new CliError("conflict", error.body.message, { ...(link ? { url: link } : {}), ...(surface === "cli" ? { command: "mehen mandate ls" } : {}), say }, error.context ? { context: error.context } : {})
 }
 
-// POST /v1/mandates/proposals: the sign page a person opens. Nothing is
-// covered until they sign it with their passkey, with these terms or theirs.
-// /v1/me is read first, so a failure there leaves no proposal without a link.
 // What this machine asked for lately, which the vault lets it propose; null
 // from a vault that does not say (an older one, or mandates off there).
 export async function askedForMandate(session: MandateSession): Promise<MandateAsked | null> {
@@ -376,7 +379,10 @@ export async function askedForMandate(session: MandateSession): Promise<MandateA
 }
 const askedSchema = z.object({ items: z.array(PolicySlugSchema), classes: z.array(MandateClassSchema) }) satisfies z.ZodType<MandateAsked>
 
-export async function proposeMandate(session: MandateSession, proposal: MandatePropose, env: Env, surface: MandateSurface): Promise<MandateProposalResult> {
+// POST /v1/mandates/proposals: the sign page a person opens. Nothing is
+// covered until they sign it with their passkey, with these terms or theirs.
+// /v1/me is read first, so a failure there leaves no proposal without a link.
+export async function proposeMandate(session: MandateSession & Pick<VaultSession, "configDir" | "ledger">, proposal: MandatePropose, env: Env, surface: MandateSurface): Promise<MandateProposalResult> {
   const label = sessionLabel(env)
   const me = await session.api.request<Me>("GET", "/v1/me")
   let answer: unknown
@@ -389,9 +395,11 @@ export async function proposeMandate(session: MandateSession, proposal: MandateP
   const { link, warning } = proposalLink(session, created.id, created.url)
   if (!link) throw new CliError("internal", "The vault returned no usable mandate proposal link.")
   const ask = withContext(mandateAsk({ id: created.id, url: link, what: proposalText(me.name, proposal), expiresAt: created.expiresAt, requestedBy: { device: me.name, session: label } }), { origin: session.vaultUrl, workspace: configWorkspace(session.config), device: session.config.device })
+  // Recorded so mehen wait and vault_wait find this workspace among several.
+  await addLedgerEntry(session.configDir, session.ledger, { ask, slug: null, command: null })
   const existing = created.existing === true
   const say = existing ? `These terms are already waiting for the person to sign. ${askSay(ask)}` : askSay(ask)
-  return { proposal: created.id, url: link, expiresAt: created.expiresAt, ...(existing ? { existing: true as const } : {}), ask, next: { url: ask.url, command: "mehen mandate ls", say }, warning }
+  return { proposal: created.id, url: link, expiresAt: created.expiresAt, ...(existing ? { existing: true as const } : {}), ask, next: { url: ask.url, command: surface === "cli" ? (ask.wait ?? "mehen mandate ls") : "mehen mandate ls", say }, warning }
 }
 
 // ---------------------------------------------------------------- reading and pausing

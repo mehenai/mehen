@@ -11,7 +11,10 @@ import { can, classify, effectiveAccess, stepUpSatisfies } from "../access.ts"
 import type { AccessAction, AccessDecision, AccessMember, AccessPrincipal, AccessState, AccessTarget } from "../access.ts"
 import type { AccountInvocationAuth, DeviceAuth, PlatformInvocationAuth, SystemAuth, VaultContext } from "../core.ts"
 import { one, randomId } from "../core.ts"
+import { lapseMandates } from "./mandates-lapse.ts"
 import type { ExposureFact } from "../services.ts"
+import { beforeManagementChange, isolateManagementGuardsForTests } from "./management-guard.ts"
+export { beforeManagementChange, registerManagementGuard } from "./management-guard.ts"
 
 export type WorkspaceRuntimeAuth = AccountInvocationAuth | DeviceAuth | PlatformInvocationAuth | Pick<SystemAuth, "kind" | "actor">
 export type DeviceInvocationAuth = DeviceAuth
@@ -88,10 +91,11 @@ function frozen<T>(value: T): T {
 // (TenantVault.invoke): a caller that needs a changed state copies it.
 export function accessState(ctx: VaultContext): AccessState {
   const memo = ctx.accessStateMemo
-  if (memo?.state && memo.writes === ctx.storageWrites && ctx.now() < memo.until) return memo.state
-  const writes = ctx.storageWrites, now = ctx.now()
+  const revision = memo ? ctx.accessRevision() : null
+  if (memo?.state && memo.revision === revision && ctx.now() < memo.until) return memo.state
+  const now = ctx.now()
   const built = buildAccessState(ctx, now)
-  if (memo) Object.assign(memo, { writes, until: built.until, state: frozen(built.state) })
+  if (memo) Object.assign(memo, { revision, until: built.until, state: frozen(built.state) })
   return built.state
 }
 // `until` is when the state next changes without a write: the first open
@@ -111,7 +115,8 @@ function buildAccessState(ctx: VaultContext, now: number): { state: AccessState;
   const workloads = ctx.sql.exec<{ id: string; device: string; scope: string; expires_at: number; revoked_at: number | null }>("SELECT id,device,scope,expires_at,revoked_at FROM workloads WHERE ended_at IS NULL").toArray().map((w) => ({ id: w.id, device: w.device, scope: WorkloadScopeSchema.parse(JSON.parse(w.scope)), expiresAt: w.expires_at, revokedAt: w.revoked_at }))
   const credentials = providers.get("credentials")?.(ctx, []).credentials ?? []
   const projects = providers.get("projects")?.(ctx, credentials).projects ?? []
-  return { state: { accessRev: setting(ctx, "access_rev", 0), members, teams, shares, devices, workloads, projects, credentials }, until }
+  const endedShares = ctx.sql.exec<{ share: string }>("SELECT e.share FROM share_ends_settled e JOIN project_shares s ON s.id=e.share AND s.value=e.terms").toArray().map((row) => row.share)
+  return { state: { accessRev: setting(ctx, "access_rev", 0), members, teams, shares, devices, workloads, projects, credentials, endedShares }, until }
 }
 export function principalOf(ctx: VaultContext, auth: WorkspaceRuntimeAuth): WorkspaceRuntimePrincipal {
   if (auth.kind === "system") return { kind: "system" }
@@ -220,14 +225,20 @@ function mayShareWith(state: AccessState, m: AccessMember, project: string, memb
   const after = { level: "use" as const, protected: false, expiresAt: null }
   return m.status === "active" && m.id !== member && can(capabilityState(state, m.id), { kind: "member", memberId: m.id, account: m.account, session: "ses_notice", securityEpoch: 0, sessionCheck: null }, { type: "project.share", after }, { project, member }, now).allowed
 }
-// How many accounts it queued the notice for.
-export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, sourceId?: string): number {
+// Notices of these kinds are one per account and source key, whenever and
+// however often they are queued: the key names the event (a connection's
+// grant, a client's revision, a share request's project, member and UTC
+// day), and the payload's time does not.
+const ONCE_PER_SOURCE: ReadonlySet<WorkspaceNoticePayload["kind"]> = new Set(["connection_lost", "oauth_client_rejected", "connection_failing", "project_share_requested"])
+// How many accounts it queued the notice for. A connection's notices go to
+// the accounts the caller names (`to`): whoever may reconnect it.
+export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, sourceId?: string, to: readonly string[] = []): number {
   // A managed workspace's only member has no account to notify, and its
   // platform reads the audit instead.
   if (managedSetting(ctx)) return 0
   const checked = WorkspaceNoticePayloadSchema.parse(payload)
   const members = memberRows(ctx)
-  const recipients = checked.kind === "member_joined" ? members.filter((m) => m.status === "active" && m.id === checked.by).map((m) => m.account) : checked.kind === "mandate_ending" || checked.kind === "mandate_lapsed" ? [] : members.filter((m) => m.status === "active" && (m.role === "owner" || checked.kind !== "owner_changed" && m.role === "admin")).map((m) => m.account)
+  const recipients = checked.kind === "member_joined" ? members.filter((m) => m.status === "active" && m.id === checked.by).map((m) => m.account) : checked.kind === "connection_lost" || checked.kind === "oauth_client_rejected" || checked.kind === "connection_failing" ? members.filter((m) => m.status === "active" && to.includes(m.account)).map((m) => m.account) : checked.kind === "mandate_ending" || checked.kind === "mandate_lapsed" ? [] : members.filter((m) => m.status === "active" && (m.role === "owner" || checked.kind !== "owner_changed" && m.role === "admin")).map((m) => m.account)
   if (checked.kind === "project_share_requested") recipients.splice(0, recipients.length, ...shareRequestAccounts(ctx, checked.project.id, checked.member.member))
   if (checked.kind === "owner_changed" || checked.kind === "backup_recipient") { const subject = members.find((m) => m.id === checked.member); if (subject) recipients.push(subject.account) }
   // A mandate that tripped goes to its signer too, whatever their role; one
@@ -236,9 +247,7 @@ export function queueNotice(ctx: VaultContext, payload: WorkspaceNoticePayload, 
   let queued = 0
   for (const account of new Set(recipients)) {
     if ((checked.kind === "account_security" || checked.kind === "account_suspended") && account === checked.account) continue
-    // A share request is raised once per source key (its project, member and
-    // UTC day), whenever in the day it comes: its `at` is the first refusal's.
-    const id = `ntc_${digest(checked.kind === "project_share_requested" && sourceId !== undefined ? { account, kind: checked.kind, source: sourceId } : { account, payload: checked, source: sourceId ?? null })}`
+    const id = `ntc_${digest(sourceId !== undefined && ONCE_PER_SOURCE.has(checked.kind) ? { account, kind: checked.kind, source: sourceId } : { account, payload: checked, source: sourceId ?? null })}`
     ctx.sql.exec("INSERT OR IGNORE INTO notice_outbox(id,account,payload,created_at,next_retry_at) VALUES (?,?,?,?,?)", id, account, canonicalJson(checked), ctx.now(), ctx.now())
     ctx.schedule("access", "notice-outbox", ctx.now() + 60_000)
     queued++
@@ -256,7 +265,7 @@ export const OutboxDrainOutput = z.strictObject({ events: z.array(OutboxEventSch
 export function drainOutbox(ctx: VaultContext, limit: number): z.infer<typeof OutboxDrainOutput> {
   const events = ctx.sql.exec<{ id: string; account: string; payload: string; created_at: number }>("SELECT id,account,payload,created_at FROM notice_outbox WHERE acknowledged_at IS NULL AND next_retry_at<=? ORDER BY created_at,id LIMIT ?", ctx.now(), limit).toArray().map((e) => {
     const payload = WorkspaceNoticePayloadSchema.parse(JSON.parse(e.payload))
-    const path = payload.kind === "machine_added" ? `/devices/${encodeURIComponent(payload.device)}` : payload.kind === "member_joined" ? "/people" : payload.kind === "mandate_signed" || payload.kind === "mandate_tripped" || payload.kind === "mandate_ending" || payload.kind === "mandate_lapsed" ? `/mandates/${encodeURIComponent(payload.mandate)}` : payload.kind === "project_share_requested" ? shareRequestPath(payload.project.id, payload.member.member) : "/"
+    const path = payload.kind === "machine_added" ? `/devices/${encodeURIComponent(payload.device)}` : payload.kind === "member_joined" ? "/people" : payload.kind === "connection_lost" || payload.kind === "oauth_client_rejected" || payload.kind === "connection_failing" ? `/items/${encodeURIComponent(payload.item.slug)}` : payload.kind === "mandate_signed" || payload.kind === "mandate_tripped" || payload.kind === "mandate_ending" || payload.kind === "mandate_lapsed" ? `/mandates/${encodeURIComponent(payload.mandate)}` : payload.kind === "project_share_requested" ? shareRequestPath(payload.project.id, payload.member.member) : "/"
     return { id: e.id, account: e.account, payload, at: e.created_at, url: `${ctx.env.VAULT_ORIGIN}/w/${encodeURIComponent(payload.workspace.slug)}${path}` }
   })
   return OutboxDrainOutput.parse({ events })
@@ -264,7 +273,10 @@ export function drainOutbox(ctx: VaultContext, limit: number): z.infer<typeof Ou
 export function newMember(ctx: VaultContext, account: string, name: string, role: import("@mehen/protocol").WorkspaceRole, status: AccessMember["status"], id = randomId("mem")): string {
   const existing = one(ctx.sql.exec<{ account: string }>("SELECT account FROM members WHERE id=?", id))
   if (existing) { if (existing.account !== account) throw new VaultError("conflict", "This membership reservation belongs to another account."); return id }
-  ctx.sql.exec("INSERT INTO members(id,account,name,role,status,joined_at) VALUES (?,?,?,?,?,?)", id, account, name, role, status, ctx.now())
+  ctx.storage.transactionSync(() => {
+    beforeManagementChange(ctx)
+    ctx.sql.exec("INSERT INTO members(id,account,name,role,status,joined_at) VALUES (?,?,?,?,?,?)", id, account, name, role, status, ctx.now())
+  })
   if (!security(ctx, account)) saveSecurity(ctx, { account, installedEpoch: 0, pending: null, restriction: null, revokedSessionIds: [], removedFactorIds: [], deleting: false })
   return id
 }
@@ -273,10 +285,13 @@ export function newMember(ctx: VaultContext, account: string, name: string, role
 // confirmation or on a redemption that joins straight away. The caller has
 // checked the terms and owns the synchronous transaction.
 export function activateInvitedMember(ctx: VaultContext, member: string, invite: string, terms: import("@mehen/protocol").InviteTerms): void {
-  for (const team of terms.teams) ctx.sql.exec("INSERT INTO team_members(team,member) VALUES (?,?)", team, member)
-  for (const share of terms.shares) { const value = { ...share, id: randomId("shr"), subject: { kind: "member", member } }; ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", value.id, share.project, "member", member, canonicalJson(value)) }
-  ctx.sql.exec("UPDATE members SET status='active',revision=revision+1 WHERE id=?", member)
-  ctx.sql.exec("UPDATE invites SET status='active' WHERE id=?", invite)
+  ctx.storage.transactionSync(() => {
+    beforeManagementChange(ctx)
+    for (const team of terms.teams) ctx.sql.exec("INSERT INTO team_members(team,member) VALUES (?,?)", team, member)
+    for (const share of terms.shares) { const value = { ...share, id: randomId("shr"), subject: { kind: "member", member } }; ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", value.id, share.project, "member", member, canonicalJson(value)) }
+    ctx.sql.exec("UPDATE members SET status='active',revision=revision+1 WHERE id=?", member)
+    ctx.sql.exec("UPDATE invites SET status='active' WHERE id=?", invite)
+  })
 }
 
 // The caller owns authorisation and the surrounding synchronous transaction.
@@ -287,9 +302,12 @@ export function setProjectShare(ctx: VaultContext, after: import("@mehen/protoco
   const id = subject.subject.kind === "member" ? subject.subject.member : subject.subject.team
   const old = one(ctx.sql.exec<{ value: string }>("SELECT value FROM project_shares WHERE project=? AND subject_kind=? AND subject_id=?", subject.project, subject.subject.kind, id))
   if (canonicalJson(old ? JSON.parse(old.value) : null) !== canonicalJson(before)) throw new VaultError("conflict", "The expected state changed.")
-  if (after) ctx.sql.exec("INSERT INTO project_shares(id,project,subject_kind,subject_id,value) VALUES (?,?,?,?,?) ON CONFLICT(project,subject_kind,subject_id) DO UPDATE SET value=excluded.value", after.id, after.project, after.subject.kind, id, canonicalJson(after))
-  else ctx.sql.exec("DELETE FROM project_shares WHERE id=?", subject.id)
-  bumpAccessRevision(ctx)
+  ctx.storage.transactionSync(() => {
+    beforeManagementChange(ctx)
+    if (after) ctx.sql.exec("INSERT INTO project_shares(id,project,subject_kind,subject_id,value) VALUES (?,?,?,?,?) ON CONFLICT(project,subject_kind,subject_id) DO UPDATE SET value=excluded.value", after.id, after.project, after.subject.kind, id, canonicalJson(after))
+    else ctx.sql.exec("DELETE FROM project_shares WHERE id=?", subject.id)
+    bumpAccessRevision(ctx)
+  })
 }
 
 const openAskCounters = new Map<string, (ctx: VaultContext, device: string, now: number) => number>()
@@ -325,10 +343,11 @@ export function registerAccessChangeHook(name: string, hook: AccessChangeHook): 
 export function isolateAccessLifecycleForTests(): () => void {
   const offboarding = new Map(offboardingHooks)
   const changes = new Map(accessChangeHooks)
+  const restoreGuards = isolateManagementGuardsForTests()
   const exposures = exposureProvider
   offboardingHooks.clear(); accessChangeHooks.clear(); exposureProvider = null
   return () => {
-    offboardingHooks.clear(); accessChangeHooks.clear()
+    offboardingHooks.clear(); accessChangeHooks.clear(); restoreGuards()
     for (const [name, hook] of offboarding) offboardingHooks.set(name, hook)
     for (const [name, hook] of changes) accessChangeHooks.set(name, hook)
     exposureProvider = exposures
@@ -338,6 +357,7 @@ export function registerExposureProvider(provider: NonNullable<typeof exposurePr
 function requireHooks(names: string[], registered: Map<string, unknown>): void { if (names.some((name) => !registered.has(name))) throw new VaultError("internal", "Workspace lifecycle services are not registered.") }
 export function accessChanged(ctx: VaultContext, member: string | null, reason: string, target: AccessChangeTarget = {}): void {
   requireHooks(["consent", "projects", "overrides"], accessChangeHooks)
+  beforeManagementChange(ctx)
   for (const hook of accessChangeHooks.values()) hook(ctx, member, reason, target)
   const state = accessState(ctx)
   const subject = state.members.find((m) => m.id === member)
@@ -405,6 +425,9 @@ export function noticeScan(ctx: VaultContext, principal: WorkspaceRuntimePrincip
     // Nor is it listed to one who may no longer share it with them.
     if (payload.kind === "project_share_requested" && !mayShareWith(state, member, payload.project.id, payload.member.member, ctx.now())) return []
     if (member.standing.effectiveRole === "guest" && !(payload.kind === "machine_added" && payload.owner.kind === "member" && payload.owner.member === member.id || payload.kind === "owner_changed" && payload.member === member.id)) return []
+    // Needs you shows these as the credential's own row (credentials-pending.ts);
+    // the outbox keeps them for delivery.
+    if (payload.kind === "connection_lost" || payload.kind === "oauth_client_rejected" || payload.kind === "connection_failing") return []
     return [OutboxEventSchema.parse({ id: row.id, account: row.account, payload, at: row.created_at, url: `${ctx.env.VAULT_ORIGIN}/w/${payload.workspace.slug}${payload.kind === "machine_added" ? `/devices/${payload.device}` : payload.kind === "backup_recipient" ? "/settings" : payload.kind === "member_joined" ? "/people" : payload.kind === "project_share_requested" ? shareRequestPath(payload.project.id, payload.member.member) : "/"}` })]
   })
   return { notices, truncated }
@@ -575,6 +598,9 @@ export function installIdentity(ctx: VaultContext, input: IdentityInstall): { me
     ctx.sql.exec("UPDATE members SET gate_generation=gate_generation+1,revision=revision+1 WHERE id=?", member.id)
     ctx.sql.exec("DELETE FROM workspace_identity_checks WHERE member=?", member.id)
     member.gate_generation++
+    // Their mandates stop covering with the generation; the lapse and its
+    // notice say so.
+    lapseMandates(ctx, { member: member.id }, "identity_invalidated")
   } else {
     if (sec.pending || check.identityRuleRev !== revision || check.gateGeneration !== member.gate_generation || check.checkSequence <= member.check_sequence || Date.parse(check.succeededAt) > ctx.now() || Date.parse(check.expiresAt) <= ctx.now() || Date.parse(check.expiresAt) <= Date.parse(check.succeededAt)) throw new VaultError("identity_required", "This identity check is no longer current.")
     if (member.status === "unconfirmed") {
@@ -595,6 +621,7 @@ export function installIdentity(ctx: VaultContext, input: IdentityInstall): { me
         ctx.audit({ actor: "system", action: "member.promotion_cancelled", target: member.id, detail: { role: member.pending_role, reason: expired ? "expired" : "promoter_ineligible" } })
         return { promotionRefused: true }
       }
+      beforeManagementChange(ctx)
       ctx.sql.exec("UPDATE members SET role=pending_role,pending_role=NULL,pending_since=NULL,pending_action=NULL,pending_by=NULL,revision=revision+1 WHERE id=?", member.id)
       member.role = input.pendingRole
     }

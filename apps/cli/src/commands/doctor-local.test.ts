@@ -79,4 +79,28 @@ describe("doctor's local vault check", () => {
     expect((await readdir(config)).sort()).toEqual(before)
     expect((await stat(join(config, "local-vault.json"))).mtimeMs).toBe(mtime)
   })
+
+  test("a key in a file on a Linux desktop with a session bus and no secret-tool says how to move it into the keyring", async () => {
+    await record({ origin: ORIGIN, data: "", service: "systemd" })
+    const desktop = { platform: "linux" as const, env: { DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" }, hasSecretTool: false }
+    const file = await localVaultCheck(root.path, answering({ instance: "tok_local", custody: "file" }), desktop)
+    expect(file).toMatchObject({ status: "warn" })
+    expect(String(file?.detail)).toContain("install secret-tool (Debian and Ubuntu: libsecret-tools; Fedora and Arch: libsecret), make sure the login keyring is unlocked, and restart the vault (`systemctl --user restart mehen-vault.service`): it then moves the key into the keyring.")
+    const withTool = await localVaultCheck(root.path, answering({ instance: "tok_local", custody: "file" }), { ...desktop, hasSecretTool: true })
+    expect(String(withTool?.detail)).not.toContain("secret-tool (Debian")
+    const keyring = await localVaultCheck(root.path, answering({ instance: "tok_local", custody: "keyring" }), desktop)
+    expect(String(keyring?.detail)).not.toContain("install secret-tool")
+  })
+
+  test("vault_url names the local vault as the one a new enrolment uses", async () => {
+    const config = join(root.path, "config")
+    await mkdir(config, { mode: 0o700 })
+    await writeFile(join(config, "local-vault.json"), JSON.stringify({ origin: ORIGIN, data, port: 7787, service: "process" }), { mode: 0o600 })
+    const env = { MEHEN_HOME: config, MEHEN_SESSION: "pi-4f2a", HOME: root.path, PATH: "/usr/bin:/bin" }
+    const fetcher = async (request: Request): Promise<Response> => (request.url.startsWith(ORIGIN) ? Response.json({ instance: "tok_local", custody: "file" }) : new Response(null, { status: 503 }))
+    const report = await doctorAll(env, { fetch: fetcher })
+    expect(report.machine.find((c) => c.check === "vault_url")).toEqual({ check: "vault_url", status: "ok", detail: `${ORIGIN} for a new enrolment (the local vault \`mehen up\` set up)` })
+    const overridden = await doctorAll({ ...env, MEHEN_VAULT_URL: "https://vault.example" }, { fetch: fetcher })
+    expect(overridden.machine.find((c) => c.check === "vault_url")?.detail).toBe("https://vault.example for a new enrolment (MEHEN_VAULT_URL)")
+  })
 })

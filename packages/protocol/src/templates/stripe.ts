@@ -24,6 +24,7 @@ export const stripe: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "STRIPE_API_KEY",
   check: { method: "GET", path: "/v1/balance" },
   fields: { key: { label: "Secret key", pattern: "^(sk|rk)_(test|live)_" } },
   prefixes: ["sk_live_", "sk_test_", "rk_live_", "rk_test_"],

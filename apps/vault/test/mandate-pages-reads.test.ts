@@ -35,7 +35,7 @@ beforeAll(async () => {
 
 const TOM = { role: "member" as const, member: "mem_tom01" }
 const MANDATE = () => fx.GALLERY_MANDATE
-const CANDIDATES = { items: [{ id: "itm_githubtom0000001", slug: "github-tom" }, { id: "itm_slackplat000001", slug: "slack-platform" }, { id: "itm_openaitom000001", slug: "openai-tom" }] }
+const CANDIDATES = { items: [{ id: "itm_githubtom0000001", slug: "github-tom", never: null }, { id: "itm_slackplat000001", slug: "slack-platform", never: null }, { id: "itm_openaitom000001", slug: "openai-tom", never: null }] }
 
 beforeEach(() => {
   const m = MANDATE()

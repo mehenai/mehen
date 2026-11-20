@@ -264,13 +264,14 @@ describe.skipIf(worker === null)("mehen against the real Worker (wrangler dev)",
     expect(refused.body.error).toBe("proof_invalid")
 
     // A pending key cannot act as a device: ls exits 4 (a human must approve
-    // it); spanning status reports the same refusal in the slot's check.
+    // it); spanning status reports the same refusal in the slot's check, and
+    // exits 4 too, its only active workspace's check having failed.
     await writeConfig(dir, { vault: url, tenant: "enrol", device: started.enrolment, backend: "software" })
     const ls = await runAgainstWorker(["ls", "--json"], { MEHEN_CONFIG_DIR: dir, MEHEN_VAULT_URL: url })
     expect(ls.code).toBe(EXIT.human)
     expect((JSON.parse(ls.stdout) as { error: string }).error).toBe("device_pending")
     const status = await runAgainstWorker(["status", "--json"], { MEHEN_CONFIG_DIR: dir, MEHEN_VAULT_URL: url })
-    expect(status.code).toBe(EXIT.ok)
+    expect(status.code).toBe(EXIT.human)
     expect((JSON.parse(status.stdout) as { workspaces: { check: { ok: boolean; error?: string } }[] }).workspaces[0]?.check).toMatchObject({ ok: false, error: "device_pending" })
   })
 
@@ -283,9 +284,10 @@ describe.skipIf(worker === null)("mehen against the real Worker (wrangler dev)",
     const body = JSON.parse(ls.stdout) as { error: string; message: string }
     expect(["unauthenticated", "proof_invalid", "device_revoked"]).toContain(body.error)
     expect(body.message.length).toBeGreaterThan(0)
-    // Spanning status names the refusal in the slot's check and deletes nothing.
+    // Spanning status names the refusal in the slot's check, deletes nothing,
+    // and exits 6, its only active workspace's check having failed.
     const status = await runAgainstWorker(["status", "--json"], { MEHEN_CONFIG_DIR: dir, MEHEN_VAULT_URL: url })
-    expect(status.code).toBe(EXIT.ok)
+    expect(status.code).toBe(EXIT.identity)
     const check = (JSON.parse(status.stdout) as { workspaces: { check: { ok: boolean; error: string; message: string } }[] }).workspaces[0]?.check
     expect(check?.ok).toBe(false)
     expect(["unauthenticated", "proof_invalid", "device_revoked"]).toContain(check?.error ?? "")

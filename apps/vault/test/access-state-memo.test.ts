@@ -10,6 +10,8 @@ import { accessState, authorise, eligibilityState, memberRows, setSetting } from
 import { workspacePendingOps } from "../src/vault/areas/pending-workspace.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { accessFixture, accountAuth, inAccess, installTestIdentity, workspaceInvoke } from "./access-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
+import { beforeManagementChange } from "../src/vault/areas/management-guard.ts"
 
 const ACCESS_STATE_READ = "SELECT id,owner_kind,owner_id,scope,revoked_at FROM devices WHERE owner_kind IS NOT NULL"
 function builds(ctx: VaultContext): () => number {
@@ -57,10 +59,10 @@ describe("accessState across the invocations of one object", () => {
       const count = builds(base), calls = [invocationContext(base), invocationContext(base), invocationContext(base)]
       expect(calls.map((call) => name(call, "mem_kim"))).toEqual(["Kim", "Kim", "Kim"])
       expect(count()).toBe(1)
-      calls[1]!.sql.exec("UPDATE members SET name='Kim B' WHERE id='mem_kim'")
+      fixtureSql(calls[1]!).exec("UPDATE members SET name='Kim B' WHERE id='mem_kim'")
       expect(calls.map((call) => name(call, "mem_kim"))).toEqual(["Kim B", "Kim B", "Kim B"])
       expect(count()).toBe(2)
-      base.sql.exec("UPDATE members SET status='removed' WHERE id='mem_kim'")
+      fixtureSql(base).exec("UPDATE members SET status='removed' WHERE id='mem_kim'")
       expect(calls.map((call) => accessState(call).members.find((m) => m.id === "mem_kim")?.status)).toEqual(["removed", "removed", "removed"])
       expect(count()).toBe(3)
     })
@@ -70,11 +72,11 @@ describe("accessState across the invocations of one object", () => {
     await inAccess(tenant, (base) => {
       const call = invocationContext(base), other = invocationContext(base)
       expect(name(call, "mem_kim")).toBe("Kim")
-      call.sql.exec("UPDATE members SET name='Kim A' WHERE id='mem_kim'")
+      fixtureSql(call).exec("UPDATE members SET name='Kim A' WHERE id='mem_kim'")
       expect(name(call, "mem_kim")).toBe("Kim A")
-      other.sql.exec("UPDATE members SET name='Kim B' WHERE id='mem_kim'")
+      fixtureSql(other).exec("UPDATE members SET name='Kim B' WHERE id='mem_kim'")
       expect(name(call, "mem_kim")).toBe("Kim B")
-      base.sql.exec("UPDATE members SET name='Kim C' WHERE id='mem_kim'")
+      fixtureSql(base).exec("UPDATE members SET name='Kim C' WHERE id='mem_kim'")
       expect(name(call, "mem_kim")).toBe("Kim C")
       setSetting(base, "access_rev", 41)
       expect(accessState(call).accessRev).toBe(41)
@@ -84,7 +86,7 @@ describe("accessState across the invocations of one object", () => {
     const { tenant } = await accessFixture()
     await inAccess(tenant, (base) => {
       const clock = { at: base.now() }
-      base.sql.exec("UPDATE members SET pending_role='admin', pending_since=? WHERE id='mem_kim'", clock.at)
+      fixtureSql(base).exec("UPDATE members SET pending_role='admin', pending_since=? WHERE id='mem_kim'", clock.at)
       const clocked = Object.assign(Object.create(base) as VaultContext, { now: () => clock.at })
       const count = builds(base)
       const pending = (call: VaultContext) => accessState(call).members.find((m) => m.id === "mem_kim")?.standing.pendingRole
@@ -102,7 +104,7 @@ describe("accessState across the invocations of one object", () => {
     await inAccess(tenant, (base) => {
       const call = invocationContext(base), other = invocationContext(base)
       expect(() => call.storage.transactionSync(() => {
-        call.sql.exec("UPDATE members SET name='Rolled back' WHERE id='mem_kim'")
+        fixtureSql(call).exec("UPDATE members SET name='Rolled back' WHERE id='mem_kim'")
         expect(name(call, "mem_kim")).toBe("Rolled back")
         throw new Error("refused")
       })).toThrow("refused")
@@ -138,6 +140,7 @@ describe("accessState across the invocations of one object", () => {
       return ctx.storage.transactionSync(() => {
         authorise(ctx, invocation, { type: "member.invite" }, {}, ctx.now())
         allowedBefore++
+        beforeManagementChange(ctx)
         ctx.sql.exec(change.sql)
         authorise(ctx, invocation, { type: "member.invite" }, {}, ctx.now())
         return {}

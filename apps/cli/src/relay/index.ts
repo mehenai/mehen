@@ -19,6 +19,8 @@ export type RunRelayOptions = {
   // True when the run has placeholders: the child is then pointed at the proxy.
   proxy: boolean
   parentEnv: Record<string, string | undefined>
+  // mehen run --stream-writes: pass every write's answer on as it comes.
+  streamWrites?: boolean
 }
 
 export type RunRelay = {
@@ -40,6 +42,7 @@ export async function startRunRelay(options: RunRelayOptions): Promise<RunRelay>
     fencedHosts: options.fencedHosts,
     baseUrls: options.baseUrls,
     ca,
+    ...(options.streamWrites ? { streamWrites: true } : {}),
   })
   let dir: string | null = null
   const close = async () => {

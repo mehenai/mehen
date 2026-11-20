@@ -1,0 +1,64 @@
+{
+  "version": "0.4.0",
+  "commit": "f52635f",
+  "builtAt": "2026-11-19T09:40:02.276Z",
+  "files": [
+    {
+      "name": "mehen-darwin-arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "url": "https://mehen.dev/dl/v0.4.0/mehen-darwin-arm64.gz",
+      "sha256": "30050c9ea3627fc7995852d05d2f15a1919258d4884c301c09a2829201445d0e",
+      "size": 67464688,
+      "gzSha256": "fd96db4e76ebe099d1b97801b71005ab1f3a4905b1a810fd230162dd9902e04d",
+      "gzSize": 27022006
+    },
+    {
+      "name": "mehen-darwin-x64",
+      "os": "darwin",
+      "arch": "x64",
+      "url": "https://mehen.dev/dl/v0.4.0/mehen-darwin-x64.gz",
+      "sha256": "c3f982f88a87c62c4ea7f44f68f2025d79cc0bd76e6daa96ea3f1b896aaa0eca",
+      "size": 74946128,
+      "gzSha256": "f383c251b61bbca6da4572f3217dcbba9be6ef0081d3f9a58a81110fce62741b",
+      "gzSize": 30093205
+    },
+    {
+      "name": "mehen-linux-x64",
+      "os": "linux",
+      "arch": "x64",
+      "url": "https://mehen.dev/dl/v0.4.0/mehen-linux-x64.gz",
+      "sha256": "3979ab92448fad880f2a98db06f7ff2c21139d741d9697cc6fc27963c6b39931",
+      "size": 86586848,
+      "gzSha256": "bb96b44ce777808b617304d73c139d460755ee2d2d75ad67d052f48a6c950ce6",
+      "gzSize": 38169794
+    },
+    {
+      "name": "mehen-linux-arm64",
+      "os": "linux",
+      "arch": "arm64",
+      "url": "https://mehen.dev/dl/v0.4.0/mehen-linux-arm64.gz",
+      "sha256": "ffa27c5697b1f9fbf7d92ba1279f40d99c5179a2277e91769fec531bb63fa51e",
+      "size": 86559016,
+      "gzSha256": "d335cc17993773a05e8f8ee9c518fda8b149c28809a5eccaae4e99635f295c7c",
+      "gzSize": 38080181
+    },
+    {
+      "name": "mehen-se",
+      "os": "darwin",
+      "arch": "universal",
+      "url": "https://mehen.dev/dl/v0.4.0/mehen-se.gz",
+      "sha256": "f83a89b011431458ecd519ee34a3b410072bd4104e938411a93a9fc25034c8ec",
+      "size": 307168,
+      "gzSha256": "1bb40ac57ad4ad29a9fe52b91fa61de6a78fbda7de3cf35ed1f601144c6429bc",
+      "gzSize": 68513
+    }
+  ],
+  "signatures": [
+    {
+      "keyId": "rk-studio-2026-auto",
+      "alg": "ES256",
+      "signature": "IK5jfOdOSI3nc5KQzIGEOAmpkP80qlm60CNA5J7iQG5b5tM0uZYdrAcNWGGomsskhU6ViKWHQqFlDpz1opk0RQ"
+    }
+  ]
+}

@@ -51,6 +51,18 @@ export type ProofRequest = {
   body?: Bytes | string | null
 }
 
+// Sends a signed request once. Bun's fetch sends a GET, PUT or DELETE again
+// by itself when a reused connection closes before the answer, headers and
+// all, so the vault would see the same Mehen-Proof twice and refuse the
+// second as a replay. Such a request never reuses a connection, and a retry
+// is the caller's, signed afresh. Bun does not resend a POST, which keeps
+// its connection. Outside Bun, keepalive: false is the default.
+// (Cloudflare's RequestInit type has no keepalive; Bun's and the DOM's do.)
+const OWN_CONNECTION: RequestInit & { keepalive?: boolean } = { keepalive: false }
+export function fetchSignedOnce(request: Request): Promise<Response> {
+  return request.method === "POST" ? fetch(request) : fetch(request, OWN_CONNECTION)
+}
+
 export function normaliseUrl(url: string): string {
   const parsed = new URL(url)
   parsed.hash = ""

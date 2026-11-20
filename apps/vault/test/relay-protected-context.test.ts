@@ -8,6 +8,7 @@ import { workspaceApproval, workspaceApprovalOps } from "../src/vault/areas/appr
 import { projectFixture, inAccess } from "./projects-workspace-fixture.ts"
 import { deviceInvocation, devicePrincipal, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
 import type { VaultContext } from "../src/vault/core.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 afterEach(() => setUpstreamFetch(null))
 const request = { item: "key-workspace", method: "GET", url: "https://api.example.com/test", headers: [], context: { project: "prj_a", environment: "prod" } }
 
@@ -15,7 +16,7 @@ async function relayFixture() {
   const f = await projectFixture()
   await inAccess(f.tenant, ctx => {
     registerCredentialProvider()
-    ctx.sql.exec("UPDATE items SET policy=?", JSON.stringify({ default: "allow", rules: [] }))
+    fixtureSql(ctx).exec("UPDATE items SET policy=?", JSON.stringify({ default: "allow", rules: [] }))
     ctx.sql.exec("UPDATE vars SET item='key-workspace' WHERE env='prod'")
     for (const project of ["prj_a", "prj_b"])
       ctx.sql.exec("INSERT OR IGNORE INTO vars(project,env,name,item,field,updated_by,updated_at) VALUES(?,'prod','TOKEN','key-workspace','key','member:mem_owner',?)", project, ctx.now())
@@ -92,14 +93,14 @@ describe("protected relay context and final authority", () => {
         value: string
       }>("SELECT id,value FROM project_shares WHERE subject_id='mem_kim'").toArray()[0]!
       const b = { ...JSON.parse(share.value) as Record<string, unknown>, project: "prj_b" }
-      ctx.sql.exec("UPDATE project_shares SET project='prj_b',value=? WHERE id=?", JSON.stringify(b), share.id)
+      fixtureSql(ctx).exec("UPDATE project_shares SET project='prj_b',value=? WHERE id=?", JSON.stringify(b), share.id)
       for (const role of ["member", "kim"]) {
         const before = canonicalJson(ctx.sql.exec("SELECT * FROM protected_use_grants").toArray())
         await expect(decide(ctx, id, role)).rejects.toMatchObject({ code: "forbidden", message: "You are not allowed to do that." })
         expect(canonicalJson(ctx.sql.exec("SELECT * FROM protected_use_grants").toArray())).toBe(before)
       }
       const a = { ...b, id: "shr_kim_a", project: "prj_a" }
-      ctx.sql.exec("INSERT INTO project_shares VALUES(?,'prj_a','member','mem_kim',?)", a.id, JSON.stringify(a))
+      fixtureSql(ctx).exec("INSERT INTO project_shares VALUES(?,'prj_a','member','mem_kim',?)", a.id, JSON.stringify(a))
       await decide(ctx, id, "kim")
       const material = await authoriseWorkspaceRelay(ctx, devicePrincipal(), { ...request, approval: id }, await deviceInvocation(ctx))
       expect(material.headers).toContainEqual(["authorization", "Bearer test-fixture-key-not-a-live-secret"])
@@ -178,7 +179,7 @@ describe("protected run relay integration", () => {
         const value = await ctx.openField(ref, sealed)
         opens++
         if (change === "revoked-device") ctx.sql.exec("UPDATE devices SET revoked_at=? WHERE id='dev_member'", ctx.now())
-        if (change === "lost-decider") ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_owner'")
+        if (change === "lost-decider") fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_owner'")
         if (change === "changed-reference") ctx.sql.exec("UPDATE environments SET reference_rev=reference_rev+1 WHERE project='prj_b' AND name='prod'")
         return value
       } }

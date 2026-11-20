@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { stat } from "node:fs/promises"
 import { SOFTWARE_KEY_FILE, createDeviceKey, readKeyScope } from "../device-key.ts"
 import { addLedgerEntry, readLedger } from "../ledger.ts"
-import { MOCK_OWNER, MOCK_TENANT, MOCK_WORKSPACE, MockVault, WORKSPACE_SCOPE, deviceFor, item } from "../testing/mock-vault.ts"
+import { MOCK_OWNER, MOCK_TENANT, MOCK_WORKSPACE, MockVault, WORKSPACE_SCOPE, deviceFor, item, vaultError } from "../testing/mock-vault.ts"
 import type { LedgerScope } from "../ledger.ts"
 import { type JvResult, jsonLines, runJv, tempDir } from "../testing/run-mehen.ts"
 import { plainStyler, plainText, styler, terminalText } from "../tty.ts"
@@ -88,6 +88,24 @@ describe("mehen wait: polling", () => {
     const polls = vault.seen.slice(before).map((p) => `${p.path}${p.search}`)
     expect(polls).toEqual(["/v1/intakes/int_abc", "/v1/intakes/int_abc?wait=1", "/v1/intakes/int_abc?wait=1"])
     expect(result.stderr).toBe("")
+  })
+
+  // A server or proxy that drops a held poll: Bun's fetch would resend the
+  // same request, proof and all, on a reused connection; every poll is sent
+  // once and the next one signed afresh.
+  test("a long poll whose connection drops is polled again with a fresh proof, and the wait carries on to the answer", async () => {
+    await enrolled()
+    const done = { intake: "int_drop", status: "completed", item: item("openai-new") }
+    vault.sequences.set("intake:int_drop", [{ intake: "int_drop", status: "open" }, done])
+    vault.drops.set("GET /v1/intakes/int_drop?wait=1", 1)
+    const before = vault.seen.length
+    const result = await runJv(["wait", "int_drop", "--json"], env)
+    expect(vault.replays).toEqual([])
+    expect(result.code).toBe(EXIT.ok)
+    expect(json(result)).toMatchObject({ id: "int_drop", kind: "intake", status: "completed" })
+    const polls = vault.seen.slice(before)
+    expect(polls.map((p) => `${p.path}${p.search}`)).toEqual(["/v1/intakes/int_drop", "/v1/intakes/int_drop?wait=1", "/v1/intakes/int_drop?wait=1"])
+    expect(new Set(polls.map((p) => p.claims.jti)).size).toBe(3)
   })
 
   test("durations: 10m, 2h and 0 are accepted; soon is a usage error", async () => {
@@ -936,6 +954,76 @@ describe("mehen wait bnd_", () => {
     vault.sequences.set("bundle:bnd_b1", [{ bundle: "bnd_b1", approvals: [{ id: "apr_a", status: "maybe" }] }])
     expect(json(await runJv(["wait", "bnd_b1", "--json"], env))).toMatchObject({ error: "internal" })
     expect((await runJv(["wait", "bnd_", "--json"], env)).code).toBe(EXIT.usage)
+  })
+})
+
+describe("mehen wait mdp_", () => {
+  const status = (state: string, mandate: string | null) => ({ proposal: "mdp_p1", state, mandate, expiresAt: "2026-11-15T09:00:00.000Z" })
+  const answering = (...answers: unknown[]) => {
+    const queue = [...answers]
+    vault.overrides.set("GET /v1/mandates/proposals/mdp_p1", () => Response.json(queue.length > 1 ? queue.shift() : queue[0]))
+  }
+
+  test("waits while the proposal is open, then exits 0 with the mandate a person signed from it", async () => {
+    await enrolled()
+    answering(status("open", null), status("signed", "mdt_m1"))
+    const result = await runJv(["wait", "mdp_p1", "--json", "--timeout", "10m"], env)
+    expect(result.code).toBe(EXIT.ok)
+    expect(json(result)).toEqual({ id: "mdp_p1", kind: "mandate", proposal: "mdp_p1", state: "signed", mandate: "mdt_m1", expiresAt: "2026-11-15T09:00:00.000Z" })
+    expect(vault.seen.filter((r) => r.path === "/v1/mandates/proposals/mdp_p1").map((r) => r.search)).toEqual(["", "?wait=1"])
+    answering(status("signed", "mdt_m1"))
+    const signed = await runJv(["wait", "mdp_p1"], env)
+    // A decision, not live authority: the vault checks each request.
+    expect(signed.stdout).toContain("Signed: a person signed mandate mdt_m1 for this machine. The vault checks each request against it when it is sent.")
+    expect(signed.stdout).not.toContain("lets this machine make requests like these without asking")
+    expect(signed.stdout).toContain("mehen mandate show mdt_m1")
+    answering(status("expired", "mdt_m2"))
+    const human = await runJv(["wait", "mdp_p1"], env)
+    expect(human.code).toBe(EXIT.ok)
+    expect(human.stdout).toContain("Settled: a person signed mandate mdt_m2 for this machine instead, which closed this proposal. The vault checks each request against it when it is sent.")
+    expect(human.stdout).toContain("mehen mandate show mdt_m2")
+  })
+
+  test("an unsigned expiry exits 1 and says nothing changed; a timeout is exit 4", async () => {
+    await enrolled()
+    answering(status("expired", null))
+    const expired = await runJv(["wait", "mdp_p1", "--json"], env)
+    expect(expired.code).toBe(EXIT.error)
+    expect(json(expired)).toMatchObject({ error: "expired", message: "Mandate proposal mdp_p1 expired before anyone signed it; nothing changed." })
+    answering(status("open", null))
+    const waiting = await runJv(["wait", "mdp_p1", "--json", "--timeout", "0"], env)
+    expect(waiting.code).toBe(EXIT.human)
+    expect(json(waiting)).toMatchObject({ error: "timeout", next: { command: "mehen wait mdp_p1" } })
+    expect(String(json(waiting).message)).toStartWith("Mandate proposal mdp_p1 is still waiting for a human")
+  })
+
+  test("a vault without mandates says so; an unreadable status is an error, not a wait", async () => {
+    await enrolled()
+    vault.overrides.set("GET /v1/mandates/proposals/mdp_p1", () => vaultError("not_found", "No such route."))
+    expect(json(await runJv(["wait", "mdp_p1", "--json"], env))).toMatchObject({ error: "not_found", message: "This workspace has no mandates: they are not switched on here, or this vault is older than them." })
+    answering({ proposal: "mdp_other", state: "signed", mandate: "mdt_m1", expiresAt: "2026-11-15T09:00:00.000Z" })
+    expect(json(await runJv(["wait", "mdp_p1", "--json"], env))).toMatchObject({ error: "internal" })
+  })
+})
+
+describe("mehen wait: an id the vault does not know", () => {
+  test("is not_found naming the kind and pointing at mehen pending, never at credentials", async () => {
+    await enrolled()
+    for (const [id, path, words] of [["apr_gone1", "/v1/approvals/apr_gone1", "approval"], ["con_gone1", "/v1/connect/con_gone1", "connection"], ["bnd_gone1", "/v1/approvals/bundles/bnd_gone1", "bundle"]] as const) {
+      vault.overrides.set(`GET ${path}`, () => vaultError("not_found", "No such object."))
+      const result = await runJv(["wait", id, "--json"], env)
+      expect(result.code).toBe(EXIT.error)
+      expect(json(result)).toMatchObject({ error: "not_found", message: `No such ${words} ${id} in this workspace.`, next: { command: "mehen pending" } })
+    }
+  })
+
+  test("a mandate proposal is not_found pointing at mehen mandate ls, which lists proposals, not at mehen pending", async () => {
+    await enrolled()
+    vault.overrides.set("GET /v1/mandates/proposals/mdp_gone1", () => vaultError("not_found", "No such proposal."))
+    const result = await runJv(["wait", "mdp_gone1", "--json"], env)
+    expect(result.code).toBe(EXIT.error)
+    expect(json(result)).toMatchObject({ error: "not_found", message: "No such mandate proposal mdp_gone1 in this workspace.", next: { command: "mehen mandate ls", say: expect.stringContaining("mehen mandate ls") } })
+    expect(JSON.stringify(json(result).next)).not.toContain("mehen pending")
   })
 })
 

@@ -91,6 +91,15 @@ export class Person {
     await this.signed(`/api/w/${workspace.slug}/enrolments/${code}/accept`, { group, privateCredentials: true }, accept, workspace.slug)
   }
 
+  // An agent's intake page: its key sealed in the browser to the vault, in
+  // the home the page offers first.
+  async fulfilIntake(workspace: string, intake: string, value: string): Promise<void> {
+    const view = await this.call<{ slug: string; home: unknown; tags: string[]; binding: { value: unknown } }>(`/api/w/${workspace}/intakes/${intake}`)
+    const sealKey = await this.call<{ jwk: JsonWebKey }>("/v1/seal-key")
+    const submit = { slug: view.slug, home: view.home, binding: view.binding.value, publicFields: {}, tags: view.tags, sealed: { key: await seal(await importSealPublicKey(sealKey.jwk), value, `intake/${intake}/key`) } }
+    await this.signed(`/api/w/${workspace}/intakes/${intake}/submit`, submit, { type: "intake.submit", intake, digest: await sha256B64(canonicalJson(submit)) }, workspace)
+  }
+
   // The intake page: a key sealed in the browser to the vault.
   async addKey(workspace: string, slug: string, provider: string, value: string): Promise<void> {
     const intake = await this.call<{ intake: string }>(`/api/w/${workspace}/intakes`, { provider, slug, home: "workspace" }, 201)

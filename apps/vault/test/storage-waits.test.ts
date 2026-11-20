@@ -13,6 +13,7 @@ import { createWorkspaceIntake, workspaceIntakeOps } from "../src/vault/areas/in
 import { workspaceAdoptionOps } from "../src/vault/areas/adoptions.ts"
 import { callProject, projectDeviceInvocation, projectFixture, projectState } from "./projects-workspace-fixture.ts"
 import { credentialsFixture, deviceInvocation, devicePrincipal, inAccess } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const APPROVAL_READ = "SELECT * FROM approvals WHERE id=? AND ask IS NOT NULL"
 const ACCESS_STATE_READ = "SELECT id,owner_kind,owner_id,scope,revoked_at FROM devices WHERE owner_kind IS NOT NULL"
@@ -156,7 +157,7 @@ describe("long polls wake on a write to their object", () => {
         const pending = workspaceIntakeOps["intake.status"].handler(ctx, p, { intake, waitMs: GAP_WAIT_MS }, i).finally(() => { settled = true })
         expect(requestReads.count()).toBe(1)
         expect(storageWaiterCount(ctx.storage)).toBe(1)
-        ctx.storage.transactionSync(() => ctx.sql.exec("UPDATE members SET name='Kim A' WHERE id='mem_kim'"))
+        ctx.storage.transactionSync(() => fixtureSql(ctx).exec("UPDATE members SET name='Kim A' WHERE id='mem_kim'"))
         await settle()
         expect(requestReads.count()).toBe(1)
         await afterGap()
@@ -182,7 +183,7 @@ describe("long polls wake on a write to their object", () => {
         const started = Date.now()
         const pending = workspaceIntakeOps["intake.status"].handler(ctx, p, { intake, waitMs: GAP_WAIT_MS }, i)
         for (let write = 0; write < 20; write++) {
-          ctx.sql.exec("UPDATE members SET name=? WHERE id='mem_kim'", `Kim ${write}`)
+          fixtureSql(ctx).exec("UPDATE members SET name=? WHERE id='mem_kim'", `Kim ${write}`)
           await settle()
         }
         // The first check and at most one wake per minimum gap that has

@@ -31,3 +31,12 @@
 .brand-semrush { color: #ff642d; }
 .brand-intercom { color: light-dark(#1f8a80, #6afdef); }
 .brand-loops { color: #fc5200; }
+.brand-huggingface { color: light-dark(#b38f00, #ffd21e); }
+.brand-replicate { color: light-dark(#000000, #f0f0f0); }
+.brand-deepseek { color: #5786fe; }
+.brand-supabase { color: light-dark(#1f9d66, #3fcf8e); }
+.brand-digitalocean { color: #0080ff; }
+.brand-railway { color: light-dark(#0b0d0e, #f0f0f0); }
+.brand-render { color: light-dark(#000000, #f0f0f0); }
+.brand-upstash { color: light-dark(#00a372, #00e9a3); }
+.brand-planetscale { color: light-dark(#000000, #f0f0f0); }

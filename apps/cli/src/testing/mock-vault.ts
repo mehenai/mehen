@@ -209,7 +209,18 @@ export class MockVault {
   // header it sends (a clock skew) or replaces the answer.
   healthz: () => Response = () => Response.json({ ok: true }, { headers: { date: new Date().toUTCString() } })
   relay: (request: RelayRequestInput) => Response = defaultRelay
+  // The Mehen-Forwarded the vault puts on a relay refusal that has none: "no"
+  // as for one before forwarding; null for a vault that does not mark them.
+  relayForwarded: "no" | "yes" | null = "no"
   readonly overrides = new Map<string, MockRoute>()
+  // Requests, as "METHOD /path?search", whose connection the mock drops
+  // mid-answer, as an idle timeout at a server or proxy does: each is
+  // accepted, its proof spent, and its socket closed after a second, that
+  // many times.
+  readonly drops = new Map<string, number>()
+  // Every request refused because its proof was already spent, as
+  // "METHOD /path?search".
+  readonly replays: string[] = []
   // The /v1 version seam as the vault runs it: `cliAdvice` is
   // sent as Mehen-Cli on every /v1 response; with `cliMinimum`, an
   // identified mehen below it is refused 426 cli_outdated (freeze and
@@ -318,7 +329,10 @@ export class MockVault {
     }
     const check = await verifyProof(proof, await importDeviceKey(jwk), { method: request.method, url: request.url, bodyHash: await bodyHash(bytes) })
     if (!check.ok) return vaultError("proof_invalid", `The proof does not match the request (${check.reason}).`)
-    if (this.jtis.has(claims.jti)) return vaultError("proof_invalid", "Replayed proof.")
+    if (this.jtis.has(claims.jti)) {
+      this.replays.push(`${request.method} ${url.pathname}${url.search}`)
+      return vaultError("proof_invalid", "Replayed proof.")
+    }
     this.jtis.add(claims.jti)
     return { method: request.method, path: url.pathname, search: url.search, claims, body: text }
   }
@@ -368,6 +382,14 @@ export class MockVault {
       this.outdated.push(`${request.method} ${url.pathname}`)
       response = Response.json({ error: "cli_outdated", message: `This machine's mehen ${agent ?? "?"} is older than the vault supports (${this.cliMinimum ?? "?"}).`, next: { command: "mehen update --json", say: "Update mehen on this machine, then run the command again." } }, { status: 426, headers: { "Mehen-Error": "1" } })
     } else response = await this.route(request, url)
+    // As the vault marks a relay refusal made before it forwarded anything.
+    if (this.relayForwarded !== null && request.method === "POST" && url.pathname === "/v1/relay" && response.headers.get("Mehen-Error") === "1" && !response.headers.has("Mehen-Forwarded")) {
+      const text = await response.text()
+      // upstream_failed only ever comes after forwarding, as in the vault.
+      const after = text.includes('"error":"upstream_failed"')
+      response = new Response(text, response)
+      response.headers.set("Mehen-Forwarded", after ? "yes" : this.relayForwarded)
+    }
     if (this.cliAdvice === null) return response
     const out = new Response(response.body, response)
     out.headers.set("Mehen-Cli", this.cliAdvice)
@@ -380,6 +402,14 @@ export class MockVault {
     const seen = await this.authenticate(request, url, bytes)
     if (seen instanceof Response) return seen
     this.seen.push(seen)
+    const dropping = `${request.method} ${url.pathname}${url.search}`
+    const drops = this.drops.get(dropping) ?? 0
+    if (drops > 0) {
+      this.drops.set(dropping, drops - 1)
+      this.server.timeout(request, 1)
+      await Bun.sleep(5_000)
+      return vaultError("internal", "This answer comes after the connection was dropped.")
+    }
     const route = `${request.method} ${url.pathname}`
     const override = this.overrides.get(route)
     if (override) return override(request, seen)

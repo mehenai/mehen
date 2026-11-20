@@ -4,6 +4,7 @@ import { VaultError } from "../src/http.ts"
 import { can } from "../src/vault/access.ts"
 import { workspaceVarDigest, projectWorkspaceOps } from "../src/vault/areas/projects-workspace.ts"
 import { projectFixture, projectState, inAccess, callProject } from "./projects-workspace-fixture.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 describe("workspace project variables", () => {
   it("keeps protected run and edit independent in the runtime projection", async () => {
     const f = await projectFixture()
@@ -40,7 +41,7 @@ describe("workspace project variables", () => {
     await inAccess(f.tenant, (ctx) => {
       const state = projectState(ctx), input = { project: "prj_a", env: "dev", name: "PLAIN", before: null, plain: "safe" }
       const action = callProject(ctx, state, "kim", "projects.action", { change: "variable", input }) as import("@mehen/protocol").WorkspaceStepUpAction
-      ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id='shr_kim'")
       const before = canonicalJson(ctx.sql.exec("SELECT * FROM vars").toArray())
       expect(() => callProject(ctx, state, "kim", "projects.setVar", input, action)).toThrow("No such object")
       expect(() => callProject(ctx, projectState(ctx), "owner", "projects.setVar", input, { type: "project.delete", project: "prj_a" })).toThrow("exact action")

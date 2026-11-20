@@ -25,5 +25,6 @@ export const heygen: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "HEYGEN_API_KEY",
   fields: { key: { label: "API key" } },
 }

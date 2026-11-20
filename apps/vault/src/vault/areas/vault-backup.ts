@@ -17,6 +17,7 @@ import { WORKSPACE_GENERATION } from "../../directory/workspace-cutover.ts"
 import type { Area, VaultContext } from "../core.ts"
 import { parseRootKeys } from "../keys.ts"
 import { setSetting, setting } from "./workspace-runtime.ts"
+import { GUARD_PREFIX, withTrustedSchema } from "./management-guard.ts"
 
 const OBJECT_FORMAT = "mehen-vault-backup/v1"
 const DUMP_FORMAT = "mehen-vault-dump/v1"
@@ -86,9 +87,12 @@ function unbase64(text: string): ArrayBuffer {
 }
 
 // Application schema in creation order: tables, then their indexes and
-// triggers as the migrations made them. Never SQLite's or Cloudflare's own.
+// triggers as the migrations made them. Never SQLite's or Cloudflare's own,
+// nor the management guard's tables and triggers, which every start puts
+// back and a restore installs after its rows (management-guard.ts).
+const OWN_SCHEMA = (entry: SchemaEntry): boolean => entry.name.startsWith(GUARD_PREFIX) || entry.tbl_name.startsWith(GUARD_PREFIX)
 function schemaEntries(sql: SqlStorage): SchemaEntry[] {
-  return sql.exec<SchemaEntry>("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND tbl_name NOT GLOB '_cf_*' ORDER BY rowid").toArray()
+  return sql.exec<SchemaEntry>("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND tbl_name NOT GLOB '_cf_*' ORDER BY rowid").toArray().filter((entry) => !OWN_SCHEMA(entry))
 }
 
 // Synchronous from the first read to the last, so no other call interleaves
@@ -190,7 +194,7 @@ export async function dumpVault(ctx: VaultContext, date: string): Promise<DumpRe
     bytes = new Uint8Array(await existing.arrayBuffer())
     try { await openVaultDump(ctx, date, bytes) } catch { return corrupt }
   } else {
-    const size = ctx.storage.sql.databaseSize
+    const size = ctx.sql.databaseSize
     if (size > MAX_DUMP_DATABASE_BYTES) throw new VaultError("too_large", `This workspace's storage is ${size} bytes, above the ${MAX_DUMP_DATABASE_BYTES}-byte limit for a dump; nothing was dumped.`)
     if (isEmpty(ctx)) throw new VaultError("conflict", "This workspace object is empty; nothing was dumped.")
     const plaintext = serialiseVault(ctx, date)
@@ -278,12 +282,17 @@ export async function stageDumpRestore(ctx: VaultContext, intent: string, date: 
   const dump = await openVaultDump(ctx, date, new Uint8Array(await object.arrayBuffer()))
   assertCompatible(ctx, dump)
   let rows = 0
-  const staged = ctx.storage.transactionSync((): RestoreStaged => {
+  // The trusted sequence: in one transaction that may change the schema and
+  // holds the management guard's marker, drop the tables, make the dump's
+  // schema, write its rows, then install the guard's triggers and check
+  // them; the marker goes as the transaction commits, and the next start
+  // checks the triggers, recursive_triggers and an empty marker again.
+  const staged = withTrustedSchema(ctx, (): RestoreStaged => {
     // Checked again: another call may have written while the dump was fetched.
     assertEmpty(ctx)
     ctx.sql.exec("PRAGMA defer_foreign_keys = ON")
     for (const name of applicationTables(ctx)) ctx.sql.exec(`DROP TABLE ${quoted(name)}`)
-    for (const entry of dump.schema) ctx.sql.exec(entry.sql)
+    for (const entry of dump.schema) if (!OWN_SCHEMA(entry)) ctx.sql.exec(entry.sql)
     // Tables in the order the migrations created them.
     for (const table of dump.tables) {
       const insert = `INSERT INTO ${quoted(table.name)} (${table.columns.map(quoted).join(", ")}) VALUES (${table.columns.map(() => "?").join(", ")})`

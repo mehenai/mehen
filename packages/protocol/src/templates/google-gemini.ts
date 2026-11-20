@@ -37,6 +37,7 @@ export const googleGemini: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "GEMINI_API_KEY",
   check: { method: "GET", path: "/v1beta/models" },
   fields: { key: { label: "API key", pattern: "^AIza" } },
   prefixes: ["AIza"],

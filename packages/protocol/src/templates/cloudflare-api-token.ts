@@ -23,6 +23,7 @@ export const cloudflareApiToken: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "CLOUDFLARE_API_TOKEN",
   // Not /user/tokens/verify: an account-owned token answers 401 there.
   check: { method: "GET", path: "/client/v4/accounts?per_page=1" },
   fields: { key: { label: "API token" } },

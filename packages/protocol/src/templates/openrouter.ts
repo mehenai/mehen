@@ -44,6 +44,7 @@ export const openrouter: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "OPENROUTER_API_KEY",
   check: { method: "GET", path: "/api/v1/key" },
   fields: { key: { label: "API key", pattern: "^sk-or-" } },
   prefixes: ["sk-or-v1-"],

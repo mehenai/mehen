@@ -35,6 +35,7 @@ export const scaleway: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "SCW_SECRET_KEY",
   fields: { key: { label: "Secret key", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" } },
   setup: {
     title: "In the Scaleway console",

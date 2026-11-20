@@ -18,6 +18,9 @@ import { LocalBucket } from "./r2.ts"
 import { localRateLimits } from "./rate-limit.ts"
 import type { LocalOptions, LocalState, LocalVault } from "./types.ts"
 
+// Above the longest answer the vault holds open (a 25 s long poll).
+export const IDLE_TIMEOUT_SECONDS = 60
+
 export type { LocalOptions, LocalState, LocalVault }
 
 export const BOOTSTRAP_FILE = "bootstrap"
@@ -136,7 +139,7 @@ async function startLocked(config: LocalConfig, release: () => void, options: Lo
     VAULT_ORIGIN: "",
     RP_ID: "",
     CLI_MINIMUM_VERSION: "0.3.0",
-    CLI_RECOMMENDED_VERSION: "0.4.0",
+    CLI_RECOMMENDED_VERSION: "0.4.1",
     WORKSPACE_CREATION: "accounts",
     SIGNUP_MODE_MAX: "invite",
     POLICY_RULES: "on",
@@ -188,7 +191,7 @@ async function startLocked(config: LocalConfig, release: () => void, options: Lo
     accounts: accounts(),
     custody,
     bootstrap: typeof env.BOOTSTRAP_CODE === "string",
-    workspaces: db.db.query("SELECT slug, name FROM workspaces WHERE status = 'active' ORDER BY created_at").all() as { slug: string; name: string }[],
+    workspaces: db.db.query("SELECT id, slug, name FROM workspaces WHERE status = 'active' ORDER BY created_at").all() as { id: string; slug: string; name: string }[],
   })
 
   const closeStores = () => {
@@ -234,9 +237,11 @@ async function startLocked(config: LocalConfig, release: () => void, options: Lo
     return response
   }
 
+  // Bun closes a connection idle for 10 s by default, and the vault holds a
+  // ?wait=1 poll for up to 25 s; the client then sees its wait cut short.
   let server: ReturnType<typeof Bun.serve>
   try {
-    server = Bun.serve({ hostname: config.hostname, port: config.port, fetch: handle })
+    server = Bun.serve({ hostname: config.hostname, port: config.port, idleTimeout: IDLE_TIMEOUT_SECONDS, fetch: handle })
   } catch (error) {
     closeStores()
     throw error

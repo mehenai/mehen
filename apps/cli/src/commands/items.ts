@@ -9,7 +9,7 @@
 // never their notes, because nothing in an ItemDescription proves the policy
 // is a verified template binding.
 
-import { EXIT, type ItemDescription, type ItemSummary } from "@mehen/protocol/api"
+import { EXIT, type ItemConnection, type ItemDescription, type ItemSummary } from "@mehen/protocol/api"
 import { checkBinding, isLeaseOnly, leaseOnlyDelivery, leaseOnlyWords, parseDestination } from "@mehen/protocol/binding"
 import { type PolicySummary, summarisePolicy } from "@mehen/protocol/policy-summary"
 import type { PushRecordView } from "@mehen/protocol/push"
@@ -97,6 +97,13 @@ export async function listAllItems(env: Env, filters: ItemFilters): Promise<{ li
   return { list: { items }, unavailable }
 }
 
+// `mehen ls --json` leaves out an item's null and false fields (no
+// provider, account unverified, never used): a missing field reads as null
+// or false. `workspace` is always the whole object.
+export function compactListedItem(item: ListedItem): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(item).filter(([key, value]) => key === "workspace" || (value !== null && value !== false && value !== undefined)))
+}
+
 export const lsCommand: Command = {
   summary: "list the items this machine may use",
   spec: {
@@ -109,7 +116,7 @@ export const lsCommand: Command = {
     const { list, unavailable } = await listAllItems(env, { tag: args.string("tag"), kind: args.string("kind"), provider: args.string("provider") })
     for (const gone of unavailable) note(`mehen: warning: the vault for ${gone.slot} could not be asked (${gone.error}: ${gone.message}); its items are not listed.`)
     if (json) {
-      printJson(list)
+      printJson({ items: list.items.map(compactListedItem) })
       return EXIT.ok
     }
     if (list.items.length === 0) {
@@ -274,6 +281,12 @@ export function pushLine(push: PushRecordView, timeZone?: string): string {
   return `  push to ${push.words} ${PUSH_STATE_WORDS[push.state] ?? push.state} (version ${push.version}${said}) ${at}`
 }
 
+// What an OAuth connection may do: the scopes it holds and its token's end.
+export function connectionLines(connection: ItemConnection, timeZone?: string): Text[] {
+  const expires = connection.expiresAt === null ? "does not expire" : `expires ${localStamp(connection.expiresAt, timeZone) ?? connection.expiresAt}`
+  return [field("scopes", connection.scopes.length ? connection.scopes.join(", ") : "none recorded"), field("token", `${expires}${connection.refreshing ? "; renewing failed, retrying" : ""}`)]
+}
+
 // The show page (UX-MEHEN-TOOLS 2.7): every line it had, the policy count
 // followed by the three summary lines, a relative last used, and a try: line.
 export function showLines(item: ItemDescription, slug: string, colour: Styler, options: ShowOptions = {}): Text[] {
@@ -294,6 +307,7 @@ export function showLines(item: ItemDescription, slug: string, colour: Styler, o
   lines.push(field("Effective floors", item.policyFloor === undefined ? "unavailable from this vault" : item.policyFloor.length ? "Stronger than a saved base allow:" : "none reported"))
   for (const floor of item.policyFloor ?? []) lines.push(segments(`    ${floor.action}: ${floor.host} ${JSON.stringify(floor.rule)} (${floor.reason}; ${floor.id})`))
   lines.push(segments(`  Read mehen policy show ${item.slug} for current policy state. A saved base allow does not remove a floor.`))
+  if (item.connection) lines.push(...connectionLines(item.connection, options.timeZone))
   const careful = postureText(item.posture)
   if (careful !== null) lines.push(`  How careful: ${careful}`)
   if (item.tags.length) lines.push(field("tags", item.tags.join(", ")))

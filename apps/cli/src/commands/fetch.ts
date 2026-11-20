@@ -6,27 +6,28 @@ import { type FileHandle, lstat, open, readFile } from "node:fs/promises"
 import { EXIT } from "@mehen/protocol/api"
 import { type Bytes, utf8 } from "@mehen/protocol/bytes"
 import type { Command } from "../command.ts"
-import { CliError, usageError } from "../errors.ts"
+import { CliError, outcomeUnknown, usageError } from "../errors.ts"
 import {
   type UpstreamHead,
   bodyForJson,
   parseDurationSeconds,
   parseHeader,
-  parseJsonBody,
+  selectBody,
   parseSelectPath,
+  readChunk,
   readLimited,
   fetchContext,
+  rejectedHint,
   relayReplaces,
   relayRequest,
   replacingRefused,
-  selectJson,
   upstreamHead,
 } from "../operations.ts"
 import { mandateAllowed, mandateAllowedText, mandateCapped } from "../mandate-operations.ts"
 import { note, printJson, writeStdout } from "../output.ts"
 import { postureAllowed, postureAllowedText, ruleAllowedText, ruleEnded, rulesAllowed } from "../policy-operations.ts"
 import { openSession, sessionLabel } from "../session.ts"
-import type { VaultApi } from "../vault-api.ts"
+import { type VaultApi, retrySafeMethod } from "../vault-api.ts"
 
 async function readData(data: string | null): Promise<Bytes | null> {
   if (data === null) return null
@@ -45,9 +46,12 @@ async function readData(data: string | null): Promise<Bytes | null> {
 // --max-time: at most ten minutes, like the vault's own long requests.
 export const FETCH_MAX_TIME_SECONDS = 600
 
-export function timedOut(seconds: number): CliError {
-  return new CliError("network", `No complete answer through the vault within ${seconds} s, so mehen stopped waiting.`, {
-    say: "The request may still have reached the upstream. Check whether it took effect before you send it again, or give --max-time more time.",
+// A read that timed out is safe to repeat; a write may have taken effect.
+export function timedOut(seconds: number, method: string): CliError {
+  const message = `No complete answer through the vault within ${seconds} s, so mehen stopped waiting.`
+  if (!retrySafeMethod(method)) return outcomeUnknown(message)
+  return new CliError("network", message, {
+    say: "A read changes nothing upstream: send it again, or give --max-time more time.",
   })
 }
 
@@ -89,20 +93,48 @@ async function openOutput(output: string): Promise<FileHandle> {
   return handle
 }
 
-async function writeBody(response: Response, handle: FileHandle | null): Promise<number> {
-  await handle?.truncate(0)
+export type OutputFile = { handle: FileHandle; path: string }
+
+// The answer arrived but could not be written out: the request was sent,
+// so sending it again to get the output could do a write twice.
+function outputFailed(output: OutputFile, error: unknown, method: string, status: number): CliError {
+  const detail = error instanceof Error ? error.message : String(error)
+  return new CliError("failed", `The request was sent and the upstream answered ${status}, but mehen could not write its answer to ${output.path}: ${detail}.`, {
+    say: retrySafeMethod(method) ? `Fix ${output.path} (space, permissions), then run the request again.` : `Do not send the request again to get the output: it was sent and may have taken effect. Fix ${output.path} and read the result back with a separate read, or ask the human.`,
+  })
+}
+
+export async function writeBody(response: Response, output: OutputFile | null, method: string, status: number): Promise<number> {
+  const file = async (step: () => Promise<unknown>) => {
+    try {
+      await step()
+    } catch (error) {
+      throw outputFailed(output as OutputFile, error, method, status)
+    }
+  }
+  if (output) await file(() => output.handle.truncate(0))
   if (!response.body) return 0
   const reader = response.body.getReader()
   let total = 0
   for (;;) {
-    const { done, value } = await reader.read()
+    const { done, value } = await readChunk(reader, method)
     if (done) break
     const chunk = new Uint8Array(value)
     total += chunk.length
-    if (handle) await handle.write(chunk)
+    if (output) await file(() => output.handle.write(chunk))
     else await writeStdout(chunk)
   }
   return total
+}
+
+// Closing the output: a failure is the output's only when nothing else
+// failed and an answer arrived; it never replaces the error that did.
+export async function closeOutput(output: OutputFile, method: string, status: number | null, failedAlready: boolean): Promise<void> {
+  try {
+    await output.handle.close()
+  } catch (error) {
+    if (!failedAlready && status !== null) throw outputFailed(output, error, method, status)
+  }
 }
 
 function headerLines(head: UpstreamHead): string[] {
@@ -138,9 +170,11 @@ export const fetchCommand: Command = {
   ],
   notes: [
     "The response body goes to stdout as the vault returns it; the status and Mehen-Item go to stderr, and so does the rule or mandate, when one allowed the request without asking. Any upstream status exits 0 unless --fail.",
+    "When the service rejects the credential itself (401, or a 403 saying its scope is too narrow), stderr and --json's hint say how to replace or reconnect it.",
     "The vault may already have decompressed or scrubbed the body and removed response headers; it is not a byte-for-byte copy of the original upstream response.",
     "Never set an auth header yourself: the vault injects the credential where the item says.",
     "--project and --env name the project environment the credential is used for; a protected, team or guest credential needs them. They never change the workspace.",
+    "--approval apr_... names the approval a human gave for exactly this request (exit 3 handed it over); after mehen wait returns approved, repeat the request byte for byte, optionally with --approval. A different method, URL, header or body asks again.",
     "--replaces apr_... marks this request as a corrected version of this machine's open ask to the same place: when it is held for approval, that ask reads superseded and the new one is the one to wait on. Without it, a second ask stays open beside the first; to ask for several writes at once, use mehen plan submit.",
   ],
   async run({ args, json, env }) {
@@ -170,7 +204,9 @@ export const fetchCommand: Command = {
       session: sessionLabel(env),
       context: fetchContext(args.string("project"), args.string("env"), "mehen fetch --help"),
     })
-    const handle = output === null ? null : await openOutput(output)
+    const file = output === null ? null : { handle: await openOutput(output), path: output }
+    let answered: number | null = null
+    let failed = false
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | null = null
     let api: VaultApi | null = null
@@ -179,6 +215,7 @@ export const fetchCommand: Command = {
       timer = maxTime === null ? null : setTimeout(() => controller.abort(), maxTime * 1000)
       const response = await api.relay(request, { signal: controller.signal })
       const upstream = upstreamHead(response)
+      answered = upstream.status
       if (args.bool("include")) for (const line of headerLines(upstream)) note(line)
       else note(`mehen: ${upstream.status}${upstream.statusText ? ` ${upstream.statusText}` : ""}${upstream.item ? `  Mehen-Item: ${upstream.item}` : ""}`)
       const rules = await rulesAllowed(api, response, item, controller.signal)
@@ -187,22 +224,31 @@ export const fetchCommand: Command = {
       for (const level of postures ?? []) note(`mehen: ${postureAllowedText(level)}`)
       const mandate = mandateAllowed(response)
       if (mandate) note(`mehen: ${mandateAllowedText(mandate)}`)
-      const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}) }
+      const hint = await rejectedHint(api, upstream, item, controller.signal)
+      if (hint) note(`mehen: ${hint}`)
+      const head = { ...upstream, ...(rules ? { rules } : {}), ...(postures ? { postures } : {}), ...(mandate ? { mandate } : {}), ...(hint ? { hint } : {}) }
       if (select !== null) {
-        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY)
-        const picked = selectJson(parseJsonBody(bytes, head.status), select)
-        if (!picked.found) note(`mehen: --select ${selectText} matched nothing in the body, so it prints null`)
-        if (json) printJson({ ...head, selected: picked.value, found: picked.found })
-        else await writeStdout(utf8(`${JSON.stringify(picked.value, null, 2)}\n`))
+        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
+        const chosen = selectBody(bytes, head.status, request.method, select)
+        if (!chosen.json) {
+          note(`mehen: ${chosen.note}`)
+          if (json) printJson({ ...head, ...bodyForJson(bytes), selected: null, found: false, note: chosen.note })
+          else await writeStdout(bytes)
+        } else {
+          const picked = chosen.picked
+          if (!picked.found) note(`mehen: --select ${selectText} matched nothing in the body, so it prints null`)
+          if (json) printJson({ ...head, selected: picked.value, found: picked.found })
+          else await writeStdout(utf8(`${JSON.stringify(picked.value, null, 2)}\n`))
+        }
       } else if (output !== null) {
-        const written = await writeBody(response, handle)
+        const written = await writeBody(response, file, request.method, upstream.status)
         note(`mehen: wrote ${written} bytes to ${output}`)
         if (json) printJson({ ...head, output, bytes: written })
       } else if (json) {
-        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY)
+        const { bytes } = await readLimited(response, Number.POSITIVE_INFINITY, request.method)
         printJson({ ...head, ...bodyForJson(bytes) })
       } else {
-        await writeBody(response, null)
+        await writeBody(response, null, request.method, upstream.status)
       }
       if (args.bool("fail") && head.status >= 400) {
         throw new CliError("upstream_status", `The upstream answered ${head.status}${head.statusText ? ` ${head.statusText}` : ""}.`, {
@@ -211,11 +257,12 @@ export const fetchCommand: Command = {
       }
       return EXIT.ok
     } catch (error) {
-      if (controller.signal.aborted && maxTime !== null) throw timedOut(maxTime)
+      failed = true
+      if (controller.signal.aborted && maxTime !== null) throw timedOut(maxTime, request.method)
       throw replacingRefused(ruleEnded(api ? await mandateCapped(api, error, controller.signal) : error), request, "cli")
     } finally {
       if (timer) clearTimeout(timer)
-      await handle?.close()
+      if (file) await closeOutput(file, request.method, answered, failed)
     }
   },
 }

@@ -17,7 +17,7 @@ import type { ApprovalPresentation } from "../services.ts"
 import { digestOf, parseOpInput } from "./approvals.ts"
 import { consentCurrent, readConsent, requestWorkspaceApproval, workspaceApproval } from "./approvals-workspace.ts"
 import { checkedCredential, missingCredential, openCredentialSecrets, visibleCredential, type CheckedCredential } from "./items-workspace.ts"
-import { workspaceTokenRead } from "./oauth-workspace.ts"
+import { connectionNeedsReauth, workspaceTokenRead } from "./oauth-workspace.ts"
 import { approvedUseSnapshot, type ProtectedSnapshot } from "./projects-workspace.ts"
 import { itemPushable, pushesManaged, pushesOn, pushesUnavailable, pushOffered } from "./push-allowance.ts"
 import { PUSHES_MIGRATION, PUSH_CONSTRAINTS, PUSH_METHOD, PUSH_QUEUED_MS, PUSH_SENDING_MS, PUSH_SWEEP_KEY, PUSH_URL_PREFIX, insertQueuedPush, pushRow, schedulePushSweep, storedDestination, type PushPresentation, type PushRow, type PushSnapshotPart } from "./push-records.ts"
@@ -108,7 +108,7 @@ function chooseVia(ctx: VaultContext, principal: DevicePrincipal, request: PushR
 // denied by its policy. The preview reads are made only where its policy
 // allows them without a human.
 function checkViaCalls(ctx: VaultContext, via: CheckedCredential, destination: PushDestination): { calls: PushCall[]; allowed: PushCall[] } {
-  if (via.status === "needs_reauth") throw new VaultError("needs_reauth", `"${via.slug}" needs to be connected again.`)
+  if (via.status === "needs_reauth") throw connectionNeedsReauth(ctx, via)
   if (via.status === "disabled") throw new VaultError("forbidden", `"${via.slug}" is disabled.`)
   if (!deviceModeAllowed(via.ceiling, "relay")) throw new VaultError("mode_refused", `"${via.slug}" may not be used through the relay: its exposure ceiling is ${via.ceiling}.`)
   if (via.injection === null || via.injection.in === "query") throw new VaultError("forbidden", `"${via.slug}" cannot carry a push: it is not sent in a header.`)

@@ -11,7 +11,7 @@ There are two shapes: `TEMPLATES` for credentials a human pastes in (API keys an
 ### Where they live
 
 - `packages/protocol/src/templates/<id>.ts`: one file per template or OAuth provider, named by its id, exporting exactly one `Template` or `OAuthProviderTemplate` (as `export const <camelCaseId>`, with a `Template` suffix where that is a reserved word: `class` exports `classTemplate`). A helper only that template uses (Gmail's path prefix, Graph's action spellings) stays in its file.
-- `packages/protocol/src/templates/shared.ts`: what more than one file uses: `BEARER()`, `READS`, `WRITES`, `ALLOW_READS`, `MODEL_CALLS`, GitHub's `githubPaths`, `GITHUB_ALLOWED` and `GITHUB_SENSITIVE`, Google's `GOOGLE_AUTH`, `GOOGLE_IDENTITY`, `GOOGLE_REFRESH` and `GOOGLE_LIFETIMES`, `ACCESS_TOKEN_BEARER` and `CLIENT_SETUP_CALLBACK`.
+- `packages/protocol/src/templates/shared.ts`: what more than one file uses: `BEARER()`, `READS`, `WRITES`, `ALLOW_READS`, `NAMED_READS`, `MODEL_CALLS`, GitHub's `githubPaths`, `GITHUB_ALLOWED` and `GITHUB_SENSITIVE`, Google's `GOOGLE_AUTH`, `GOOGLE_IDENTITY`, `GOOGLE_REFRESH` and `GOOGLE_LIFETIMES`, `ACCESS_TOKEN_BEARER` and `CLIENT_SETUP_CALLBACK`.
 - `packages/protocol/src/templates.ts`: the index. It holds the types, `TEMPLATE_CATEGORIES`, `getTemplate`, `getOAuthProvider`, `connectionPolicy` and `normaliseScope`, imports each file and registers it in `TEMPLATES` or `OAUTH_PROVIDERS`. Everything outside the protocol imports `@mehen/protocol/templates` and nothing else. The order of the two records is the order `mehen templates`, Connect a service and the providers reference list them in, within each category.
 - `packages/protocol/src/templates/<id>.test.ts`: a template's own cases, beside it.
 
@@ -46,6 +46,7 @@ type Template = {
   policy: PolicyInput                // allow, approve, deny; deny over approve over allow
   ceiling: Mode                      // the ceiling for items made from it
   fields: Record<string, FieldHint>  // label, hint, pattern, multiline per field
+  defaultEnvVar?: string             // the variable the provider's SDK or CLI reads it from, where the provider documents one
   prefixes?: string[]                // well-known value prefixes; the intake form warns when missing
   setup?: Setup                      // numbered steps the intake page shows, where making the key is not obvious
 }
@@ -89,6 +90,7 @@ The providers today are `google-gmail`, `google-calendar`, `google-drive`, `gith
 Templates fail closed:
 
 - reads (`GET`, `HEAD`) are allowed, except a read that hands back another secret (a database password, a decrypted variable, a stored secret), which is `approve`;
+- where an API has reads that hand back secrets (tokens, passwords, webhook signing secrets, routing keys), the template allows reads by name instead, with `NAMED_READS` in `shared.ts`: only the routes it lists, each checked against the provider's response schema, and every other read asks. The known secret-bearing reads are still pinned with `approve` rules, because a template's approve and deny rules hold even when a person widens an item's own policy, and an allow never does;
 - every other method needs a human's approval by default;
 - a few narrow everyday writes are allowed explicitly, each with a `note` saying why it is safe enough;
 - the worst routes are denied outright: anything that sends mail or data elsewhere for good, gives someone else access, mints tokens, or cannot be shown honestly on an approval card (a batch, or a send of something stored by id that could change after approval).
@@ -104,7 +106,8 @@ Where a request's meaning is in its body (GraphQL), a rule names a body matcher 
 5. **The policy follows the model above.** Every explicitly allowed write is narrow and has a `note`. Anything that creates persistence or moves money, mail or credentials is `approve` or `deny`: SSH and deploy keys, webhooks, token minting, mail forwarding, filters and send-as, mailbox rules, app registrations, collaborators and invitations, Actions secrets, payouts, refunds, transfers, every token endpoint. Anything an approval card could not show honestly is `deny`, with a note naming the alternative.
 6. **The lowest ceiling that works.** `placeholder` for keys SDKs read from the environment, `relay` for anything else HTTP, never `lease` or `reveal` by default for an HTTP API.
 7. **Prefixes are public, well-known prefixes only** (`sk-proj-`, `ghp_`), never characters that would narrow a guess at the secret. If a prefix is new, also add it to `KNOWN_PREFIXES` in `placeholder.ts` so placeholders keep the shape SDKs check for. Template prefixes also feed the check that refuses secret-looking plain variables.
-8. **No new kinds by template.** If no kind fits, adding one is a separate code review of `kinds.ts`.
+8. **A default environment variable only where the provider documents one.** `defaultEnvVar` names the variable the provider's own SDK or CLI reads the credential from (`OPENAI_API_KEY`, `HF_TOKEN`), and is also listed in `ENV_NAME_TEMPLATES` (`adopt-names.ts`) for the field the relay sends. Leave it out rather than invent one.
+9. **No new kinds by template.** If no kind fits, adding one is a separate code review of `kinds.ts`.
 
 ### Tests
 

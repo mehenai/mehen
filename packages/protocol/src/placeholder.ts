@@ -21,7 +21,7 @@ const KNOWN_PREFIXES = [
   "sk-ant-api03-", "sk-ant-", "sk-proj-", "sk-svcacct-", "sk-or-v1-", "sk_live_", "sk_test_", "rk_live_", "rk_test_", "pk_live_",
   "github_pat_", "ghp_", "gho_", "ghs_", "ghu_", "glpat-", "xoxb-", "xoxp-", "xapp-", "lin_api_", "secret_", "ntn_",
   "sk-", "AKIA", "AIza", "hf_", "gsk_", "pplx-", "re_", "SG.", "key-", "dp.st.", "phc_", "phx_", "sntrys_", "sntryu_",
-  "npm_", "pat-na1-", "pat-eu1-", "fc-",
+  "npm_", "pat-na1-", "pat-eu1-", "fc-", "r8_", "xai-", "sbp_", "dop_v1_", "rnd_", "pscale_tkn_",
 ].sort((a, b) => b.length - a.length)
 
 export function secretPrefix(value: string): string {

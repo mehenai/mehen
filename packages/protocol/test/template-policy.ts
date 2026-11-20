@@ -1,8 +1,10 @@
-// What the relay decides for a template's credential once a person has set
-// the item's own policy to allow everything: only the template's floors
-// (its approve and deny rules, which policy-safety.ts holds per host) can
-// still hold a request then. The template tests use it to prove a
-// secret-bearing read stays held whatever the item's policy says.
+// A resolver-level check: what resolvePolicyRequest, the decision the relay
+// takes, gives for a template's credential once a person has set the item's
+// own policy to allow everything. Only the template's floors (its approve
+// and deny rules, which policy-safety.ts holds per host) can still hold a
+// request then. The template tests use it to prove a secret-bearing route
+// stays held whatever the item's policy says; the vault's
+// relay-template-floors.test.ts runs the relay itself for the same cases.
 import { type Binding, type RuleAction, parseDestination } from "../src/binding.ts"
 import { resolvePolicyRequest } from "../src/policy-safety.ts"
 import type { Template } from "../src/templates.ts"

@@ -590,6 +590,16 @@ export function connectTerms(view: WorkspaceConnectView): ConnectTerms {
   return { provider: view.provider, slug: view.slug, tags: view.tags, expectedAccount: view.expect, scopes: view.scopes, intent: view.intent, target: view.target?.item ?? null, targetRevision: view.target?.configRevision ?? null, client: view.client?.item ?? null, clientRevision: view.client?.configRevision ?? null, dependencyRevision: view.dependencyRevision }
 }
 
+// The client the connect chose was rejected by its provider: signing in
+// cannot work until its secret is replaced, so Continue stays off. The
+// client is named and linked only when the reader may see it.
+function clientRejectedNotice(slug: string, view: WorkspaceConnectView): Html {
+  const rejected = view.clientRejected
+  if (rejected === undefined) return html``
+  const client = rejected.client === null ? "its OAuth client" : html`its OAuth client, <a href="${workspaceHref(slug, `/items/${encodeURIComponent(rejected.client)}`)}">${cardText(rejected.client)}</a>`
+  return html`<div data-region="connect-client-rejected">${notice("warn", `${view.providerName} rejected the OAuth client this connection signs in through`, html`Its secret is wrong, expired or deleted, so signing in cannot work. Replace the secret of ${client}; this link was made for the client as it was, so then reconnect from the credential's page or ask the agent for a new link.`)}</div>`
+}
+
 export function workspaceConnectPage(shell: WorkspaceShell, view: WorkspaceConnectView, projects: readonly WorkspaceProject[], now = Date.now()): PageInput {
   const legacy = connectPage(NO_VIEWER, view, now)
   const slug = shell.identity.workspace.slug
@@ -604,8 +614,8 @@ export function workspaceConnectPage(shell: WorkspaceShell, view: WorkspaceConne
   return {
     ...base,
     bar: true,
-    boot: { ...legacy.boot, page: "ws-connect", home: view.home, homes: view.intent === "rotate" ? [view.home] : view.permittedHomes, terms: connectTerms(view) },
-    body: html`${heldNotice(shell, "connect")}${warningCard(warnings)}${new Html(body)}${requestNext("connect", warned)}${decisionBar({
+    boot: { ...legacy.boot, page: "ws-connect", home: view.home, homes: view.intent === "rotate" ? [view.home] : view.permittedHomes, terms: connectTerms(view), ...(view.clientRejected !== undefined ? { blocked: true } : {}) },
+    body: html`${heldNotice(shell, "connect")}${warningCard(warnings)}${clientRejectedNotice(slug, view)}${new Html(body)}${requestNext("connect", warned)}${decisionBar({
       warned,
       form: "decide",
       caption: html`Signing in at ${view.providerName} comes after your passkey.`,

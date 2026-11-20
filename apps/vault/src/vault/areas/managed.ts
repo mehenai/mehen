@@ -70,6 +70,7 @@ import { loadProject } from "./projects.ts"
 import { onCredentialRemoved, projectWorkspaceOps } from "./projects-workspace.ts"
 import { platformAuditPage } from "./tenant.ts"
 import { askingWorkload } from "./workloads.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 import { workspaceMemberOps } from "./workspace-members.ts"
 import { accessChanged, accessState, authorise, bumpAccessRevision, managedSetting, newMember, requireStepUp, setProjectShare, setSetting, setting, type ManagedSetting, type WorkspaceInvocationContext, type WorkspaceRuntimePrincipal } from "./workspace-runtime.ts"
 
@@ -231,7 +232,7 @@ async function ensureSubject(ctx: VaultContext, invocation: WorkspaceInvocationC
 // answered revoked or ended. Those rows keep only their key and its
 // ending: step 4 scrubs a device's name and label and a workload's label
 // and scope.
-const DELETION_TABLES = ["protected_use_grants", "grants", "run_authorisations", "workspace_run_contexts", "run_placeholders", "runs", "consent_lineage", "approvals", "exposures", "removal_exposures", "notice_outbox", "item_secret_history", "item_secrets", "items", "workspace_oauth_connections", "credential_dependencies", "workspace_credential_requests", "vars", "environments", "remotes", "project_shares", "projects", "overrides", "platform_connect_states"]
+const DELETION_TABLES = ["protected_use_grants", "grants", "run_authorisations", "workspace_run_contexts", "run_placeholders", "runs", "consent_lineage", "approvals", "exposures", "removal_exposures", "notice_outbox", "item_secret_history", "item_secrets", "items", "workspace_oauth_connections", "workspace_oauth_client_rejections", "credential_dependencies", "workspace_credential_requests", "vars", "environments", "remotes", "project_shares", "projects", "overrides", "platform_connect_states"]
 
 // Steps 2 to 4 of D0 1.9: every device revoked (ending its workloads, asks
 // and runs), every open intake and connect cancelled; then each connection's
@@ -272,6 +273,7 @@ export async function deleteSubject(ctx: VaultContext, actor: string): Promise<{
   ctx.storage.transactionSync(() => {
     const removed = { devices, items: count(ctx, "SELECT count(*) AS count FROM items"), projects: count(ctx, "SELECT count(*) AS count FROM projects"), providerRevoked }
     const present = new Set(rows(ctx.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'")).map((t) => t.name))
+    beforeManagementChange(ctx)
     for (const table of DELETION_TABLES) if (present.has(table)) ctx.sql.exec(`DELETE FROM ${table}`)
     ctx.sql.exec("UPDATE devices SET name=id,provisioned_by=NULL")
     ctx.sql.exec("UPDATE workloads SET label='',scope='{}'")
@@ -412,6 +414,7 @@ async function removeItem(ctx: VaultContext, principal: WorkspaceRuntimePrincipa
   return subjectWrite(ctx, () => {
     const live = checkedCredential(ctx, slug)
     if (!live || live.id !== item.id) throw new VaultError("not_found", "No such item.")
+    beforeManagementChange(ctx)
     onCredentialRemoved(ctx, live, "deleted", member.memberId)
     invalidateCredentialDependencies(ctx, live.id)
     ctx.sql.exec("DELETE FROM item_secret_history WHERE item=?", live.id)
@@ -653,6 +656,7 @@ function createProject(ctx: VaultContext, principal: WorkspaceRuntimePrincipal, 
       throw new VaultError("conflict", "That name is in use by another project.")
     }
     if (count(ctx, "SELECT count(*) AS count FROM projects") >= heldManagedPlatform(ctx).platform.limits.projectsPerSubject) throw overLimit()
+    beforeManagementChange(ctx)
     ctx.sql.exec("INSERT INTO projects(id,slug,default_env,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)", id, input.slug, input.defaultEnv, `member:${member.memberId}`, ctx.now(), ctx.now())
     for (const e of input.environments) ctx.sql.exec("INSERT INTO environments(project,name,protected,fences,four_eyes) VALUES(?,?,0,'[]',0)", id, e.name)
     setProjectShare(ctx, { id: randomId("shr"), project: id, subject: { kind: "member", member: member.memberId }, level: "manage", protected: true, expiresAt: null }, null)

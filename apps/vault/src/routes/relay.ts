@@ -5,7 +5,8 @@
 import { z } from "zod"
 import { RelayRequest } from "@mehen/protocol/api"
 import { base64UrlDecode } from "@mehen/protocol"
-import { VaultError, parseJson } from "../http.ts"
+import { FORWARDED_HEADER } from "@mehen/protocol/api"
+import { VaultError, parseJson, responseFor } from "../http.ts"
 import { type RelayMaterial, forwardRelay } from "../relay/forward.ts"
 import type { Route } from "../router.ts"
 import { invokeVault } from "../vault/client.ts"
@@ -34,13 +35,22 @@ export const relayRoutes: Route<Handler>[] = [
         }
       }
       const host = new URL(material.url).host
-      return forwardRelay(material, body, {
-        onEcho: (items) => {
-          rc.ctx.waitUntil(
-            invokeVault(rc.env, device.tenant, { op: "relay.echo", input: { items, host, ...(material.workspaceAudit?{workspaceAudit:material.workspaceAudit}:{}) }, auth: { kind: "system", reason: "relay echo" } }).catch(() => undefined),
-          )
-        },
-      })
+      try {
+        return await forwardRelay(material, body, {
+          onEcho: (items) => {
+            rc.ctx.waitUntil(
+              invokeVault(rc.env, device.tenant, { op: "relay.echo", input: { items, host, ...(material.workspaceAudit?{workspaceAudit:material.workspaceAudit}:{}) }, auth: { kind: "system", reason: "relay echo" } }).catch(() => undefined),
+            )
+          },
+        })
+      } catch (error) {
+        // From here the request may have gone upstream: never marked as
+        // refused before forwarding (markRelayRefusal).
+        if (!(error instanceof VaultError)) console.error(JSON.stringify({ at: "relay.forward", error: error instanceof Error ? error.name : "unknown" }))
+        const refused = responseFor(error)
+        refused.headers.set(FORWARDED_HEADER, "yes")
+        return refused
+      }
     },
   },
 ]

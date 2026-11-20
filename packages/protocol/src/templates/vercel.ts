@@ -35,6 +35,7 @@ export const vercel: Template = {
     ],
   },
   ceiling: "placeholder",
+  defaultEnvVar: "VERCEL_TOKEN",
   check: { method: "GET", path: "/v2/user" },
   fields: { key: { label: "Token" } },
   setup: {

@@ -16,8 +16,8 @@ import type { PageInput } from "../layout.ts"
 import { type WorkspaceShell, workspaceHref } from "../shell.ts"
 import {
   MANDATE_ALL_CREDENTIALS, MANDATE_ALWAYS_WORDS, MANDATE_CANDIDATES_UNREAD_WORDS, MANDATE_CAPS_LABEL, MANDATE_CAPS_WORDS, MANDATE_CARD_LEAD, MANDATE_CARD_TITLE, MANDATE_CLASS_CHOICES, MANDATE_CLASSES_LABEL, MANDATE_HIDDEN_CREDENTIAL, MANDATE_ITEMS_LABEL,
-  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, mandateProposalUnboundWords, MANDATE_SOURCE_RENEW_WORDS, MANDATE_SOURCE_PROPOSAL_WORDS, MANDATE_USE_SOURCE_BUTTON, mandateSourceFromWords, mandateSourceUnavailableWords,
-  MANDATE_RECEIPTS_EMPTY, MANDATE_RECEIPTS_LEAD, MANDATE_RECEIPTS_OLDER, MANDATE_RECEIPTS_TITLE, MANDATE_RENEW_LINK, MANDATE_SIGN_AGAIN_LINK, MANDATE_REPLACED_WORDS, MANDATE_REPLACES_WORDS, MANDATE_RESUME_BUTTON, MANDATE_RESUME_HINT, MANDATE_SCHEDULE_HINT, MANDATE_SCHEDULE_LABELS,
+  MANDATE_LIST_EMPTY, MANDATE_LIST_ENDED, MANDATE_LIST_LEAD, MANDATE_LIST_TITLE, MANDATE_LISTED_ITEMS, MANDATE_NEVER_CANDIDATE_WORDS, MANDATE_NO_CANDIDATES, MANDATE_NOTE_HINT, MANDATE_NOTE_LABEL, MANDATE_OPEN_LINK, MANDATE_PAUSE_ALL_BUTTON, MANDATE_PAUSE_BUTTON, MANDATE_PROPOSAL_CLOSED_WORDS, MANDATE_PROPOSAL_SUPERSEDED_WORDS, mandateProposalUnboundWords, MANDATE_SOURCE_RENEW_WORDS, MANDATE_SOURCE_PROPOSAL_WORDS, MANDATE_USE_SOURCE_BUTTON, mandateSourceFromWords, mandateSourceUnavailableWords,
+  MANDATE_RECEIPTS_EMPTY, MANDATE_RECEIPTS_LEAD, MANDATE_RECEIPTS_OLDER, MANDATE_RECEIPTS_TITLE, MANDATE_RENEW_LINK, MANDATE_SIGN_AGAIN_LINK, MANDATE_REPLACED_WORDS, MANDATE_REPLACES_WORDS, MANDATE_REVOKED_WORDS, MANDATE_RESUME_BUTTON, MANDATE_RESUME_HINT, MANDATE_SCHEDULE_HINT, MANDATE_SCHEDULE_LABELS,
   MANDATE_SCHEDULE_TICK, MANDATE_SIGN_BUTTON, MANDATE_SIGN_EYEBROW, MANDATE_SIGN_LEAD, MANDATE_STATE_PILLS, MANDATE_STATE_WORDS, MANDATE_STOP_BUTTON, MANDATE_STOP_TITLE, MANDATE_STOP_WORDS, MANDATE_SUMMARY_TITLE, MANDATE_TEAM_MACHINE_WORDS, MANDATE_TERM_LABELS,
   MANDATE_TRUST_BUTTON, MANDATE_TTL_LABEL, MANDATE_UNREVIEWED_ENTRY, MANDATE_WAITING_LEAD, MANDATE_WAITING_OPEN, MANDATE_WAITING_TITLE, type MandateSummaryInput, machinesCarryingOnWords, machinesNeedResumeWords, mandateAllItemsWords, mandateCapHint, mandateClassWords, mandateDayWords, mandateDefaultNote, mandateEndsInWords, mandateHiddenItemsWords, mandateLapsedWords, mandateNotOwnerWords, mandatePauseAllConfirmWords, mandateSignSameWords,
   mandateProposedWords, mandateScheduleWords, mandateSignTitle, mandateSummaryWords, mandateTodayWords, mandateTtlWords,
@@ -38,8 +38,9 @@ export const mandateLive = (m: Pick<MandateView, "state">): boolean => MANDATE_L
 // pause (a repeat changes nothing);
 // Resume the signer, on a paused or tripped one or one that lapsed; Renew
 // the signer, in a live one's last days, or as Sign again with these terms
-// on one that ended, however long ago. A held account may still narrow, so it keeps Pause and Stop
-// but is offered neither Resume nor Renew.
+// on one that ended, however long ago, unless its machine was revoked. A
+// held account may still narrow, so it keeps Pause and Stop but is offered
+// neither Resume nor Renew.
 export type MandateControls = { pause: boolean; stop: boolean; resume: boolean; renew: boolean }
 export function mandateControls(m: MandateView, viewer: Viewer, now: number): MandateControls {
   const live = mandateLive(m), self = m.signer.self === true, may = viewer.held !== true
@@ -49,7 +50,7 @@ export function mandateControls(m: MandateView, viewer: Viewer, now: number): Ma
     pause: (m.state === "active" && (self || elevated(viewer))) || (m.state === "paused" && !self && elevated(viewer)),
     stop: live && (self || elevated(viewer)),
     resume: may && self && live && (m.state !== "active" || m.signerCurrent === false),
-    renew: may && self && (nearEnd || !live),
+    renew: may && self && (nearEnd || !live) && m.endedReason !== "revoked",
   }
 }
 
@@ -173,7 +174,7 @@ function signSameLinks(shell: WorkspaceShell, m: MandateView, viewer: Viewer, ot
 export function mandatePage(shell: WorkspaceShell, data: MandatePageData): PageInput {
   const m = data.mandate
   const controls = mandateControls(m, data.viewer, data.now)
-  const lead = m.endedReason === "replaced" ? MANDATE_REPLACED_WORDS : MANDATE_STATE_WORDS[m.state]
+  const lead = m.endedReason === "replaced" ? MANDATE_REPLACED_WORDS : m.endedReason === "revoked" ? MANDATE_REVOKED_WORDS : MANDATE_STATE_WORDS[m.state]
   return {
     title: spellCardText(`${m.device.name}: ${MANDATE_CARD_TITLE}`),
     viewer: null,
@@ -340,7 +341,7 @@ function startTicks(start: MandateSignStart): Set<string> {
 
 export function mandateSummaryOf(machine: string, start: MandateSignStart, candidates: MandateCandidates | null, now: number): string[] | null {
   const ids = new Set(start.items === "all" ? [] : start.items)
-  const slugs = start.items === "all" ? "all" as const : (candidates?.items ?? []).filter((c) => ids.has(c.id)).map((c) => c.slug)
+  const slugs = start.items === "all" ? "all" as const : (candidates?.items ?? []).filter((c) => ids.has(c.id) && c.never === null).map((c) => c.slug)
   if (slugs !== "all" && slugs.length === 0) return null
   if (start.note.trim() === "") return null
   const input: MandateSummaryInput = { machine, classes: start.classes, caps: start.caps, items: slugs, endsAt: now + start.ttlDays * DAY_MS, schedule: start.schedule }
@@ -365,7 +366,9 @@ function itemsField(data: MandateSignData, start: MandateSignStart): Html {
   const none = candidates.length === 0
   return html`<fieldset class="field" data-region="mandate-items-field"><legend class="label">${MANDATE_ITEMS_LABEL}</legend>
     <label class="tick"><input type="radio" name="mandate-items" data-input="mandate-items" value="listed"${!all && !none ? html` checked` : ""}${none ? html` disabled` : ""}><span>${MANDATE_LISTED_ITEMS}</span></label>
-    ${none ? html`<p class="small muted" data-region="mandate-no-candidates">${MANDATE_NO_CANDIDATES}</p>` : html`<ul class="plain" data-region="mandate-candidates">${candidates.map((c) => html`<li><label class="tick"><input type="checkbox" data-input="mandate-item" value="${c.id}" data-slug="${c.slug}"${ticks.has(c.id) ? html` checked` : ""}${all ? html` disabled` : ""}><span><code>${cardText(c.slug)}</code></span></label></li>`)}</ul>`}
+    ${none ? html`<p class="small muted" data-region="mandate-no-candidates">${MANDATE_NO_CANDIDATES}</p>` : html`<ul class="plain" data-region="mandate-candidates">${candidates.map((c) => c.never !== null
+      ? html`<li><label class="tick"><input type="checkbox" data-input="mandate-item" value="${c.id}" data-slug="${c.slug}" data-never="${c.never}" disabled><span><code>${cardText(c.slug)}</code> <span class="small muted" data-region="mandate-never">${MANDATE_NEVER_CANDIDATE_WORDS[c.never]}</span></span></label></li>`
+      : html`<li><label class="tick"><input type="checkbox" data-input="mandate-item" value="${c.id}" data-slug="${c.slug}"${ticks.has(c.id) ? html` checked` : ""}${all ? html` disabled` : ""}><span><code>${cardText(c.slug)}</code></span></label></li>`)}</ul>`}
     <label class="tick"><input type="radio" name="mandate-items" data-input="mandate-items" value="all"${all ? html` checked` : ""}><span>${MANDATE_ALL_CREDENTIALS}</span></label>
   </fieldset>`
 }
@@ -390,13 +393,14 @@ function scheduleField(start: MandateSignStart): Html {
   </fieldset>`
 }
 
-// Why there is no form: someone else's machine, or for its owner, a held
-// account or credentials that could not be read.
+// Why there is no form: someone else's machine, or for its owner, a
+// revoked machine, a held account or credentials that could not be read.
 function signRefusal(shell: WorkspaceShell, data: MandateSignData): Html | null {
   const owner = data.device.owner
   if (owner.kind === "team") return html`${notice("info", MANDATE_TEAM_MACHINE_WORDS)}`
   const back = html`<p><a class="btn secondary sm" href="${workspaceHref(shell.identity.workspace.slug, `/devices/${encodeURIComponent(data.device.device)}`)}">Back to the machine</a></p>`
-  if (owner.member !== data.viewer.member || data.device.revoked) return html`${notice("info", cardText(mandateNotOwnerWords(owner.name)))}${back}`
+  if (owner.member !== data.viewer.member) return html`${notice("info", cardText(mandateNotOwnerWords(owner.name)))}${back}`
+  if (data.device.revoked) return html`${notice("info", MANDATE_REVOKED_WORDS)}${back}`
   if (data.viewer.held === true) return html`${notice("warn", HELD_WORDS)}${back}`
   if (data.candidates === null) return html`${notice("warn", MANDATE_CANDIDATES_UNREAD_WORDS)}${back}`
   return null

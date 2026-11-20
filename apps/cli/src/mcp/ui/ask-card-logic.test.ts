@@ -115,6 +115,11 @@ describe("askCardView", () => {
     expect(askCardView(ok({ pending: [adoption] }))).toMatchObject({ kind: "single", ask: { id: "adp_5" } })
   })
 
+  test("vault_pending offline: an ask marked stale gets no card, as the vault may have settled it", () => {
+    expect(askCardView(ok({ pending: [{ ...intake, stale: true }] }))).toEqual({ kind: "none" })
+    expect(askCardView(ok({ pending: [{ ...approval, stale: true }, intake] }))).toMatchObject({ kind: "single", ask: { id: "int_9" } })
+  })
+
   test("untrusted fields are data: a malformed ask is dropped and a link that is not https is not openable", () => {
     expect(askCardView(ok({ ask: { ...intake, url: 7 } }))).toEqual({ kind: "none" })
     expect(askCardView(ok({ pending: [{ ...intake, title: null }, "x", null, intake] }))).toMatchObject({ kind: "single", ask: { id: "int_9" } })

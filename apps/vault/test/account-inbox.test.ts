@@ -30,6 +30,7 @@ import { workspaceRunOps } from "../src/vault/areas/runs-workspace.ts"
 import { VaultError } from "../src/http.ts"
 import { PROJECT_RUN_INPUT, accountAuth, inAccess, projectDeviceInvocation, projectFixture, projectState } from "./projects-workspace-fixture.ts"
 import { accessMember } from "./workspace-fixtures.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 type Seeded = { account: AccountWebSession; workspaces: (WorkspaceRef & { membership: string })[] }
 // One account in `names.length` active workspaces, straight into D1.
@@ -422,7 +423,7 @@ describe("grouped asks in the inbox", () => {
       const invocation = await projectDeviceInvocation(ctx)
       const run = (command: string) => expect(workspaceRunOps["runs.create"]!.handler(ctx, { kind: "device", deviceId: "dev_kim" }, { ...PROJECT_RUN_INPUT, command, argv: [command] }, invocation)).rejects.toBeInstanceOf(VaultError)
       await run("first")
-      ctx.sql.exec("UPDATE items SET config_rev=config_rev+1")
+      fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1")
       await run("second"); await run("third")
       expect(ctx.sql.exec<{ n: number }>("SELECT count(DISTINCT review_group) AS n FROM approvals").one().n).toBe(1)
       expect(groups(inboxAs(ctx)).map((row) => row.group.count)).toEqual([2])

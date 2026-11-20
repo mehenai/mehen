@@ -733,6 +733,17 @@ describe("intake and connect", () => {
     expect(button.disabled).toBe(false)
   })
 
+  it("Continue stays off, and starts nothing, while the connect's OAuth client is rejected", async () => {
+    const page = gallery("ws-connect-client-rejected")
+    open(page, signing({}))
+    initWorkspaceConnect(page.boot, shell())
+    const button = $('[data-action="start-connect"]')
+    expect(button.disabled).toBe(true)
+    button.click()
+    await settle()
+    expect(paths()).toEqual([])
+  })
+
   it("a warned connect's Stop this request posts the connect's cancel", async () => {
     const page = gallery("ws-connect-deceptive")
     open(page, signing({ [`${API}/connect/con_3kd9vx2mq7/cancel`]: { status: "cancelled" } }))

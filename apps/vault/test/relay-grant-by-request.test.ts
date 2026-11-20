@@ -6,6 +6,7 @@ import { workspaceApproval, workspaceApprovalOps, workspaceApprovalStatus } from
 import { authoriseWorkspaceRelay } from "../src/vault/areas/relay-workspace.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 afterEach(() => setUpstreamFetch(null))
 
@@ -35,7 +36,7 @@ const status = (ctx: VaultContext, id: string) => workspaceApprovalStatus(ctx, w
 
 async function held(ctx: VaultContext): Promise<void> {
   await seedCredential(ctx, "grant-key")
-  ctx.sql.exec("UPDATE items SET policy=? WHERE slug='grant-key'", JSON.stringify({ default: "approve", rules: [] }))
+  fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE slug='grant-key'", JSON.stringify({ default: "approve", rules: [] }))
 }
 
 describe("a grant is found by the request itself", () => {

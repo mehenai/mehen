@@ -22,9 +22,10 @@ export function devicePrincipal(id = "dev_member"): AccessPrincipal { return { k
 export function state(ctx: VaultContext) { return credentialAccessState(ctx); }
 // Direct-area tests only. Production dispatch verifies the real signature first.
 
-export async function deviceInvocation(ctx: VaultContext, id = "dev_member"): Promise<WorkspaceInvocationContext> {
+// session: the agent's label the proof carries (MEHEN_SESSION), if any.
+export async function deviceInvocation(ctx: VaultContext, id = "dev_member", session?: string): Promise<WorkspaceInvocationContext> {
   const { createProof } = await import("@mehen/protocol")
-  const proof = await createProof({ deviceId: id, sign: async () => new Uint8Array(64) }, { method: "POST", url: "https://vault.test/v1/relay" }, { tenant: ctx.tenant })
+  const proof = await createProof({ deviceId: id, sign: async () => new Uint8Array(64) }, { method: "POST", url: "https://vault.test/v1/relay" }, { tenant: ctx.tenant, ...(session !== undefined ? { session } : {}) })
   return { workspace: { id: ctx.tenant, slug: "work", name: "Work" }, auth: { kind: "device", proof, method: "POST", url: "https://vault.test/v1/relay", bodyHash: "" } }
 }
 
