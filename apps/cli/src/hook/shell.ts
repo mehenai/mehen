@@ -329,6 +329,11 @@ class Parser {
     if (s[j] === "]") j++
     for (; j < s.length; j++) {
       const c = s[j] as string
+      // An escaped character, ] among them, is a member and never the end.
+      if (c === "\\") {
+        j++
+        continue
+      }
       if (c === "]" || OPERATOR_CHARS.includes(c) || c === "'" || c === '"') break
       if (c === "[" && (s[j + 1] === ":" || s[j + 1] === "=" || s[j + 1] === ".")) {
         nodes.push({ kind: "unknown", why: "a POSIX character class in a glob" })

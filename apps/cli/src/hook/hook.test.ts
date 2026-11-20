@@ -1083,7 +1083,7 @@ describe("sixth review: reproductions", () => {
   })
 
   test("a ] first in a bracket set, after ! or ^, is a member, in globs, grep --include and find -name", () => {
-    for (const command of ["cat .e[!]]v", "cat .e[^]]v", "cat .e[]n]v", "grep -r --include='.e[!]]v' x .", "find . -name '.e[!]]v' -exec cat {} +"]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["cat .e[!]]v", "cat .e[^]]v", "cat .e[]n]v", "grep -r --include='.e[!]]v' x .", "find . -name '.e[!]]v' -exec cat {} +", "cat .e[\\]n]v", "cat .e[!\\]]v", "cat .e[n\\]]v", "grep -r --include='.e[\\]n]v' x .", "find . -name '.e[\\]n]v' -exec cat {} +", "cat .e[\\][:alpha:]]v"]) expect(refused("proj", command)).toEqual(yes(command))
     for (const command of ["cat README.[m]d", "cat [!.]*"]) none("proj", command)
   })
 

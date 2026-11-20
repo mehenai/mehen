@@ -408,11 +408,15 @@ function globClass(body: string, ignoreCase: boolean): (c: string) => boolean {
   const negate = body.startsWith("!") || body.startsWith("^")
   const items: [string, string][] = []
   const set = negate ? body.slice(1) : body
+  // \ makes the next character a plain member, as fnmatch reads it.
+  const member = (k: number): [string, number] => (set[k] === "\\" && k + 1 < set.length ? [set[k + 1] as string, k + 1] : [set[k] as string, k])
   for (let k = 0; k < set.length; k++) {
-    const lo = set[k] as string
+    const [lo, at] = member(k)
+    k = at
     if (set[k + 1] === "-" && k + 2 < set.length) {
-      items.push([lo, set[k + 2] as string])
-      k += 2
+      const [hi, end] = member(k + 2)
+      items.push([lo, hi])
+      k = end
     } else items.push([lo, lo])
   }
   const inSet = (c: string) => items.some(([lo, hi]) => c >= lo && c <= hi)
@@ -433,11 +437,13 @@ function globMatcher(glob: string, ignoreCase = false): GlobMatcher {
       if (tokens.at(-1)?.kind !== "star") tokens.push({ kind: "star" })
     } else if (ch === "?") tokens.push({ kind: "one", test: () => true })
     else if (ch === "[") {
-      // A ] first in the set, after any ! or ^, is a member, not its end.
-      let first = i + 1
-      if (glob[first] === "!" || glob[first] === "^") first++
-      if (glob[first] === "]") first++
-      const close = glob.indexOf("]", first)
+      // A ] first in the set, after any ! or ^, or escaped with \, is a
+      // member, not its end.
+      let close = i + 1
+      if (glob[close] === "!" || glob[close] === "^") close++
+      if (glob[close] === "]") close++
+      for (; close < glob.length && glob[close] !== "]"; close++) if (glob[close] === "\\") close++
+      if (close >= glob.length) close = -1
       if (close === -1) tokens.push(literal("["))
       else {
         tokens.push({ kind: "one", test: globClass(glob.slice(i + 1, close), ignoreCase) })
