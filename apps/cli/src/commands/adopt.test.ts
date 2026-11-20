@@ -1091,4 +1091,33 @@ describe("submit needs this machine's snapshot first", () => {
     expect(result.stdout).toContain(`snapshot ${first} holds every file the plan names`)
     expect(uploads).toHaveLength(3)
   })
+
+  test("adopt file scans and plans one .env without reading the rest of the machine, prints no values, and refuses symlinks and unsupported files", async () => {
+    const { repo, env } = await planned()
+    const envFile = join(repo, ".env")
+    const out = await runJv(["adopt", "file", envFile, "--json"], env)
+    expect(out.code).toBe(EXIT.ok)
+    expectNoValue(out.stdout + out.stderr)
+    const body = JSON.parse(out.stdout) as { file: string; plan: string; items: { slug: string }[]; next: { snapshot: string; submit: string; apply: string } }
+    expect(body.file).toBe(envFile)
+    expect(body.items.length).toBeGreaterThan(0)
+    expect(body.next.snapshot).toContain(`mehen backup snapshot --plan ${body.plan}`)
+    expect(body.next.submit).toContain(`mehen adopt submit --plan ${body.plan} --wait`)
+    expect(body.next.apply).toContain(`mehen adopt apply --plan ${body.plan}`)
+
+    // Human output prints the item table and next commands, never a value.
+    const human = await runJv(["adopt", "file", envFile], env)
+    expect(human.code).toBe(EXIT.ok)
+    expectNoValue(human.stdout + human.stderr)
+    expect(human.stdout).toContain("next 1:")
+    expect(human.stdout).toContain("mehen backup snapshot")
+
+    // Refuses directories and unsupported files.
+    const dirResult = await runJv(["adopt", "file", repo, "--json"], env)
+    expect(dirResult.code).toBe(EXIT.usage)
+    const readme = join(repo, "README.md")
+    writeFileSync(readme, "# hi\n")
+    const unsupported = await runJv(["adopt", "file", readme, "--json"], env)
+    expect(unsupported.code).toBe(EXIT.usage)
+  })
 })

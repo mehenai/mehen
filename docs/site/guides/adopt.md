@@ -19,6 +19,16 @@ You have enrolled your first machine, and it has `.env` files in a dozen repos, 
 
 The steps, in order: scan, plan, snapshot, submit, approve, apply, verify, and, once you are sure, retire. Run them in a terminal on the machine that holds the files. An agent may run scan and plan for you; the snapshot and the approval are yours.
 
+## Quick path: one `.env` file
+
+Want to move a single `.env` file from one repo without scanning the whole machine? `mehen adopt file` scans and plans that file alone in one step:
+
+```sh
+mehen adopt file .env
+```
+
+It classifies every variable without showing a value, writes the plan, and prints the exact `mehen backup snapshot`, `mehen adopt submit --wait`, and `mehen adopt apply` commands for that plan. Pass `--home <folder>=private|workspace|project:<slug>` or `--per-project` as with `mehen adopt plan`.
+
 ## 1. Scan
 
 ```sh
