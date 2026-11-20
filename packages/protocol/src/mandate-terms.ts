@@ -178,7 +178,8 @@ export type MandateCounts = Record<MandateClass, number>
 // nothing until they resume it with a passkey. signer.self, for a person
 // only: whether the reader signed it. proposal: the mdp_ id it was signed
 // from, null when signed without one; the vault always sends it, to every
-// reader.
+// reader. endedReason "revoked": its machine was revoked, which ends it for
+// good.
 export type MandateView = {
   id: string
   device: { id: string; name: string }
@@ -196,7 +197,7 @@ export type MandateView = {
   note: string
   createdAt: string
   expiresAt: string
-  endedReason: "stopped" | "expired" | "replaced" | null
+  endedReason: "stopped" | "expired" | "replaced" | "revoked" | null
   proposal?: string | null
 }
 // One request a mandate let through. credential: null for one the reader
@@ -225,10 +226,17 @@ export type MandateChanged = { mandate: MandateView }
 // A credential a proposal names, for its machine's owner, who signs terms
 // that name it by id.
 export type MandateItemRef = { id: string; slug: string }
+// Why a mandate could never let a request on a credential through: it holds
+// a live key, whose requests always ask, or its binding names no host
+// exactly, and a mandate covers only a host named exactly.
+export type MandateCandidateNever = "live-key" | "wildcard-host"
+// never: null for one a mandate can cover; the sign page shows the others
+// unticked, with the reason.
+export type MandateCandidate = MandateItemRef & { never: MandateCandidateNever | null }
 // GET /api/w/<ws>/mandate-candidates?device=: the credentials the sign page
 // may offer for the reader's own machine, each one it reaches now and whose
 // home the reader manages, by slug.
-export type MandateCandidates = { items: MandateItemRef[] }
+export type MandateCandidates = { items: MandateCandidate[] }
 // GET /api/w/<ws>/mandate-asks/:approval: an ask the machine's mandate
 // would have let through but for these classes' caps for the day.
 export type MandateCappedAsk = { mandate: string; capped: { class: MandateClass; cap: number }[] }

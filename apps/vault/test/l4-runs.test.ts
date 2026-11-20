@@ -4,6 +4,7 @@ import { items } from "../src/vault/areas/items.ts"
 import { workspaceRunOps } from "../src/vault/areas/runs-workspace.ts"
 import { fetchWorker } from "./helpers.ts"
 import { PROJECT_RUN_INPUT, approvedProjectRun, inAccess, projectDeviceInvocation, projectFixture } from "./projects-workspace-fixture.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const HOUR = 3_600_000
 
@@ -35,7 +36,7 @@ describe("runs", () => {
   it("leases a lease-only credential into the run, never as a placeholder, though it has an injection", async () => {
     const f = await projectFixture()
     await inAccess(f.tenant, async (ctx) => {
-      ctx.sql.exec("UPDATE items SET ceiling='lease',binding=? WHERE slug='key-workspace'", canonicalJson(leaseOnlyBinding()))
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',binding=? WHERE slug='key-workspace'", canonicalJson(leaseOnlyBinding()))
       const invocation = await projectDeviceInvocation(ctx, "dev_member"), principal = { kind: "device" as const, deviceId: "dev_member" }
       const created = await workspaceRunOps["runs.create"]!.handler(ctx, principal, { ...PROJECT_RUN_INPUT, env: "dev" }, invocation) as WorkspaceRunCreated
       expect(created.vars).toMatchObject([{ name: "TOKEN", delivery: "lease", item: "key-workspace" }])

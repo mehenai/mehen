@@ -7,9 +7,9 @@
 // the terms cover it. Behind MANDATES (mandatesOn); a managed workspace has
 // none.
 
-import { MANDATE_CLASSES, MANDATE_ENDING_NOTICE_MS, MANDATE_LIST_MAX, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_TTL_MS, MANDATE_PROPOSALS_DAY_MAX, MANDATE_PROPOSALS_OPEN_MAX, MANDATE_RATE_LIMIT, MANDATE_RATE_WINDOW_MS, MANDATE_RECEIPT_KEEP_MS, MANDATE_USES_PAGE, MANDATE_ASKED_WINDOW_MS, MANDATE_MAX_ITEMS, mandateScheduleText, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MandateActionRequestSchema, MandateIdSchema, MandateProposalIdSchema, MandateProposeSchema, MandateRevSchema, MandateSignSchema, mandateReceiptsCursor, parseMandateReceiptsCursor, type MandateChanged, type MandateClass, type MandateCounts, type MandateList, type MandateOpenProposal, type MandateProposalCreated, type MandateProposalView, type MandateProposedTerms, type MandateReceiptsPage, type MandateReceiptView, type MandateState, type MandateTerms, type MandateView, type MandateActionAnswer, type MandateAsked, type MandateProposalRefusal, type MandateProposalStatus, type MandateCandidates, type MandateCappedAsk, type MandateCoverAsk, type MandateCoverHint, type MandateCoverState, type SessionIdentityCheck, type WorkspaceRole, type WorkspaceStepUpAction } from "@mehen/protocol"
+import { MANDATE_CLASSES, MANDATE_ENDING_NOTICE_MS, MANDATE_LIST_MAX, MANDATE_LIVE_STATES, MANDATE_PROPOSAL_TTL_MS, MANDATE_PROPOSALS_DAY_MAX, MANDATE_PROPOSALS_OPEN_MAX, MANDATE_RATE_LIMIT, MANDATE_RATE_WINDOW_MS, MANDATE_RECEIPT_KEEP_MS, MANDATE_USES_PAGE, MANDATE_ASKED_WINDOW_MS, MANDATE_MAX_ITEMS, mandateScheduleText, MANDATE_PROPOSAL_CAP_DEFAULTS, MANDATE_PROPOSAL_DEFAULT_TTL_DAYS, MandateActionRequestSchema, MandateIdSchema, MandateProposalIdSchema, MandateProposeSchema, MandateRevSchema, MandateSignSchema, mandateReceiptsCursor, parseMandateReceiptsCursor, type Binding, type CredentialHome, type MandateCandidateNever, type Share, type MandateChanged, type MandateClass, type MandateCounts, type MandateList, type MandateOpenProposal, type MandateProposalCreated, type MandateProposalView, type MandateProposedTerms, type MandateReceiptsPage, type MandateReceiptView, type MandateState, type MandateTerms, type MandateView, type MandateActionAnswer, type MandateAsked, type MandateProposalRefusal, type MandateCandidates, type MandateCappedAsk, type MandateCoverAsk, type MandateCoverHint, type MandateCoverState, type SessionIdentityCheck, type WorkspaceRole, type WorkspaceStepUpAction, type MandateProposalStatus } from "@mehen/protocol"
 import { canonicalJson } from "@mehen/protocol/canonical-json"
-import { mandateClassesOf, mandateCovers, mandateDigest, mandateHostNamed, mandateRequestFacts, mandateScheduleOpen } from "@mehen/protocol/mandates"
+import { mandateClassesOf, mandateCovers, mandateCredentialNever, mandateDigest, mandateHeadersNameOperation, mandateHostNamed, mandateRequestFacts, mandateScheduleOpen } from "@mehen/protocol/mandates"
 import { policyCatalogueVerdict } from "@mehen/protocol/policy-safety"
 import { z } from "zod"
 import type { Env } from "../../env.ts"
@@ -19,12 +19,13 @@ import { one, randomId, rows, type Area, type VaultContext } from "../core.ts"
 import { workspaceSwitchOn } from "../workspace-switch.ts"
 import { workspaceApproval } from "./approvals-workspace.ts"
 import { devicePolicyState } from "./devices.ts"
-import { lapseMandates } from "./mandates-lapse.ts"
+import { lapseMandates, type MandateLapseCause } from "./mandates-lapse.ts"
 import { credentialAudit, type CheckedCredential } from "./items-workspace.ts"
 import { parseOpInput } from "./items.ts"
 import { anchorOf, managesHome, type HeldRequest } from "./policy-rules-workspace.ts"
 import { projects } from "./projects.ts"
 import { readableDevices } from "./workspace-devices.ts"
+import { registerManagementGuard } from "./management-guard.ts"
 import { accessState, authorise, capabilityState, eligibilityState, managedSetting, queueNotice, registerAccessChangeHook, registerSecurityChangeHook, requireStepUp, security, setting, workspaceRef, type AccessAllowed, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 
 const DAY_MS = 86_400_000
@@ -95,6 +96,16 @@ function mandateChanged(): VaultError {
   return new VaultError("conflict", "This mandate changed; review and try again.")
 }
 const noSuchMandate = (): VaultError => new VaultError("not_found", "No such mandate.")
+// The page says the same (MANDATE_REVOKED_WORDS).
+const machineRevoked = (): VaultError => new VaultError("forbidden", "This machine was revoked, so its mandate ended for good and it cannot have another. A machine enrolled again can.")
+// Its owner, before anything else would refuse them: a machine of theirs
+// that was revoked never has a mandate again.
+function refuseRevokedMachine(ctx: VaultContext, invocation: WorkspaceInvocationContext, device: string): void {
+  if (invocation.auth.kind !== "account") return
+  const account = invocation.auth.account, state = accessState(ctx)
+  const machine = state.devices.find((d) => d.id === device)
+  if (machine?.status === "revoked" && machine.owner.kind === "member" && state.members.some((m) => m.id === machine.owner.id && m.account === account)) throw machineRevoked()
+}
 
 // What sign and resume store about the person who signed (5.3): enough to
 // tell, at each use, that the same member in the same role, on the same
@@ -134,10 +145,24 @@ function todayCounts(ctx: VaultContext, mandate: string, now: number): MandateCo
 // Covered requests other than reads in (now - 60s, now].
 const rateCount = (ctx: VaultContext, mandate: string, now: number): number => one(ctx.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM mandate_rate WHERE mandate_id=? AND at>?", mandate, now - MANDATE_RATE_WINDOW_MS))?.n ?? 0
 const writesBeyondRead = (classes: Iterable<MandateClass>): boolean => [...classes].some((c) => c !== "read")
-// The classes of the union that have no cap left today for one more request.
-function cappedClasses(ctx: VaultContext, row: MandateRow, classes: Iterable<MandateClass>, now: number): MandateClass[] {
+// The classes of the union that have no cap left today for one more request,
+// after what a bundle has already planned on top of today's counts.
+function cappedClasses(ctx: VaultContext, row: MandateRow, classes: Iterable<MandateClass>, now: number, planned: MandateCounts | null = null): MandateClass[] {
   const terms = termsOf(row), counts = todayCounts(ctx, row.id, now)
-  return MANDATE_CLASSES.filter((c) => [...classes].includes(c) && counts[c] + 1 > terms.caps[c])
+  return MANDATE_CLASSES.filter((c) => [...classes].includes(c) && counts[c] + (planned?.[c] ?? 0) + 1 > terms.caps[c])
+}
+// What a bundle's planned requests would debit of the machine's mandate, a
+// request's union of classes once each, so a later one in the same bundle
+// asks once the caps are spent.
+export type MandatePlanned = { mandate: string | null; counts: MandateCounts }
+export function newMandatePlanned(): MandatePlanned {
+  return { mandate: null, counts: { read: 0, change: 0, send: 0, delete: 0 } }
+}
+// After a planned request: what its mandate covered joins the bundle's tally.
+export function addMandatePlanned(planned: MandatePlanned, reservation: MandateReservation): void {
+  if (reservation.mandate === null) return
+  if (planned.mandate !== reservation.mandate) Object.assign(planned, newMandatePlanned(), { mandate: reservation.mandate })
+  for (const c of reservation.classes) planned.counts[c]++
 }
 
 // ---------------------------------------------------------------- the signer
@@ -147,7 +172,9 @@ function cappedClasses(ctx: VaultContext, row: MandateRow, classes: Iterable<Man
 // identity gate, the rule and gate generation the signing session's check
 // was made under. Never the session itself, so signing out, another browser
 // or a session ending keeps the mandate; recovery, a passkey removed or any
-// other security change moves the epoch and ends it.
+// other security change moves the epoch and ends it. Nor the check's
+// expiresAt: a mandate is standing authority, so the check ageing out keeps
+// it, while an invalidation (identity_invalidated) lapses it.
 function signerAccountCurrent(ctx: VaultContext, member: AccessState["members"][number], basis: SigningBasis): boolean {
   const sec = security(ctx, basis.account)
   if (!sec || sec.installedEpoch !== basis.securityEpoch || sec.deleting || sec.pending) return false
@@ -327,6 +354,12 @@ function propose(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation
   const device = state.devices.find((d) => d.id === principal.deviceId && d.status === "active")
   if (!device) throw new VaultError("not_found", "No such machine.")
   if (device.owner.kind !== "member") throw new VaultError("forbidden", "A team's machine cannot have a mandate yet: team machines get mandates signed by two people in a later version. For routine work now, propose a task grant with `mehen policy propose`.", { next: { command: "mehen policy propose --from <apr_id> --reason <why>", say: "A team's machine cannot carry on without asking yet; ask for a task grant for routine work instead." } })
+  // A guest, or an owner who could not sign one however long they waited:
+  // never a link to a page that cannot be signed.
+  if (!ownerCouldSign(state, device.id, now)) {
+    const guest = state.members.find((m) => m.id === device.owner.id)?.standing.effectiveRole === "guest"
+    throw new VaultError("forbidden", `${guest ? "A guest's machine cannot have a mandate." : "This machine's owner cannot sign a mandate for it."} For routine work, propose a task grant with \`mehen policy propose\`.`, { next: { command: "mehen policy propose --from <apr_id> --reason <why>", say: `${guest ? "A guest's machine" : "This machine"} cannot carry on without asking; ask for a task grant for routine work instead.` } })
+  }
   refuseBroad(ctx, state, principal, device.id, input.terms, now)
   return ctx.storage.transactionSync(() => {
     const open = openProposalRows(ctx, device.id, now)
@@ -407,6 +440,7 @@ function credentialUnsignable(state: AccessState, member: string, device: string
 function checkSignable(ctx: VaultContext, invocation: WorkspaceInvocationContext, terms: MandateTerms, proposal: string | undefined): AccessAllowed {
   mandatesAvailable(ctx)
   if (frozen(ctx)) throw new VaultError("frozen", "This workspace is frozen.")
+  refuseRevokedMachine(ctx, invocation, terms.device)
   const now = ctx.now()
   const decision = authorise(ctx, invocation, { type: "mandate.sign" }, { device: terms.device }, now)
   if (decision.principal.kind !== "member") throw new VaultError("forbidden", "Only a person can sign a mandate.")
@@ -473,6 +507,14 @@ async function sign(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocat
 // machine: exactly those signing would accept, among those the reader may
 // see now, by slug. Any machine they may not sign for (another's, a team's,
 // their own revoked one, or any for a guest) is no such machine.
+// Why a mandate could never cover a request on a credential (its binding
+// and its secrets' prefixes), for the sign page to show it unticked.
+function candidateNever(ctx: VaultContext, item: string): MandateCandidateNever | null {
+  const row = one(ctx.sql.exec<{ binding: string }>("SELECT binding FROM items WHERE id=?", item))
+  if (!row) return null
+  const prefixes = rows(ctx.sql.exec<{ prefix: string }>("SELECT prefix FROM item_secrets WHERE item=?", item)).map((r) => r.prefix)
+  return mandateCredentialNever(JSON.parse(row.binding) as Binding, prefixes)
+}
 function candidates(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation: WorkspaceInvocationContext): MandateCandidates {
   mandatesAvailable(ctx)
   if (frozen(ctx)) throw new VaultError("frozen", "This workspace is frozen.")
@@ -480,7 +522,7 @@ function candidates(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocat
   const state = accessState(ctx), now = ctx.now()
   if (p.kind !== "member" || !can(state, p, { type: "mandate.sign" }, { device }, now).allowed || ownMachine(state, p.memberId, device) === null) throw new VaultError("not_found", "No such machine.")
   const reader = readerState(ctx, invocation)
-  const items = state.credentials.flatMap((c) => c.slug !== undefined && credentialUnsignable(state, p.memberId, device, c, now) === null && seesCredential(reader, p, c.id, now) ? [{ id: c.id, slug: c.slug }] : [])
+  const items = state.credentials.flatMap((c) => c.slug !== undefined && credentialUnsignable(state, p.memberId, device, c, now) === null && seesCredential(reader, p, c.id, now) ? [{ id: c.id, slug: c.slug, never: candidateNever(ctx, c.id) }] : [])
   return { items: items.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0)) }
 }
 
@@ -494,8 +536,8 @@ export function closeProposalsNaming(ctx: VaultContext, item: string): void {
 
 // ---------------------------------------------------------------- pause, resume, stop
 
-// Ends a live mandate: stopped by a person or replaced by a new signature,
-// or expired by the sweep.
+// Ends a live mandate: stopped by a person, replaced by a new signature or
+// its machine revoked, or expired by the sweep.
 function endRow(ctx: VaultContext, row: MandateRow, state: "stopped" | "expired", reason: NonNullable<MandateView["endedReason"]>, actor: string): void {
   ctx.sql.exec("UPDATE mandates SET state=?,rev=rev+1,stopped_at=?,ended_reason=?,paused_by=NULL WHERE id=?", state, ctx.now(), reason, row.id)
   ctx.audit({ actor, action: state === "expired" ? "mandate.expire" : "mandate.stop", target: row.id, detail: { device: row.device, reason } })
@@ -551,8 +593,8 @@ function personChange(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invoc
   })
 }
 
-// The signer alone; never a stopped or expired one, nor an active one whose
-// signer still stands behind it. A passkey over the mandate's digest and
+// The signer alone; never on a revoked machine, a stopped or expired one,
+// nor an active one whose signer still stands behind it. A passkey over the mandate's digest and
 // the revision resumed, unless the signer or the machine itself paused it
 // and the signer still stands behind it: then action is null. The action
 // says what it resumes from, as read here: a trip, a signer who no longer
@@ -563,15 +605,20 @@ function checkResumable(ctx: VaultContext, invocation: WorkspaceInvocationContex
   const row = readableRow(ctx, invocation, id)
   const now = ctx.now()
   const decision = authorise(ctx, invocation, { type: "mandate.resume" }, { device: row.device, member: row.signer_member }, now)
+  const access = accessState(ctx)
+  if (access.devices.find((d) => d.id === row.device)?.status !== "active") throw machineRevoked()
   const state = stateNow(row, now)
-  const stands = mandateSignerStands(ctx, accessState(ctx), row, now)
+  const stands = mandateSignerStands(ctx, access, row, now)
   if (row.rev !== rev || state === "stopped" || state === "expired" || state === "active" && stands) throw mandateChanged()
   const withoutPasskey = state === "paused" && (row.paused_by === "signer" || row.paused_by === "machine") && stands
   const from = state === "tripped" ? "tripped" : stands ? "paused" : "lapsed"
   return { decision, row, action: withoutPasskey ? null : { type: "mandate.resume", mandate: row.id, digest: row.digest, rev: row.rev, from } }
 }
+// A manage share that expired before this lapses what it gave management
+// for first, so the sweep never lapses the resumed mandate for it again.
 function resume(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation: WorkspaceInvocationContext): MandateChanged {
   const { id, rev } = parseOpInput(PersonChange, raw)
+  settleShareExpiriesNow(ctx)
   return ctx.storage.transactionSync(() => {
     const { decision, row, action } = checkResumable(ctx, invocation, id, rev)
     if (action !== null) requireStepUp(ctx, decision, action, invocation)
@@ -581,18 +628,131 @@ function resume(ctx: VaultContext, p: AccessPrincipal, raw: unknown, invocation:
     const basis = action === null ? row.basis : JSON.stringify(signingBasis(accessState(ctx), decision, invocation))
     ctx.sql.exec("UPDATE mandates SET state='active',rev=rev+1,basis=?,paused_by=NULL,lapsed_at=NULL WHERE id=?", basis, row.id)
     ctx.audit({ actor: `member:${p.memberId}`, action: "mandate.resume", target: row.id, detail: { device: row.device, from: action?.type === "mandate.resume" ? action.from : row.state, stepUp: action !== null } })
+    scheduleMandateSweep(ctx)
     return { mandate: mandateView(ctx, readerState(ctx, invocation), p, mandateRow(ctx, id) as MandateRow) }
   })
 }
 
+// Before a credential moves home (items.rehome): lapses each live mandate
+// that names it, or every credential, whose signer manages the home it
+// leaves but not the one it moves to.
+export function lapseMandatesOnRehome(ctx: VaultContext, item: { id: string; home: CredentialHome }, to: CredentialHome): void {
+  const state = accessState(ctx), now = ctx.now()
+  for (const row of rows(ctx.sql.exec<MandateRow>("SELECT * FROM mandates WHERE state IN ('active','paused','tripped') AND lapsed_at IS NULL"))) {
+    const named = termsOf(row).items
+    if (named !== "all" && !named.includes(item.id)) continue
+    if (managesHome(state, row.signer_member, item.home, now) && !managesHome(state, row.signer_member, to, now)) lapseMandates(ctx, { mandate: row.id }, "rehome")
+  }
+}
+// After a share or team change (a share lowered or removed, someone taken
+// off a team, a team deleted), from access as it was and as it is: lapses
+// each live mandate whose signer managed a project before and not after,
+// and that names a credential homed there, every credential counting for
+// "all". An owner or admin manages every project by their role, and
+// a signer who still manages it through another share or team keeps it.
+// Only mandates signed before signedBefore, when given.
+export function lapseMandatesOnLostManagement(ctx: VaultContext, before: AccessState, after: AccessState, cause: "share" | "team", signedBefore = Infinity): void {
+  const now = ctx.now()
+  const manages = (state: AccessState, member: string, project: string) => managesHome(state, member, { kind: "project", project }, now)
+  for (const row of rows(ctx.sql.exec<MandateRow>("SELECT * FROM mandates WHERE state IN ('active','paused','tripped') AND lapsed_at IS NULL AND created_at<?", signedBefore))) {
+    const named = termsOf(row).items
+    const lost = before.projects.filter((p) => manages(before, row.signer_member, p.id) && !manages(after, row.signer_member, p.id)).map((p) => p.id)
+    if (before.credentials.some((c) => c.home.kind === "project" && lost.includes(c.home.project) && (named === "all" || named.includes(c.id)))) lapseMandates(ctx, { mandate: row.id }, cause)
+  }
+}
+const manageShareEnd = (share: Share): number | null => share.level === "manage" && share.expiresAt !== null ? Date.parse(share.expiresAt) : null
+// A manage share that expires takes management away as one lowered does:
+// each whose end has passed and is not yet settled lapses the mandates
+// signed before it ended whose signer managed a project through it and no
+// longer does, so granting it again does not restore cover. Settling
+// records the share with its terms in share_ends_settled, never a clock
+// watermark, so an end set below an earlier sweep's clock still counts.
+// A settled end is final: access counts the share as ended whatever the
+// clock says until its terms change (activeShare), so a clock set back can
+// neither sign nor cover anything on it, and a mandate resumed after it is
+// never lapsed again for it. It reads management from access as it is, so
+// it runs before anything changes that: the sweep, a resume, and, as the
+// management guard (beforeManagementChange) or called directly, before
+// every change to who manages what (a team's members or the team itself, a
+// member's role or standing, a share, a credential's home, a credential
+// made or deleted, a project deleted), so the change can neither hide a
+// lapse nor restore management before the sweep reads it. A record goes
+// with its share (ON DELETE CASCADE); one whose share's terms changed since
+// is pruned here.
+// On the path where no manage share's end has passed unsettled, which is
+// nearly every call, it runs one query, a read, and writes nothing; access
+// is read, and records whose share's terms changed are pruned, only when
+// one has.
+export function settleShareExpiries(ctx: VaultContext): void {
+  const now = ctx.now()
+  const due = new Set<string>()
+  for (const row of ctx.sql.exec<{ id: string; value: string }>(UNSETTLED_MANAGE_ENDS)) {
+    const end = manageShareEnd(JSON.parse(row.value) as Share)
+    if (end !== null && Number.isFinite(end) && end <= now) due.add(row.id)
+  }
+  if (due.size === 0) return
+  ctx.sql.exec(PRUNE_STALE_ENDS)
+  const state = accessState(ctx)
+  for (const share of state.shares) {
+    if (!due.has(share.id)) continue
+    const end = manageShareEnd(share) as number
+    const before = { ...state, shares: state.shares.map((s) => (s === share ? { ...s, expiresAt: null } : s)) }
+    lapseMandatesOnLostManagement(ctx, before, state, "share", end)
+    ctx.sql.exec("INSERT OR IGNORE INTO share_ends_settled(share,terms) SELECT id,value FROM project_shares WHERE id=?", share.id)
+  }
+}
+const PRUNE_STALE_ENDS = "DELETE FROM share_ends_settled WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=share_ends_settled.share AND s.value=share_ends_settled.terms)"
+const UNSETTLED_MANAGE_ENDS = "SELECT s.id,s.value FROM project_shares s WHERE json_extract(s.value,'$.level')='manage' AND json_extract(s.value,'$.expiresAt') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM share_ends_settled e WHERE e.share=s.id AND e.terms=s.value)"
+// Whether a manage share's end has passed and is not yet settled.
+export function shareExpiryDue(ctx: VaultContext): boolean {
+  const now = ctx.now()
+  for (const row of ctx.sql.exec<{ value: string }>(UNSETTLED_MANAGE_ENDS)) {
+    const end = manageShareEnd(JSON.parse(row.value) as Share)
+    if (end !== null && Number.isFinite(end) && end <= now) return true
+  }
+  return false
+}
+// Settles in a transaction of its own, which commits whatever the caller
+// does next: a use or a resume refused because of the lapse it finds
+// cannot roll that lapse back. Never called inside another transaction.
+export function settleShareExpiriesNow(ctx: VaultContext): void {
+  if (shareExpiryDue(ctx)) ctx.storage.transactionSync(() => settleShareExpiries(ctx))
+}
+// A revoked machine's mandate ends for good, as a stopped one, and its open
+// proposals close: nobody is asked to resume or renew it, or told it ends.
+function endRevokedMachine(ctx: VaultContext, device: string): void {
+  const row = liveRow(ctx, device)
+  if (row) endRow(ctx, row, "stopped", "revoked", "system")
+  ctx.sql.exec("UPDATE mandate_proposals SET closed_at=? WHERE device=? AND closed_at IS NULL", ctx.now(), device)
+}
 // What ends a mandate's cover for good: a role change, a suspension or
-// a removal of its signer, and the machine revoked or rescoped wider. A
-// reinstatement, a team change or a narrowing rescope does not.
-const LAPSING_MEMBER_CHANGES = new Set(["role", "suspend", "remove", "leave"])
+// a removal of its signer, the machine rescoped wider, and losing
+// management of a credential's home: leaving a team, or the team deleted,
+// when that takes a project's management away (a share lowered is
+// projects-workspace.ts's, a rehome lapseMandatesOnRehome). Revoking the
+// machine, and removing its owner or their leaving, which revokes their
+// machines, ends the mandate itself. A reinstatement, joining a team or a
+// narrowing rescope does not.
+const LAPSING_MEMBER_CHANGES: ReadonlySet<string> = new Set<MandateLapseCause>(["role", "suspend", "remove", "leave"])
+const REVOKING_MEMBER_CHANGES = new Set(["remove", "leave"])
+// Access as it will be once the team is gone, or the member off it: the
+// hook runs before the change is written.
+function withoutTeam(state: AccessState, team: string, member: string | null): AccessState {
+  if (member !== null) return { ...state, teams: state.teams.map((t) => t.id === team ? { ...t, members: t.members.filter((m) => m !== member) } : t) }
+  return { ...state, teams: state.teams.filter((t) => t.id !== team), shares: state.shares.filter((s) => !(s.subject.kind === "team" && s.subject.team === team)) }
+}
+registerManagementGuard("mandates", settleShareExpiries)
 registerAccessChangeHook("mandates", (ctx, member, reason, target) => {
   if (target.device !== undefined) {
-    if (reason === "revoke" || reason === "rescope" && target.narrowing !== true) lapseMandates(ctx, { device: target.device })
-  } else if (member !== null && LAPSING_MEMBER_CHANGES.has(reason)) lapseMandates(ctx, { member })
+    if (reason === "revoke") endRevokedMachine(ctx, target.device)
+    else if (reason === "rescope" && target.narrowing !== true) lapseMandates(ctx, { device: target.device }, "rescope")
+    return
+  }
+  if (reason === "team.delete" && target.team !== undefined) { const state = accessState(ctx); lapseMandatesOnLostManagement(ctx, state, withoutTeam(state, target.team, null), "team") }
+  if (member === null) return
+  if (reason === "team.remove" && target.team !== undefined) { const state = accessState(ctx); lapseMandatesOnLostManagement(ctx, state, withoutTeam(state, target.team, member), "team") }
+  if (REVOKING_MEMBER_CHANGES.has(reason)) for (const { id } of rows(ctx.sql.exec<{ id: string }>("SELECT id FROM devices WHERE owner_kind='member' AND owner_id=? AND revoked_at IS NULL", member))) endRevokedMachine(ctx, id)
+  if (LAPSING_MEMBER_CHANGES.has(reason)) lapseMandates(ctx, { member }, reason as MandateLapseCause)
 })
 // And a change to the signer's account here, an account recovery among
 // them, that leaves it no longer the account they signed with.
@@ -602,7 +762,7 @@ registerSecurityChangeHook("mandates", (ctx, account) => {
     const basis = basisOf(row)
     if (basis.account !== account) continue
     const member = state.members.find((m) => m.id === basis.member && m.account === account)
-    if (!member || !signerAccountCurrent(ctx, member, basis)) lapseMandates(ctx, { mandate: row.id })
+    if (!member || !signerAccountCurrent(ctx, member, basis)) lapseMandates(ctx, { mandate: row.id }, "security")
   }
 })
 
@@ -611,6 +771,9 @@ registerSecurityChangeHook("mandates", (ctx, account) => {
 async function planAction(ctx: VaultContext, _p: AccessPrincipal, raw: unknown, invocation: WorkspaceInvocationContext): Promise<MandateActionAnswer> {
   const input = parseOpInput(MandateActionRequestSchema, raw)
   if (input.op === "sign") return await signAction(ctx, invocation, input.terms, input.proposal)
+  // A share's end that passed lapses the mandate first, durably, so the
+  // plan asks for the passkey the resume will need.
+  settleShareExpiriesNow(ctx)
   return checkResumable(ctx, invocation, input.id, input.rev).action ?? { stepUp: null }
 }
 
@@ -638,10 +801,14 @@ export function newMandateReservation(): MandateReservation {
 // asking, adding it to the reservation when it does. Only for a request the
 // item's policy holds, never a protected one (the caller checks), from a
 // machine with no workload, in an unmanaged, unfrozen workspace with
-// mandates on. Plan mode never trips a mandate.
-export function coveringMandate(ctx: VaultContext, principal: Extract<AccessPrincipal, { kind: "device" }>, credential: CheckedCredential, held: HeldRequest, reservation: MandateReservation, options: { plan: boolean; shape: string }): boolean {
+// mandates on. Plan mode never trips a mandate; planned: a bundle's tally
+// so far, counted against the caps as if already debited.
+export function coveringMandate(ctx: VaultContext, principal: Extract<AccessPrincipal, { kind: "device" }>, credential: CheckedCredential, held: HeldRequest, reservation: MandateReservation, options: { plan: boolean; shape: string; planned?: MandatePlanned }): boolean {
   reservation.capped = null
   if (!mandatesHere(ctx) || frozen(ctx) || principal.workload !== undefined || projects.isProtectedItem(ctx, credential.slug)) return false
+  // A share's end that passed with no sweep since lapses the whole mandate
+  // before it is read, whichever of its credentials this request uses.
+  settleShareExpiriesNow(ctx)
   const row = liveRow(ctx, principal.deviceId)
   const now = ctx.now()
   if (!row || stateNow(row, now) !== "active" || reservation.mandate !== null && reservation.mandate !== row.id) return false
@@ -649,7 +816,7 @@ export function coveringMandate(ctx: VaultContext, principal: Extract<AccessPrin
   if (terms.items !== "all" && !terms.items.includes(credential.id)) return false
   const anchor = anchorOf(ctx, credential, { device: principal.deviceId, workload: null }, held)
   const classes = mandateClassesOf(mandateRequestFacts(anchor), held.destination.method)
-  if (classes === "never" || !mandateHostNamed(credential.binding, held.destination.host)) return false
+  if (classes === "never" || mandateHeadersNameOperation(held.headerNames ?? []) || !mandateHostNamed(credential.binding, held.destination.host)) return false
   if (!mandateCovers(terms, { state: row.state, expiresAt: row.expires_at }, classes, now)) return false
   const state = accessState(ctx)
   if (!mandateSignerCurrent(ctx, state, row, credential, now)) return false
@@ -658,7 +825,8 @@ export function coveringMandate(ctx: VaultContext, principal: Extract<AccessPrin
     if (!options.plan) trip(ctx, row, state)
     return false
   }
-  const capped = cappedClasses(ctx, row, union, now)
+  const planned = options.planned?.mandate === row.id ? options.planned.counts : null
+  const capped = cappedClasses(ctx, row, union, now, planned)
   if (capped.length > 0) {
     reservation.capped = { id: row.id, capped }
     return false
@@ -692,7 +860,7 @@ function ownerCouldSign(state: AccessState, device: string, now: number): boolea
 export function mandateCoverHint(ctx: VaultContext, principal: Extract<AccessPrincipal, { kind: "device" }>, credential: CheckedCredential, held: HeldRequest, workspaceSlug: string): MandateCoverHint | null {
   if (!mandatesHere(ctx) || frozen(ctx) || principal.workload !== undefined || projects.isProtectedItem(ctx, credential.slug)) return null
   const classes = mandateClassesOf(mandateRequestFacts(anchorOf(ctx, credential, { device: principal.deviceId, workload: null }, held)), held.destination.method)
-  if (classes === "never" || !mandateHostNamed(credential.binding, held.destination.host)) return null
+  if (classes === "never" || mandateHeadersNameOperation(held.headerNames ?? []) || !mandateHostNamed(credential.binding, held.destination.host)) return null
   const now = ctx.now()
   const hint = (state: MandateCoverState, mandate: string | null): MandateCoverHint => ({ classes, state, mandate, url: mandate === null ? null : `${ctx.env.VAULT_ORIGIN}/w/${encodeURIComponent(workspaceSlug)}/mandates/${encodeURIComponent(mandate)}` })
   const row = liveRow(ctx, principal.deviceId)
@@ -723,6 +891,12 @@ function trip(ctx: VaultContext, row: MandateRow, state: AccessState): void {
   })
 }
 
+// Just before the relay's last transaction, in a transaction of its own that
+// commits: a share's end that passed since the hook lapses the mandate, so
+// the final check refuses the use while the lapse stays.
+export function settleBeforeMandateUse(ctx: VaultContext, reservation: MandateReservation): void {
+  if (reservation.mandate !== null) settleShareExpiriesNow(ctx)
+}
 // Inside the relay's last transaction: the mandate the hook read, unchanged
 // and still covering, and still within its caps and rate counting what was
 // let through since. Anything else asks the machine to send it again, and
@@ -732,6 +906,10 @@ export function assertMandateCurrent(ctx: VaultContext, reservation: MandateRese
   const row = mandateRow(ctx, reservation.mandate), now = ctx.now()
   const changed = () => new VaultError("conflict", "This machine's mandate changed since this request was checked; send it again.")
   if (!row || row.rev !== reservation.rev || stateNow(row, now) !== "active" || !mandatesHere(ctx) || frozen(ctx) || !mandateScheduleOpen(termsOf(row).schedule, now)) throw changed()
+  // The relay settled just before this transaction (settleBeforeMandateUse):
+  // a share's end still unsettled here passed since, so the request is
+  // sent again, when the hook settles it.
+  if (shareExpiryDue(ctx)) throw changed()
   const state = accessState(ctx)
   for (const slug of reservation.covered.keys()) if (!mandateSignerCurrent(ctx, state, row, live(slug), now)) throw changed()
   if (cappedClasses(ctx, row, reservation.classes, now).length > 0) throw changed()
@@ -813,15 +991,23 @@ function noticeEnding(ctx: VaultContext): void {
   for (const row of due) if (notice(ctx, "mandate_ending", row, state) > 0) ctx.sql.exec("UPDATE mandates SET ending_noticed_at=? WHERE id=?", now, row.id)
 }
 
-// Tells signers of mandates ending soon, marks mandates past their end
-// expired, closes expired proposals, and prunes old counts, rate rows and
-// receipts and capped asks; then sets the next sweep.
+// Ends the mandates of machines revoked before revoking ended them, lapses
+// those an expired manage share took management from, tells signers of
+// mandates ending soon, marks mandates past their end expired, closes
+// expired proposals and those of revoked machines, and prunes old counts,
+// rate rows and receipts and capped asks; then sets the next sweep.
 export function sweepMandates(ctx: VaultContext): void {
   const now = ctx.now()
   ctx.storage.transactionSync(() => {
+    for (const { device } of rows(ctx.sql.exec<{ device: string }>("SELECT m.device FROM mandates m JOIN devices d ON d.id=m.device WHERE m.state IN ('active','paused','tripped') AND d.revoked_at IS NOT NULL"))) endRevokedMachine(ctx, device)
+    settleShareExpiries(ctx)
+    // A settled end whose share's terms changed since is no longer one; its
+    // record goes here whether or not anything is due, so it never keeps the
+    // sweep waking.
+    ctx.sql.exec(PRUNE_STALE_ENDS)
     noticeEnding(ctx)
     for (const row of rows(ctx.sql.exec<MandateRow>("SELECT * FROM mandates WHERE state IN ('active','paused','tripped') AND expires_at<=?", now))) endRow(ctx, row, "expired", "expired", "system")
-    ctx.sql.exec("UPDATE mandate_proposals SET closed_at=? WHERE closed_at IS NULL AND expires_at<=?", now, now)
+    ctx.sql.exec("UPDATE mandate_proposals SET closed_at=? WHERE closed_at IS NULL AND (expires_at<=? OR device IN (SELECT id FROM devices WHERE revoked_at IS NOT NULL))", now, now)
     ctx.sql.exec("DELETE FROM mandate_counts WHERE day<?", dayOf(now) - COUNT_KEEP_DAYS)
     ctx.sql.exec("DELETE FROM mandate_rate WHERE at<=?", now - MANDATE_RATE_WINDOW_MS)
     ctx.sql.exec("DELETE FROM mandate_uses WHERE at<?", now - MANDATE_RECEIPT_KEEP_MS)
@@ -831,14 +1017,25 @@ export function sweepMandates(ctx: VaultContext): void {
   })
   scheduleMandateSweep(ctx)
 }
-// The next sweep: the soonest end of a live mandate or an open proposal, the
-// moment yet to come a live mandate's signer is due to hear it ends soon, or
-// a day from now while anything is left to prune or a signer is still to be
-// told.
+// The next sweep: the soonest end of a live mandate, an open proposal or,
+// while a mandate is live, lapsed or not, a manage share, the moment yet to come a live
+// mandate's signer is due to hear it ends soon, or a day from now while
+// anything is left to prune or a signer is still to be told.
 export function scheduleMandateSweep(ctx: VaultContext): void {
   const now = ctx.now()
-  const due = one(ctx.sql.exec<{ due: number | null }>("SELECT MIN(due) AS due FROM (SELECT MIN(expires_at) AS due FROM mandates WHERE state IN ('active','paused','tripped') UNION ALL SELECT MIN(expires_at-?) FROM mandates WHERE state IN ('active','paused','tripped') AND ending_noticed_at IS NULL AND expires_at-?>? UNION ALL SELECT MIN(expires_at) FROM mandate_proposals WHERE closed_at IS NULL)", MANDATE_ENDING_NOTICE_MS, MANDATE_ENDING_NOTICE_MS, now))?.due ?? null
-  const leftovers = one(ctx.sql.exec("SELECT 1 FROM mandate_uses UNION ALL SELECT 1 FROM mandate_counts UNION ALL SELECT 1 FROM mandate_rate UNION ALL SELECT 1 FROM mandate_capped_asks UNION ALL SELECT 1 FROM mandate_cover_asks LIMIT 1")) !== null || one(ctx.sql.exec("SELECT 1 FROM mandate_asked LIMIT 1")) !== null
+  const live = one(ctx.sql.exec("SELECT 1 FROM mandates WHERE state IN ('active','paused','tripped') LIMIT 1")) !== null
+  let shareDue = Infinity
+  if (live) for (const row of ctx.sql.exec<{ value: string }>("SELECT value FROM project_shares")) {
+    const end = manageShareEnd(JSON.parse(row.value) as Share)
+    if (end !== null && end > now && end < shareDue) shareDue = end
+  }
+  const mandateDue = one(ctx.sql.exec<{ due: number | null }>("SELECT MIN(due) AS due FROM (SELECT MIN(expires_at) AS due FROM mandates WHERE state IN ('active','paused','tripped') UNION ALL SELECT MIN(expires_at-?) FROM mandates WHERE state IN ('active','paused','tripped') AND ending_noticed_at IS NULL AND expires_at-?>? UNION ALL SELECT MIN(expires_at) FROM mandate_proposals WHERE closed_at IS NULL)", MANDATE_ENDING_NOTICE_MS, MANDATE_ENDING_NOTICE_MS, now))?.due ?? Infinity
+  const soonest = Math.min(mandateDue, shareDue)
+  const due = soonest === Infinity ? null : soonest
+  // A settled end whose share's terms changed since is pruned by the next
+  // sweep; one whose share went was deleted with it.
+  const staleEnd = one(ctx.sql.exec("SELECT 1 FROM share_ends_settled e WHERE NOT EXISTS (SELECT 1 FROM project_shares s WHERE s.id=e.share AND s.value=e.terms) LIMIT 1")) !== null
+  const leftovers = staleEnd || one(ctx.sql.exec("SELECT 1 FROM mandate_uses UNION ALL SELECT 1 FROM mandate_counts UNION ALL SELECT 1 FROM mandate_rate UNION ALL SELECT 1 FROM mandate_capped_asks UNION ALL SELECT 1 FROM mandate_cover_asks LIMIT 1")) !== null || one(ctx.sql.exec("SELECT 1 FROM mandate_asked LIMIT 1")) !== null
   const next = due === null ? (leftovers ? now + DAY_MS : null) : Math.min(due, now + DAY_MS)
   if (next === null) ctx.unschedule("mandates", MANDATE_SWEEP_KEY)
   else ctx.schedule("mandates", MANDATE_SWEEP_KEY, Math.max(next, now + 1))

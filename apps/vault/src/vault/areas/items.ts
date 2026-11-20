@@ -29,6 +29,7 @@ import type { ItemRecord, ItemsService, NewItem } from "../services.ts"
 import { deviceCovers } from "./devices.ts"
 import { credentialOps, workspaceItemOps } from "./items-workspace.ts"
 import { workspacePostureOps } from "./postures-workspace.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 
 // Op inputs arrive as `unknown` across the DO boundary; every op parses its own.
 export function parseOpInput<T extends z.ZodType>(schema: T, input: unknown): z.infer<T> {
@@ -507,6 +508,7 @@ export const items: ItemsService = {
         }
         storeSecrets(ctx, id, sealed)
       } else {
+        beforeManagementChange(ctx)
         ctx.sql.exec(
           `INSERT INTO items (${ITEM_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, 1, ?, ?, ?, NULL, NULL, NULL, NULL, 0)`,
           id,
@@ -533,9 +535,12 @@ export const items: ItemsService = {
   },
 
   deleteItem(ctx, item, actor) {
-    ctx.sql.exec("DELETE FROM item_secret_history WHERE item = ?", item.id)
-    ctx.sql.exec("DELETE FROM item_secrets WHERE item = ?", item.id)
-    ctx.sql.exec("DELETE FROM items WHERE id = ?", item.id)
+    ctx.storage.transactionSync(() => {
+      beforeManagementChange(ctx)
+      ctx.sql.exec("DELETE FROM item_secret_history WHERE item = ?", item.id)
+      ctx.sql.exec("DELETE FROM item_secrets WHERE item = ?", item.id)
+      ctx.sql.exec("DELETE FROM items WHERE id = ?", item.id)
+    })
     ctx.audit({ actor: actorOf(actor), action: "item.delete", target: item.slug, detail: { kind: item.kind, hosts: item.binding.hosts } })
   },
 

@@ -37,6 +37,8 @@ import { registerCredentialProvider } from "../src/vault/areas/items-workspace.t
 import { workspaceRunOps } from "../src/vault/areas/runs-workspace.ts"
 import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal } from "./credentials-test-support.ts"
 import { createWorkspaceIntake } from "../src/vault/areas/intake-workspace.ts"
+import { fixtureSql } from "./fixture-sql.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 afterEach(() => setUpstreamFetch(null))
 
@@ -314,7 +316,7 @@ describe("the approval page after a remember", () => {
     editAccessFixture(ctx, (state) => { state.projects[1]!.environments[0]!.references.push({ variable: "LINEAR", field: "key", item, home: { kind: "project", project: "prj_a" }, revision: 1 }) })
     for (const [id, kind, subject, level] of [["shr_service_b", "team", "tm_service", "use"], ["shr_member_b", "member", "mem_member", "manage"]] as const) {
       const share = { id, project: "prj_b", subject: kind === "team" ? { kind, team: subject } : { kind, member: subject }, level, protected: false, expiresAt: null }
-      ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", id, "prj_b", kind, subject, JSON.stringify(share))
+      fixtureSql(ctx).exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", id, "prj_b", kind, subject, JSON.stringify(share))
     }
     return held(ctx, { ...linearCall(comment("First"), "linear-project"), context: { project: "prj_b", environment: "dev" } }, { device: "dev_service" })
   }
@@ -531,9 +533,9 @@ describe("who may make a rule", () => {
       const guest = { device: "dev_guest" }
       const from = { item: "linear-guest", method: "POST", url: "https://api.linear.app/graphql", bodyBase64: Buffer.from(JSON.stringify(comment("x"))).toString("base64"), contentType: "application/json" }
       await expect(op(ctx, "policy.propose", guest, { from, reason: "Comment on issues" })).rejects.toMatchObject({ code: "forbidden" })
-      ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_guest'")
+      fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_guest'")
       const created = await op(ctx, "policy.propose", guest, { from, reason: "Comment on issues" })
-      ctx.sql.exec("UPDATE members SET role='guest' WHERE id='mem_guest'")
+      fixtureSql(ctx).exec("UPDATE members SET role='guest' WHERE id='mem_guest'")
       await expect(decide(ctx, "guest", { id: created.proposal, decision: "approve", effective: { path: "/graphql", ttlSeconds: 604_800 } })).rejects.toMatchObject({ code: "forbidden" })
       expect(count(ctx, "policy_rules")).toBe(0)
     })
@@ -545,9 +547,9 @@ describe("who may make a rule", () => {
       await seedLinear(ctx, { kind: "project", project: "prj_a" }, "linear-project")
       const guest = { device: "dev_guest" }
       const from = { item: "linear-project", method: "POST", url: "https://api.linear.app/graphql", bodyBase64: Buffer.from(JSON.stringify(comment("x"))).toString("base64"), contentType: "application/json" }
-      ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_guest'")
+      fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_guest'")
       const created = await op(ctx, "policy.propose", guest, { from, reason: "Comment on issues" })
-      ctx.sql.exec("UPDATE members SET role='guest' WHERE id='mem_guest'")
+      fixtureSql(ctx).exec("UPDATE members SET role='guest' WHERE id='mem_guest'")
       // The admin may approve each of the guest machine's requests, never a rule.
       expect((await op(ctx, "policy.status", "admin", { id: created.proposal })).proposal.canApprove).toBe(false)
       const decision = { id: created.proposal, decision: "approve", effective: { path: "/graphql", ttlSeconds: 604_800 } }
@@ -659,7 +661,7 @@ describe("a machine's proposal that needs a second person", () => {
         expect(rule).toMatchObject({ status: "active" })
         if (end === "revoke") expect(await op(ctx, "policy.rules.revoke", "kim", { id: rule!.id })).toMatchObject({ status: "ended", endedReason: "revoked" })
         else {
-          ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_kim'")
+          fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id='shr_kim'")
           expect((await rulesOf(ctx, asker))[0]).toMatchObject({ status: "ended", endedReason: "access-changed" })
         }
         expect((await relay(ctx, linearCall(comment("Second"), "linear-project"), asker)).error?.code).toBe("approval_required")
@@ -679,7 +681,7 @@ describe("the person who approved as the machine's owner", () => {
       const proposal = (await op(ctx, "approvals.status", asker, { id: approval })).ruleProposal.id
       // The owner gains manage of the project through their team's share.
       const team = JSON.parse(ctx.sql.exec<{ value: string }>("SELECT value FROM project_shares WHERE id='shr_team'").toArray()[0]!.value) as Record<string, unknown>
-      ctx.sql.exec("UPDATE project_shares SET value=? WHERE id='shr_team'", JSON.stringify({ ...team, level: "manage" }))
+      fixtureSql(ctx).exec("UPDATE project_shares SET value=? WHERE id='shr_team'", JSON.stringify({ ...team, level: "manage" }))
       const decision = { id: proposal, decision: "approve", effective: { path: "/graphql", ttlSeconds: 604_800 } }
       const refusal = { code: "forbidden", message: "You approved this as the machine's owner; a second person must co-sign it." }
       await expect(op(ctx, "policy.action", "member", decision)).rejects.toMatchObject(refusal)
@@ -704,7 +706,7 @@ describe("a decision on a rule proposal", () => {
       const action = await op(ctx, "policy.action", "kim", decision)
       // Kim's share goes after the decision is checked and before it is written.
       const storage = Object.assign(Object.create(ctx.storage) as DurableObjectStorage, { transactionSync: <T>(fn: () => T): T => {
-        ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_kim'")
+        fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id='shr_kim'")
         return ctx.storage.transactionSync(fn)
       } })
       const racing = Object.assign(Object.create(ctx) as VaultContext, { storage })
@@ -726,7 +728,7 @@ describe("a proposal waiting for its co-signer", () => {
       const proposal = (await op(ctx, "approvals.status", asker, { id: approval })).ruleProposal.id
       const decision = { id: proposal, decision: "approve", effective: { path: "/graphql", ttlSeconds: 604_800 } }
       const action = await op(ctx, "policy.action", "owner", decision)
-      ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='linear-work'")
+      fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='linear-work'")
       expect((await op(ctx, "policy.status", "owner", { id: proposal })).proposal).toMatchObject({ status: "stale", canApprove: false })
       await expect(op(ctx, "policy.decide", "owner", decision, action)).rejects.toMatchObject({ code: "conflict" })
       expect(count(ctx, "policy_rules")).toBe(0)
@@ -882,14 +884,14 @@ describe("the request bytes the vault keeps", () => {
       const approval = await held(ctx, linearCall(comment("First")))
       const first = policyArea.migrations.indexOf(WORKSPACE_POLICY_RULES_MIGRATION)
       expect(first).toBe(policyArea.migrations.indexOf(WORKSPACE_POLICY_RULE_ANCHORS_MIGRATION) - 1)
-      ctx.sql.exec("DROP INDEX policy_rules_kind")
-      for (const column of ["kind", "max_uses", "receipt"]) ctx.sql.exec(`ALTER TABLE policy_rules DROP COLUMN ${column}`)
-      ctx.sql.exec("DROP INDEX policy_rule_anchors_created")
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP INDEX policy_rules_kind"))
+      for (const column of ["kind", "max_uses", "receipt"]) withTrustedSchema(ctx, () => ctx.sql.exec(`ALTER TABLE policy_rules DROP COLUMN ${column}`))
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP INDEX policy_rule_anchors_created"))
       ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='policy'", first + 1)
-      applyMigrations(ctx.sql, ctx.storage, [policyArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [policyArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='policy'").toArray()[0]!.applied).toBe(policyArea.migrations.length)
       expect(bytesOf(ctx, approval)).toBe(1)
-      expect(ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT source FROM policy_rule_anchors WHERE created_at<=?", 0).toArray().map((r) => r.detail).join(" ")).toContain("policy_rule_anchors_created")
+      expect(withTrustedSchema(ctx, () => ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT source FROM policy_rule_anchors WHERE created_at<=?", 0)).toArray().map((r) => r.detail).join(" ")).toContain("policy_rule_anchors_created")
     })
   })
 
@@ -902,10 +904,10 @@ describe("the request bytes the vault keeps", () => {
       expect(grants).toBe(policyArea.migrations.length - 1)
       expect(policyArea.migrations.indexOf(WORKSPACE_POLICY_RULE_ANCHORS_MIGRATION)).toBe(grants - 1)
       // The schema as it was before task grants.
-      ctx.sql.exec("DROP INDEX policy_rules_kind")
-      for (const column of ["kind", "max_uses", "receipt"]) ctx.sql.exec(`ALTER TABLE policy_rules DROP COLUMN ${column}`)
+      withTrustedSchema(ctx, () => ctx.sql.exec("DROP INDEX policy_rules_kind"))
+      for (const column of ["kind", "max_uses", "receipt"]) withTrustedSchema(ctx, () => ctx.sql.exec(`ALTER TABLE policy_rules DROP COLUMN ${column}`))
       ctx.sql.exec("UPDATE _migrations SET applied=? WHERE area='policy'", grants)
-      applyMigrations(ctx.sql, ctx.storage, [policyArea])
+      withTrustedSchema(ctx, () => applyMigrations(ctx.sql, ctx.storage, [policyArea]))
       expect(ctx.sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE area='policy'").toArray()[0]!.applied).toBe(policyArea.migrations.length)
       expect(ctx.sql.exec("SELECT kind,max_uses,receipt FROM policy_rules").toArray()).toEqual([{ kind: null, max_uses: null, receipt: null }])
       const [rule] = await rulesOf(ctx)
@@ -913,7 +915,7 @@ describe("the request bytes the vault keeps", () => {
       expect(rule).not.toHaveProperty("kind")
       setUpstreamFetch(async () => new Response("ok"))
       expect((await relay(ctx, linearCall(comment("Second")))).material?.rules).toEqual([rule!.id])
-      expect(ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT * FROM policy_rules WHERE item_id=? AND device=? AND kind='area' AND ended_at IS NULL", "x", "y").toArray().map((r) => r.detail).join(" ")).toContain("policy_rules_kind")
+      expect(withTrustedSchema(ctx, () => ctx.sql.exec<{ detail: string }>("EXPLAIN QUERY PLAN SELECT * FROM policy_rules WHERE item_id=? AND device=? AND kind='area' AND ended_at IS NULL", "x", "y")).toArray().map((r) => r.detail).join(" ")).toContain("policy_rules_kind")
     })
   })
 
@@ -1003,7 +1005,7 @@ async function coSignedInProjectB(ctx: VaultContext, member: Who = "member", kim
   const item = ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug='linear-project'").toArray()[0]!.id
   editAccessFixture(ctx, (state) => { state.projects[1]!.environments[0]!.references.push({ variable: "LINEAR", field: "key", item, home: { kind: "project", project: "prj_a" }, revision: 1 }) })
   const share = { id: "shr_member_b", project: "prj_b", subject: { kind: "member", member: "mem_member" }, level: "use", protected: false, expiresAt: null }
-  ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", share.id, share.project, "member", "mem_member", JSON.stringify(share))
+  fixtureSql(ctx).exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", share.id, share.project, "member", "mem_member", JSON.stringify(share))
   const asker = { device: "dev_member" }
   const approval = await held(ctx, { ...linearCall(comment("First"), "linear-project"), context: { project: "prj_b", environment: "dev" } }, asker)
   await remember(ctx, member, approval)
@@ -1050,7 +1052,7 @@ describe("a person's own rules (naming neither credential nor machine)", () => {
     await inRules(f.tenant, async (ctx) => {
       const rule = await coSignedInProjectB(ctx)
       expect((await op(ctx, "policy.rules", "kim", {})).map((r: PolicyRuleView) => r.id)).toEqual([rule.id])
-      ctx.sql.exec("DELETE FROM project_shares WHERE id='shr_kim'")
+      fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id='shr_kim'")
       expect(await op(ctx, "policy.rules", "kim", {})).toEqual([])
       // Left out by the access check before it is settled, not because settling ended it.
       expect(count(ctx, "policy_rules WHERE ended_at IS NULL")).toBe(1)
@@ -1066,7 +1068,7 @@ describe("a person's own rules (naming neither credential nor machine)", () => {
       // B; the member then loses project A, and with it the credential.
       const rule = await coSignedInProjectB(ctx)
       expect((await op(ctx, "policy.rules", "member", {})).map((r: PolicyRuleView) => r.id)).toEqual([rule.id])
-      ctx.sql.exec("DELETE FROM project_shares WHERE id IN ('shr_direct','shr_team')")
+      fixtureSql(ctx).exec("DELETE FROM project_shares WHERE id IN ('shr_direct','shr_team')")
       expect(await op(ctx, "policy.rules", "member", {})).toEqual([])
       expect(await op(ctx, "policy.rules", "member", { device: "dev_member" })).toEqual([])
       await expect(op(ctx, "policy.rules", "member", { item: "linear-project" })).rejects.toBeInstanceOf(VaultError)
@@ -1079,13 +1081,13 @@ describe("a person's own rules (naming neither credential nor machine)", () => {
     const f = await credentialsFixture()
     await inRules(f.tenant, async (ctx) => {
       // Made while the guest was still a member.
-      ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_guest'")
+      fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_guest'")
       await seedLinear(ctx, { kind: "member", member: "mem_guest" }, "linear-guest")
       seesPrivate(ctx, "dev_guest")
       await remember(ctx, "guest", await held(ctx, linearCall(comment("First"), "linear-guest"), { device: "dev_guest" }))
       const [rule] = await rulesOf(ctx, { device: "dev_guest" })
       expect((await op(ctx, "policy.rules", "guest", {})).map((r: PolicyRuleView) => r.id)).toEqual([rule!.id])
-      ctx.sql.exec("UPDATE members SET role='guest' WHERE id='mem_guest'")
+      fixtureSql(ctx).exec("UPDATE members SET role='guest' WHERE id='mem_guest'")
       expect(await op(ctx, "policy.rules", "guest", {})).toEqual([])
       expect((await op(ctx, "policy.rules", "guest", { device: "dev_guest" })).map((r: PolicyRuleView) => [r.id, r.status, r.endedReason])).toEqual([[rule!.id, "ended", "access-changed"]])
     })
@@ -1095,7 +1097,7 @@ describe("a person's own rules (naming neither credential nor machine)", () => {
     const f = await credentialsFixture()
     await inRules(f.tenant, async (ctx) => {
       await coSignedInProjectB(ctx)
-      ctx.sql.exec("UPDATE members SET status='suspended' WHERE id='mem_member'")
+      fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE id='mem_member'")
       await expect(op(ctx, "policy.rules", "member", {})).rejects.toMatchObject({ code: "owner_inactive" })
       await expect(op(ctx, "policy.rules", "member", { device: "dev_member" })).rejects.toMatchObject({ code: "owner_inactive" })
       await expect(op(ctx, "policy.rules", "member", { item: "linear-project" })).rejects.toMatchObject({ code: "not_found" })
@@ -1105,14 +1107,14 @@ describe("a person's own rules (naming neither credential nor machine)", () => {
 
 describe("a rule ends when an exact grant would", () => {
   const endings: [string, string, (ctx: VaultContext) => void][] = [
-    ["the approver is demoted", "access-changed", (ctx) => { ctx.sql.exec("UPDATE members SET role='admin' WHERE id='mem_owner'") }],
-    ["the approver is removed", "access-changed", (ctx) => { ctx.sql.exec("UPDATE members SET status='removed' WHERE id='mem_owner'") }],
+    ["the approver is demoted", "access-changed", (ctx) => { fixtureSql(ctx).exec("UPDATE members SET role='admin' WHERE id='mem_owner'") }],
+    ["the approver is removed", "access-changed", (ctx) => { fixtureSql(ctx).exec("UPDATE members SET status='removed' WHERE id='mem_owner'") }],
     ["the machine is revoked", "access-changed", (ctx) => { ctx.sql.exec("UPDATE devices SET revoked_at=? WHERE id='dev_owner'", ctx.now()) }],
     ["the machine is rescoped", "access-changed", (ctx) => {
       const scope = JSON.parse(ctx.sql.exec<{ scope: string }>("SELECT scope FROM devices WHERE id='dev_owner'").toArray()[0]!.scope) as Record<string, unknown>
       ctx.sql.exec("UPDATE devices SET scope=? WHERE id='dev_owner'", JSON.stringify({ ...scope, modes: ["relay"] }))
     }],
-    ["the credential is edited", "credential-changed", (ctx) => { ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='linear-work'") }],
+    ["the credential is edited", "credential-changed", (ctx) => { fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='linear-work'") }],
     ["a protected reference is added", "access-changed", (ctx) => {
       const id = ctx.sql.exec<{ id: string }>("SELECT id FROM items WHERE slug='linear-work'").toArray()[0]!.id
       editAccessFixture(ctx, (state) => { state.projects[0]!.environments[1]!.references.push({ variable: "LINEAR", field: "key", item: id, home: { kind: "workspace" }, revision: 1 }) })
@@ -1123,7 +1125,7 @@ describe("a rule ends when an exact grant would", () => {
     await inRules(f.tenant, async (ctx) => {
       await seedLinear(ctx)
       // A second owner keeps the workspace owned when the first steps down.
-      ctx.sql.exec("UPDATE members SET role='owner' WHERE id='mem_admin'")
+      fixtureSql(ctx).exec("UPDATE members SET role='owner' WHERE id='mem_admin'")
       await remember(ctx, "owner", await held(ctx, linearCall(comment("First"))))
       change(ctx)
       setUpstreamFetch(async () => new Response("ok"))
@@ -1388,7 +1390,7 @@ describe("ending a team machine's rule", () => {
     const f = await credentialsFixture()
     await inRules(f.tenant, async (ctx) => {
       await seedLinear(ctx, { kind: "project", project: "prj_a" }, "linear-project")
-      ctx.sql.exec("INSERT INTO team_members(team,member) VALUES ('tm_service','mem_member')")
+      fixtureSql(ctx).exec("INSERT INTO team_members(team,member) VALUES ('tm_service','mem_member')")
       const team = { device: "dev_service" }
       const created = await op(ctx, "policy.propose", team, { from: exampleComment("linear-project"), reason: "Comment on issues" })
       await decide(ctx, "admin", { id: created.proposal, decision: "approve", effective: { path: "/graphql", ttlSeconds: 604_800 } })
@@ -1403,7 +1405,7 @@ describe("ending a team machine's rule", () => {
       const f = await credentialsFixture()
       await inRules(f.tenant, async (ctx) => {
         await seedLinear(ctx, { kind: "project", project: "prj_a" }, "linear-project")
-        ctx.sql.exec("INSERT INTO team_members(team,member) VALUES ('tm_service',?)", member)
+        fixtureSql(ctx).exec("INSERT INTO team_members(team,member) VALUES ('tm_service',?)", member)
         const team = { device: "dev_service" }
         const created = await op(ctx, "policy.propose", team, { from: exampleComment("linear-project"), reason: "Comment on issues" })
         await decide(ctx, "admin", { id: created.proposal, decision: "approve", effective: { path: "/graphql", ttlSeconds: 604_800 } })
@@ -1455,7 +1457,7 @@ describe("ending a co-signed rule", () => {
       await inRules(f.tenant, async (ctx) => {
         newMember(ctx, "acc_lee", "Lee", "member", "active", "mem_lee")
         const share = { id: "shr_lee", project: "prj_a", subject: { kind: "member", member: "mem_lee" }, level: "manage", protected: false, expiresAt: null }
-        ctx.sql.exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", share.id, share.project, "member", "mem_lee", JSON.stringify(share))
+        fixtureSql(ctx).exec("INSERT INTO project_shares VALUES (?,?,?,?,?)", share.id, share.project, "member", "mem_lee", JSON.stringify(share))
         const who = before?.(ctx) ?? { member: "member", kim: "kim", lee: "lee" }
         const rule = await coSignedInProjectB(ctx, who.member, who.kim)
         after?.(ctx)
@@ -1466,7 +1468,7 @@ describe("ending a co-signed rule", () => {
 
   it("refuses that co-signer once they are a guest, or their identity check has lapsed", async () => {
     for (const change of [
-      (ctx: VaultContext) => { ctx.sql.exec("UPDATE members SET role='guest' WHERE id='mem_kim'") },
+      (ctx: VaultContext) => { fixtureSql(ctx).exec("UPDATE members SET role='guest' WHERE id='mem_kim'") },
       (ctx: VaultContext) => { setSetting(ctx, "identity_rule", { provider: "google", domains: ["example.com"], roles: ["member"] }); setSetting(ctx, "identity_rule_rev", 4) },
     ]) {
       const f = await credentialsFixture()
@@ -1844,7 +1846,7 @@ describe("the POLICY_RULES switch and managed workspaces", () => {
   it("reads an approval's rule, a machine's rules and a co-sign's proposal by index", async () => {
     const f = await credentialsFixture()
     await inRules(f.tenant, (ctx) => {
-      const plan = (sql: string) => ctx.sql.exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, "x").toArray().map((r) => r.detail).join(" ")
+      const plan = (sql: string) => withTrustedSchema(ctx, () => ctx.sql.exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, "x")).toArray().map((r) => r.detail).join(" ")
       expect(plan("SELECT * FROM policy_rules WHERE source=?")).toContain("policy_rules_source")
       expect(plan("SELECT * FROM policy_rules WHERE device=?")).toContain("policy_rules_device")
       expect(plan("SELECT * FROM policy_proposals WHERE requester=?")).toContain("policy_proposals_requester")

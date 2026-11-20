@@ -7,6 +7,7 @@ import { canonicalJson, type InviteTerms } from "@mehen/protocol"
 import { accessFixture, accessSnapshot, accountAuth, beginAccessSideEffectChecks, finishAccessSideEffectChecks, inAccess, workspaceInvoke } from "./access-test-support.ts"
 import { noticesFor, setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import { noticeRows } from "../src/ui/pages/needs-you.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
@@ -129,7 +130,7 @@ describe("access.invites.redeem: joining straight away", () => {
   it("lets nobody in once the inviter may no longer invite that role", async () => {
     const { tenant } = await accessFixture()
     expect(await create(tenant, memberTerms("activate"))).toMatchObject({ ok: true })
-    await inAccess(tenant, (ctx) => { ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_admin'") })
+    await inAccess(tenant, (ctx) => { fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_admin'") })
     const before = await accessSnapshot(tenant)
     expect(await redeem(tenant, "new@example.com")).toEqual({ ok: false, error: { status: 403, vaultError: { error: "forbidden", message: "This invitation needs an eligible owner or admin to reissue it." } } })
     expect(await accessSnapshot(tenant)).toBe(before)

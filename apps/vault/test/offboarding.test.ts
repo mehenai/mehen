@@ -4,15 +4,16 @@ import { verifyAuditChain } from "../src/vault/audit.ts"
 import type { AuditRow } from "../src/vault/audit.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { accessFixture, accessSnapshot, accountAuth, beginAccessSideEffectChecks, editAccessFixture, finishAccessSideEffectChecks, inAccess, registerFixtureLifecycleHooks, workspaceInvoke } from "./access-test-support.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
 async function resources(tenant: string) {
   await inAccess(tenant, (ctx) => {
     registerFixtureLifecycleHooks()
     editAccessFixture(ctx, (state) => { for (const id of ["itm_entered", "itm_relay", "itm_old"]) state.credentials.push({ id, home: { kind: "workspace" }, tags: [] }) })
-    ctx.sql.exec("CREATE TABLE fixture_resources(item TEXT PRIMARY KEY,version INTEGER,ceiling TEXT,private_owner TEXT,flagged INTEGER DEFAULT 0)")
+    withTrustedSchema(ctx, () => ctx.sql.exec("CREATE TABLE fixture_resources(item TEXT PRIMARY KEY,version INTEGER,ceiling TEXT,private_owner TEXT,flagged INTEGER DEFAULT 0)"))
     for (const [id, version, ceiling, owner] of [["itm_workspace", 2, "lease", null], ["itm_entered", 3, "relay", null], ["itm_relay", 1, "relay", null], ["itm_old", 2, "relay", null], ["itm_member", 1, "lease", "mem_member"]] as const) ctx.sql.exec("INSERT INTO fixture_resources(item,version,ceiling,private_owner) VALUES (?,?,?,?)", id, version, ceiling, owner)
-    ctx.sql.exec("CREATE TABLE fixture_consents(id TEXT PRIMARY KEY,decider TEXT,device TEXT,revoked INTEGER DEFAULT 0)")
+    withTrustedSchema(ctx, () => ctx.sql.exec("CREATE TABLE fixture_consents(id TEXT PRIMARY KEY,decider TEXT,device TEXT,revoked INTEGER DEFAULT 0)"))
     ctx.sql.exec("INSERT INTO fixture_consents VALUES ('other-machine','mem_member','dev_kim',0),('own-machine','mem_kim','dev_member',0),('team','mem_owner','dev_service',0)")
     registerExposureProvider((c) => c.sql.exec<{ item: string; version: number; ceiling: "lease" | "relay" }>("SELECT item,version,ceiling FROM fixture_resources").toArray())
     registerOffboardingHook("credentials", (c, snapshot) => {

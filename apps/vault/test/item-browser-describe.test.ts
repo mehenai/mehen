@@ -14,6 +14,7 @@ import { setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import { FILL_MANAGED_REFUSAL } from "../src/vault/fill-unavailable.ts"
 import { editAccessFixture } from "./access-test-support.ts"
 import { credentialInput, credentialsFixture, deviceInvocation, devicePrincipal, inAccess, memberInvocation, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 describe("an item's pages in its description", () => {
   it("are absent while the item has none, present on a person's description once it has, and never on a machine's", async () => {
@@ -25,10 +26,10 @@ describe("an item's pages in its description", () => {
       expect(await person()).not.toHaveProperty("browser")
       const machineBefore = canonicalJson(await machine())
       const browser = { signinOrigins: ["https://login.example.com"], typeInto: ["https://dash.example.net"] }
-      ctx.sql.exec("UPDATE items SET browser=? WHERE id=?", JSON.stringify(browser), item.id)
+      fixtureSql(ctx).exec("UPDATE items SET browser=? WHERE id=?", JSON.stringify(browser), item.id)
       expect((await person()).browser).toEqual(browser)
       expect(canonicalJson(await machine())).toBe(machineBefore)
-      ctx.sql.exec("UPDATE items SET browser=NULL WHERE id=?", item.id)
+      fixtureSql(ctx).exec("UPDATE items SET browser=NULL WHERE id=?", item.id)
       expect(await person()).not.toHaveProperty("browser")
     })
   })

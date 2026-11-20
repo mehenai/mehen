@@ -19,6 +19,8 @@ import { devicePolicyState } from "./devices.ts"
 import { PostureTerms, forgetPosture, machinePosture, personPosture, postureAction, resetPostureOnRehome } from "./postures-workspace.ts"
 import { assertPushableChange, itemPushable, pushesOn } from "./push-allowance.ts"
 import { latestPushes } from "./push-records.ts"
+import { lapseMandatesOnRehome } from "./mandates-workspace.ts"
+import { beforeManagementChange } from "./management-guard.ts"
 import { accessState, eligibilityState, authorise, managedSetting, nameMiss, recordExposure, registerAccessStateProvider, registerExposureProvider, registerOffboardingHook, requireStepUp, type WorkspaceInvocationContext } from "./workspace-runtime.ts"
 
 export type CheckedCredential = ItemRecord & {
@@ -208,6 +210,7 @@ export function storeCredential(ctx: VaultContext, prepared: PreparedCredential,
     assertCredentialCurrent(ctx, expected)
   else if (items.getItem(ctx, input.slug))
     throw new VaultError(NAME_UNAVAILABLE.error, NAME_UNAVAILABLE.message)
+  beforeManagementChange(ctx)
   const now = ctx.now()
   if (expected) {
     keepReplacedSecrets(ctx, expected, action, actorString(principal))
@@ -364,6 +367,7 @@ export const offboardCredentials:OffboardingHook=(ctx,snapshot)=>{
   const item=slug?checkedCredential(ctx,slug):null
   if(!item)continue
   if(item.home.kind!=="member"||item.home.member!==snapshot.member)throw new VaultError("conflict","The credential home changed during removal.")
+  beforeManagementChange(ctx)
   onCredentialRemoved(Object.assign(Object.create(ctx),{audit(){ /* member.remove is the sole removal event. */ }}),item,"offboarded",snapshot.by)
   invalidateCredentialDependencies(ctx,id)
   closeProposalsNaming(ctx,id)
@@ -605,6 +609,7 @@ export const workspaceItemOps = {
         }
         requireStepUp(ctx, decision, { type: "item.delete", item: item.id }, invocation)
         if(p.kind!=="member")throw new VaultError("forbidden","Only a person can delete a credential.")
+        beforeManagementChange(ctx)
         onCredentialRemoved(ctx,item,"deleted",p.memberId)
         invalidateCredentialDependencies(ctx, item.id)
         closeProposalsNaming(ctx, item.id)
@@ -623,7 +628,9 @@ export const workspaceItemOps = {
       return ctx.storage.transactionSync(() => {
         requireStepUp(ctx, assertItemRight(ctx, invocation, { type: "credential.rehome" }, { credential: item.id, destinationHome: home }), { type: "item.rehome", item: item.id, before: item.home, after: home, dependencyRevision: item.dependencyRevision }, invocation)
         if(p.kind!=="member")throw new VaultError("forbidden","Only a person can rehome a credential.")
+        beforeManagementChange(ctx)
         rehomeCredentialDependencies(ctx, item, home)
+        lapseMandatesOnRehome(ctx, item, home)
         onCredentialRemoved(ctx,item,"rehomed",p.memberId)
         resetPostureOnRehome(ctx, p, item)
         ctx.sql.exec("UPDATE items SET home_kind=?,home_id=?,config_rev=config_rev+1,dependency_revision=dependency_revision+1 WHERE id=?", home.kind, home.kind === "project" ? home.project : home.kind === "member" ? home.member : null, item.id)

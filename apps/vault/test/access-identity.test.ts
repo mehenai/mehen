@@ -3,6 +3,7 @@ import { canonicalJson } from "@mehen/protocol"
 import type { SessionIdentityCheck, WorkspaceStepUpAction } from "@mehen/protocol"
 import { accessState, digest, memberRows, setSetting } from "../src/vault/areas/workspace-runtime.ts"
 import { accessFixture, accessSnapshot, accountAuth, beginAccessSideEffectChecks, finishAccessSideEffectChecks, inAccess, registerFixtureLifecycleHooks, workspaceInvoke } from "./access-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 const system = { kind: "system", reason: "verified OIDC test" } as const
 const rule = { provider: "google", domains: ["example.com"], roles: ["owner", "admin", "member"] } as const
@@ -172,12 +173,12 @@ it.each([false, true])("aborts only an exact pending invite source and repeats t
   const before = await accessSnapshot(tenant)
   for (const patch of [{ account: "acc_wrong" }, { member: "mem_wrong" }, { codeHash: "wrong" }]) expect(await workspaceInvoke(tenant, "access.invites.abort", { ...source, ...patch }, system)).toEqual({ ok: true, value: { aborted: false } })
   expect(await accessSnapshot(tenant)).toBe(before)
-  await inAccess(tenant, ctx => ctx.sql.exec("UPDATE members SET status='active' WHERE id='mem_new'"))
+  await inAccess(tenant, ctx => fixtureSql(ctx).exec("UPDATE members SET status='active' WHERE id='mem_new'"))
   const active = await accessSnapshot(tenant)
   expect(await workspaceInvoke(tenant, "access.invites.abort", source, system)).toEqual({ ok: false, error: { status: 409, vaultError: { error: "conflict", message: "This membership is already active." } } })
   expect(await accessSnapshot(tenant)).toBe(active)
   await inAccess(tenant, ctx => {
-    ctx.sql.exec("UPDATE members SET status='unconfirmed' WHERE id='mem_new'")
+    fixtureSql(ctx).exec("UPDATE members SET status='unconfirmed' WHERE id='mem_new'")
     if (expired) ctx.sql.exec("UPDATE invites SET terms=? WHERE id='inv_abort'", JSON.stringify({ ...terms, expiresAt: new Date(ctx.now() - 1).toISOString() }))
   })
   const expected = { ok: true, value: { aborted: true, state: expired ? "expired" : "open" } }
@@ -194,7 +195,7 @@ it.each([false, true])("aborts only an exact pending invite source and repeats t
 
 it("returns authoritative identity context to the system even while ungated and security-pending", async () => {
   const { tenant } = await fixture()
-  await inAccess(tenant, ctx => ctx.sql.exec("UPDATE members SET pending_role='admin',pending_since=?,pending_action=? WHERE id='mem_member'", ctx.now(),JSON.stringify({ type: "member.role", member: "mem_member", before: "member", after: "admin" })))
+  await inAccess(tenant, ctx => fixtureSql(ctx).exec("UPDATE members SET pending_role='admin',pending_since=?,pending_action=? WHERE id='mem_member'", ctx.now(),JSON.stringify({ type: "member.role", member: "mem_member", before: "member", after: "admin" })))
   await workspaceInvoke(tenant, "access.security.install", { account: "acc_member", committedEpoch: 0, pending: { transitionId: "trn_pending", reservedEpoch: 1, revokedSessionIds: [], removedFactorIds: [], restriction: null } }, system)
   const before = await accessSnapshot(tenant)
   expect(await workspaceInvoke(tenant, "access.identity.context", { account: "acc_member" }, system)).toEqual({ ok: true, value: { member: "mem_member", role: "member", pendingRole: "admin", pendingAction: { type: "member.role", member: "mem_member", before: "member", after: "admin" }, identityRule: rule, identityRuleRev: 1, gateGeneration: 0, checkSequence: 0, status: "active" } })
@@ -277,7 +278,7 @@ it.each(["demoted", "removed", "suspended", "expired", "eligible"] as const)("F4
   await inAccess(tenant, ctx => expect(memberRows(ctx).find(m => m.id === "mem_member")?.pending_by).toBe("mem_admin"))
   if (change === "demoted") expect(await workspaceInvoke(tenant, "access.members.role", { member: "mem_admin", role: "member" }, { ...accountAuth("owner", { type: "member.role", member: "mem_admin", before: "admin", after: "member" }), sessionCheck: owner.sessionCheck })).toMatchObject({ ok: true })
   if (change === "removed" || change === "suspended") expect(await workspaceInvoke(tenant, change === "removed" ? "access.members.remove" : "access.members.suspend", { member: "mem_admin" }, { ...accountAuth("owner", { type: change === "removed" ? "member.remove" : "member.suspend", member: "mem_admin" }), sessionCheck: owner.sessionCheck })).toMatchObject({ ok: true })
-  if (change === "expired") await inAccess(tenant, ctx => ctx.sql.exec("UPDATE members SET pending_since=? WHERE id='mem_member'", ctx.now() - INVITE_TTL_MS))
+  if (change === "expired") await inAccess(tenant, ctx => fixtureSql(ctx).exec("UPDATE members SET pending_since=? WHERE id='mem_member'", ctx.now() - INVITE_TTL_MS))
   const result = await workspaceInvoke(tenant, "access.identity.install", { ...install(check(1, 1)), pendingRole: "admin", operationCheck: operation(action, 1, 1) }, system)
   if (change === "eligible") expect(result).toMatchObject({ ok: true, value: { role: "admin" } })
   else expect(result).toEqual({ ok: false, error: { status: 409, vaultError: { error: "conflict", message: "This pending promotion is no longer available." } } })
@@ -300,7 +301,7 @@ it("F4: a failed cancellation audit rolls the pending-promotion clear back", asy
   const action = { type: "member.role", member: "mem_member", before: "member", after: "admin" } as const
   expect(await workspaceInvoke(tenant, "access.members.role", { member: "mem_member", role: "admin" }, { ...accountAuth("owner", action), sessionCheck: owner.sessionCheck })).toMatchObject({ ok: true })
   let original!: import("../src/vault/core.ts").VaultContext["audit"]
-  await inAccess(tenant, ctx => { ctx.sql.exec("UPDATE members SET pending_since=0 WHERE id='mem_member'"); original = ctx.audit; ctx.audit = event => { if (event.action === "member.promotion_cancelled") throw new Error("injected cancellation audit failure"); original(event) } })
+  await inAccess(tenant, ctx => { fixtureSql(ctx).exec("UPDATE members SET pending_since=0 WHERE id='mem_member'"); original = ctx.audit; ctx.audit = event => { if (event.action === "member.promotion_cancelled") throw new Error("injected cancellation audit failure"); original(event) } })
   try {
     const before = await accessSnapshot(tenant)
     expect(await workspaceInvoke(tenant, "access.identity.install", { ...install(check(1, 1)), pendingRole: "admin", operationCheck: operation(action, 1, 1) }, system)).toMatchObject({ ok: false, error: { status: 500 } })
@@ -330,7 +331,7 @@ it("R2: expired promotions disappear from member, membership, standing and ident
   expect(await workspaceInvoke(tenant,"access.identity.install",owner,system)).toMatchObject({ ok: true })
   const auth = { ...accountAuth("owner",action),sessionCheck: owner.sessionCheck }
   expect(await workspaceInvoke(tenant,"access.members.role",{ member: "mem_member",role: "admin" },auth)).toMatchObject({ ok: true,value: { role: "member",pendingRole: "admin" } })
-  await inAccess(tenant,ctx => ctx.sql.exec("UPDATE members SET pending_since=? WHERE id='mem_member'",ctx.now()-INVITE_TTL_MS))
+  await inAccess(tenant,ctx => fixtureSql(ctx).exec("UPDATE members SET pending_since=? WHERE id='mem_member'",ctx.now()-INVITE_TTL_MS))
   const before = await accessSnapshot(tenant)
   expect(await workspaceInvoke(tenant,"access.members.list",{},auth)).toMatchObject({ ok: true,value: expect.arrayContaining([expect.objectContaining({ member: "mem_member",role: "member",pendingRole: null })]) })
   expect(await workspaceInvoke(tenant,"access.membership",{ account: "acc_member" },system)).toMatchObject({ ok: true,value: { role: "member",pendingRole: null } })

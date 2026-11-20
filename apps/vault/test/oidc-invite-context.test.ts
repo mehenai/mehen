@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { InviteTerms, SessionIdentityCheck } from "@mehen/protocol"
 import { accessFixture, accessSnapshot, accountAuth, beginAccessSideEffectChecks, finishAccessSideEffectChecks, inAccess, installTestIdentity, workspaceInvoke } from "./access-test-support.ts"
 import { setSetting } from "../src/vault/areas/workspace-runtime.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 const system = { kind: "system",reason: "OIDC invite test" } as const
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
@@ -38,11 +39,11 @@ describe("inviteCreatorEligible current evidence (ACCESS review F5)", () => {
     expect(await workspaceInvoke(f.tenant,"access.invites.lookup",{ codeHash: "oidc-hash" },system)).toMatchObject({ ok: false,error: { vaultError: { error: "forbidden" } } })
     await inAccess(f.tenant,ctx => installTestIdentity(ctx,{ ...f.auth,sessionCheck: check(2,1) }))
     expect(await workspaceInvoke(f.tenant,"access.invites.lookup",{ codeHash: "oidc-hash" },system)).toMatchObject({ ok: true })
-    await inAccess(f.tenant,ctx => { setSetting(ctx,"identity_rule_rev",2); ctx.sql.exec("UPDATE members SET gate_generation=2 WHERE id='mem_owner'") })
+    await inAccess(f.tenant,ctx => { setSetting(ctx,"identity_rule_rev",2); fixtureSql(ctx).exec("UPDATE members SET gate_generation=2 WHERE id='mem_owner'") })
     expect(await workspaceInvoke(f.tenant,"access.invites.lookup",{ codeHash: "oidc-hash" },system)).toMatchObject({ ok: false,error: { vaultError: { error: "forbidden" } } })
     await inAccess(f.tenant,ctx => installTestIdentity(ctx,{ ...f.auth,sessionCheck: check(3,2,2) }))
     expect(await workspaceInvoke(f.tenant,"access.invites.lookup",{ codeHash: "oidc-hash" },system)).toMatchObject({ ok: true })
-    await inAccess(f.tenant,ctx => ctx.sql.exec("UPDATE members SET role='member' WHERE id='mem_owner'"))
+    await inAccess(f.tenant,ctx => fixtureSql(ctx).exec("UPDATE members SET role='member' WHERE id='mem_owner'"))
     const before = await accessSnapshot(f.tenant)
     expect(await workspaceInvoke(f.tenant,"access.invites.lookup",{ codeHash: "oidc-hash" },system)).toMatchObject({ ok: false,error: { vaultError: { error: "forbidden" } } })
     expect(await accessSnapshot(f.tenant)).toBe(before)

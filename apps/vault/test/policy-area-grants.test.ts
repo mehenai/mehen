@@ -33,6 +33,7 @@ import { registerCredentialProvider } from "../src/vault/areas/items-workspace.t
 import { workspaceRunOps } from "../src/vault/areas/runs-workspace.ts"
 import type { WorkspaceRunCreated } from "@mehen/protocol"
 import { setPosture } from "./postures-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 // A reviewed catalogue for the test's own host: tasks sent as JSON, and
 // uploads whose bytes are the file, which no shape rule takes.
@@ -472,9 +473,9 @@ describe("a task grant ends", () => {
 
       await areaRemember(ctx, "owner", await held(ctx, commentOn(3, "Again")))
       // A rotation and a restore move the version and keep the config.
-      ctx.sql.exec("UPDATE items SET version=version+1 WHERE slug='github-work'")
+      fixtureSql(ctx).exec("UPDATE items SET version=version+1 WHERE slug='github-work'")
       expect((await relay(ctx, commentOn(4, "rotated"))).error).toBeNull()
-      ctx.sql.exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='github-work'")
+      fixtureSql(ctx).exec("UPDATE items SET config_rev=config_rev+1 WHERE slug='github-work'")
       expect((await relay(ctx, commentOn(5, "edited"))).material).toBeNull()
       expect((await op(ctx, "policy.rules", "owner", { item: "github-work", include: "grants" }))[0]).toMatchObject({ status: "ended", endedReason: "credential-changed" })
 
@@ -979,7 +980,7 @@ describe("runs, placeholders and protected credentials", () => {
       expect((await grantsOf(ctx))[0]).toMatchObject({ uses: 1, status: "active" })
       // A lease hands the run the value with no request to cover: it never
       // reaches the relay hook, so it neither uses nor counts the grant.
-      ctx.sql.exec("UPDATE items SET ceiling='lease',binding=? WHERE slug='key-workspace'", canonicalJson(leaseOnlyBinding()))
+      fixtureSql(ctx).exec("UPDATE items SET ceiling='lease',binding=? WHERE slug='key-workspace'", canonicalJson(leaseOnlyBinding()))
       const leasing = await workspaceRunOps["runs.create"]!.handler(ctx, principalOf(OWNER), { ...PROJECT_RUN_INPUT, env: "dev" }, await invocationOf(ctx, OWNER)) as WorkspaceRunCreated
       expect(leasing.vars).toMatchObject([{ name: "TOKEN", delivery: "lease", item: "key-workspace" }])
       expect(await workspaceRunOps["runs.lease"]!.handler(ctx, principalOf(OWNER), { run: leasing.run, item: "key-workspace" }, await invocationOf(ctx, OWNER))).toMatchObject({ value: expect.any(String) })

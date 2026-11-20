@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { can, eligibility } from "../src/vault/access.ts"
 import { accessState, PendingEnrolSchema } from "../src/vault/areas/workspace-runtime.ts"
 import { accessFixture, accessSnapshot, accountAuth, beginAccessSideEffectChecks, finishAccessSideEffectChecks, inAccess, workspaceInvoke } from "./access-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
 describe("workspace guest boundaries", () => {
@@ -94,7 +95,7 @@ describe("workspace guest boundaries", () => {
 it("hides membership status and existence before role, suspend or reinstate authority", async () => {
   const { newMember } = await import("../src/vault/areas/workspace-runtime.ts")
   const { tenant } = await accessFixture()
-  await inAccess(tenant, ctx => { newMember(ctx, "acc_new", "Pending", "member", "unconfirmed", "mem_new"); ctx.sql.exec("UPDATE members SET status='suspended' WHERE id='mem_kim'") })
+  await inAccess(tenant, ctx => { newMember(ctx, "acc_new", "Pending", "member", "unconfirmed", "mem_new"); fixtureSql(ctx).exec("UPDATE members SET status='suspended' WHERE id='mem_kim'") })
   const before = await accessSnapshot(tenant)
   for (const member of ["mem_new", "mem_member", "mem_kim", "mem_absent"]) {
     for (const change of ["role", "suspend", "reinstate", "confirm", "remove"] as const) {

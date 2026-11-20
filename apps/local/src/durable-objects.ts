@@ -55,34 +55,41 @@ class AlarmFile {
 export class LocalStorage {
   readonly sql: LocalSqlStorage
   private timer: ReturnType<typeof setTimeout> | null = null
-  private readonly db: Database
+  readonly #db: Database
   private readonly alarmFile: AlarmFile
   private readonly fire: () => void
 
   constructor(db: Database, alarmFile: AlarmFile, fire: () => void) {
-    this.db = db
+    this.#db = db
     this.sql = new LocalSqlStorage(db)
     this.alarmFile = alarmFile
     this.fire = fire
   }
 
   transactionSync<T>(closure: () => T): T {
-    return transactionSync(this.db, closure)
+    return transactionSync(this.#db, closure)
+  }
+
+  // Whether SQLite has a transaction open on this object's database: the
+  // vault's management guard checks it rather than its own count, since a
+  // statement can end a transaction under it.
+  nativeTransaction(): boolean {
+    return this.#db.inTransaction
   }
 
   // Everything at once, as Cloudflare's deleteAll is: every table, index,
   // view and trigger in one transaction, with foreign keys off so the order
   // never matters, and the alarm cleared only once the drop committed.
   async deleteAll(): Promise<void> {
-    const objects = this.db.query("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND type IN ('table', 'view', 'trigger')").all() as { type: string; name: string }[]
-    this.db.run("PRAGMA foreign_keys = OFF")
+    const objects = this.#db.query("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND type IN ('table', 'view', 'trigger')").all() as { type: string; name: string }[]
+    this.#db.run("PRAGMA foreign_keys = OFF")
     try {
-      this.db.transaction(() => {
-        for (const { type, name } of objects.filter((o) => o.type !== "table")) this.db.run(`DROP ${type.toUpperCase()} IF EXISTS "${name.replaceAll('"', '""')}"`)
-        for (const { name } of objects.filter((o) => o.type === "table")) this.db.run(`DROP TABLE IF EXISTS "${name.replaceAll('"', '""')}"`)
+      this.#db.transaction(() => {
+        for (const { type, name } of objects.filter((o) => o.type !== "table")) this.#db.run(`DROP ${type.toUpperCase()} IF EXISTS "${name.replaceAll('"', '""')}"`)
+        for (const { name } of objects.filter((o) => o.type === "table")) this.#db.run(`DROP TABLE IF EXISTS "${name.replaceAll('"', '""')}"`)
       })()
     } finally {
-      this.db.run("PRAGMA foreign_keys = ON")
+      this.#db.run("PRAGMA foreign_keys = ON")
     }
     await this.deleteAlarm()
   }
@@ -131,7 +138,7 @@ export class LocalStorage {
 
   close(): void {
     this.disarm()
-    this.db.close()
+    this.#db.close()
   }
 }
 
@@ -234,6 +241,10 @@ export class LocalNamespace<E, C extends object> {
     try {
       db.run("PRAGMA journal_mode = WAL")
       db.run("PRAGMA foreign_keys = ON")
+      // Rows a REPLACE deletes fire their delete triggers, the vault's
+      // management guard's among them, as the Worker's object sets it too.
+      db.run("PRAGMA recursive_triggers = ON")
+      if ((db.query("PRAGMA recursive_triggers").get() as { recursive_triggers: number } | null)?.recursive_triggers !== 1) throw new Error("recursive_triggers did not turn on")
       // A new object's first writes (its migrations, its generation marker)
       // are one transaction, as Cloudflare commits a turn's writes together:
       // a crash part-way leaves the object as it was.

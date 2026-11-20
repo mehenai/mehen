@@ -7,6 +7,7 @@ import { workspaceDeviceOps } from "../src/vault/areas/workspace-devices.ts"
 import { VaultError } from "../src/http.ts"
 import type { VaultContext } from "../src/vault/core.ts"
 import { beginAccessSideEffectChecks, finishAccessSideEffectChecks, accessFixture, accessSnapshot, accountAuth, inAccess, registerFixtureLifecycleHooks, workspaceInvoke } from "./access-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 async function scope(tenant: string, tags: string[] = []): Promise<WorkspaceDeviceScope> { return inAccess(tenant, (ctx) => { registerFixtureLifecycleHooks(); const value = { ...accessState(ctx).devices.find((d) => d.id === "dev_member")!.scope, tags }; ctx.sql.exec("UPDATE devices SET scope=? WHERE id='dev_member'", canonicalJson(value)); return value }) }
 async function propose(tenant: string, before: WorkspaceDeviceScope, after: WorkspaceDeviceScope) {
@@ -82,7 +83,7 @@ describe("workspace device rescope", () => {
     const after = { ...before, privateCredentials: true }
     const proposal = await propose(tenant, before, after)
     await inAccess(tenant, (ctx) => {
-      if (variant === "owner") ctx.sql.exec("UPDATE members SET revision=revision+1 WHERE id='mem_member'")
+      if (variant === "owner") fixtureSql(ctx).exec("UPDATE members SET revision=revision+1 WHERE id='mem_member'")
       if (variant === "key") ctx.sql.exec("UPDATE devices SET thumbprint='different' WHERE id='dev_member'")
       if (variant === "expired") ctx.sql.exec("UPDATE device_rescope_proposals SET value=? WHERE id=?", canonicalJson({ ...proposal, expiresAt: new Date(ctx.now() - 1).toISOString() }), proposal.id)
     })

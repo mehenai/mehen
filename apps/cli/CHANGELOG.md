@@ -27,6 +27,7 @@ The version is printed by `mehen version --json`, with the commit it was built f
 - **A "Machine added" notice in `mehen pending` says its date and that it is about this machine.**
 - **`mehen guide` is current:** asking less (standing rules, task grants, mandates and every `mandateCover` state), plans and bundles, every ask kind and every id `mehen wait` follows, `outcome_unknown` and a frozen workspace in the exit codes, and all 19 MCP tools. A test checks it names every command, tool, ask kind and wait prefix.
 - **Help:** `mehen wait --help` names adoption batches (`adp_`), `mehen adopt --help` shows `--compared` as optional for `retire`, and `mehen fetch --help` says what `--approval` is for. The skill's exit 4 row says a `frozen` workspace has nothing to wait on.
+- **A mandate that ended because its machine was revoked says so.** `mehen mandate show` and `ls` print `Ended for good: this machine was revoked.`, `--json` reads `endedReason: "revoked"`, and there is no `next` step, since nobody can sign that machine a mandate again. A machine enrolled again can have a new one.
 
 ## 0.4.1
 

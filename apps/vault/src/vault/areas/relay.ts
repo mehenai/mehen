@@ -198,6 +198,10 @@ export type RelayAuthorisationHooks = {
   // item's policy said approve, or the item is protected.
   approve(item: ItemRecord, subject: ApprovalSubject, presentation: import("../services.ts").ApprovalPresentation, held: import("./policy-rules-workspace.ts").HeldRequest & { policyApprove: boolean; protectedUse: boolean }): boolean
   secrets?(item: ItemRecord): Promise<{secrets:Record<string,string>;item:ItemRecord}>
+  // Runs, and commits on its own, just before the final transaction and
+  // again after it refuses, so a change it makes (a mandate lapsed) stays
+  // when that transaction rolls back.
+  settle?(): void
   assertCurrent(): void
   consume(): void
   // Plan mode (a bundle): stop after the approval loop, before any secret is
@@ -719,7 +723,7 @@ export async function authoriseRelay(ctx: VaultContext, principal: DevicePrincip
         constraints: { ...DEFAULT_APPROVAL_CONSTRAINTS },
       }
       const presentation = await presentRequest(item, dest, url, body, contentType, forwarded)
-      if (hooks?.approve(item, subject, presentation, { destination: dest, url: url.href, body, contentType, contentEncoding, policyApprove: permit.decision === "approve", protectedUse })) continue
+      if (hooks?.approve(item, subject, presentation, { destination: dest, url: url.href, body, contentType, contentEncoding, headerNames: forwarded.map(([name]) => name), policyApprove: permit.decision === "approve", protectedUse })) continue
       try {
         await relayServices.reviewRequest(ctx, principal, subject, presentation)
       } catch (error) {
@@ -750,13 +754,21 @@ export async function authoriseRelay(ctx: VaultContext, principal: DevicePrincip
     }
     // No await after this point. The baseline is the value actually opened,
     // including this request's own maintenance refresh, never an unrelated edit.
-    ctx.storage.transactionSync(() => {
-      hooks.assertCurrent()
-      assertRelayCurrent(ctx, principal, checked, req, dest, protectedSlugs, hooks)
-      policy.assertCurrent(ctx, decisions.map(({ permit }) => permit))
-      policy.recordUse(ctx, decisions.map(({ permit }) => permit), requestDigest)
-      hooks.consume()
-    })
+    hooks.settle?.()
+    try {
+      ctx.storage.transactionSync(() => {
+        hooks.assertCurrent()
+        assertRelayCurrent(ctx, principal, checked, req, dest, protectedSlugs, hooks)
+        policy.assertCurrent(ctx, decisions.map(({ permit }) => permit))
+        policy.recordUse(ctx, decisions.map(({ permit }) => permit), requestDigest)
+        hooks.consume()
+      })
+    } catch (error) {
+      // What the final check found (a share's end that passed since settle)
+      // is committed on its own, after the refused use rolled back.
+      hooks.settle?.()
+      throw error
+    }
   }
 
   return {

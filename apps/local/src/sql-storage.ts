@@ -137,14 +137,14 @@ export class LocalCursor<T extends Row = Row> implements Iterable<T> {
 }
 
 export class LocalSqlStorage {
-  readonly db: Database
+  readonly #db: Database
 
   constructor(db: Database) {
-    this.db = db
+    this.#db = db
   }
 
   private totalChanges(): number {
-    return (this.db.query("SELECT total_changes() AS n").get() as { n: number }).n
+    return (this.#db.query("SELECT total_changes() AS n").get() as { n: number }).n
   }
 
   exec<T extends Row = Row>(query: string, ...bindings: unknown[]): LocalCursor<T> {
@@ -152,13 +152,13 @@ export class LocalSqlStorage {
     const statements = statementCount(query)
     // A migration is several statements with no bindings and no rows.
     if (bindings.length === 0 && !READS.test(query) && !/\bRETURNING\b/i.test(query)) {
-      this.db.run(query)
+      this.#db.run(query)
       return new LocalCursor<T>([], [], this.totalChanges() - before)
     }
     // Cloudflare runs every statement and binds the last; nothing in the
     // vault needs that, so it is refused here rather than run differently.
     if (statements > 1) throw new Error("A local vault runs one statement at a time when it reads rows or takes bindings; split the query.")
-    const statement = this.db.prepare(query)
+    const statement = this.#db.prepare(query)
     try {
       const args = bindings.map(toBinding)
       if (statement.columnNames.length === 0) {
@@ -173,8 +173,8 @@ export class LocalSqlStorage {
   }
 
   get databaseSize(): number {
-    const pages = this.db.query("PRAGMA page_count").get() as { page_count: number }
-    const size = this.db.query("PRAGMA page_size").get() as { page_size: number }
+    const pages = this.#db.query("PRAGMA page_count").get() as { page_count: number }
+    const size = this.#db.query("PRAGMA page_size").get() as { page_size: number }
     return pages.page_count * size.page_size
   }
 

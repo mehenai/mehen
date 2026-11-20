@@ -3,6 +3,7 @@ import { canonicalJson, PrivateEventSchema } from "@mehen/protocol"
 import { appendAudit, verifyAuditChain, type AuditRow } from "../src/vault/audit.ts"
 import { credentialAudit, visibleCredential } from "../src/vault/areas/items-workspace.ts"
 import { credentialsFixture, devicePrincipal, inAccess, memberPrincipal, seedCredential } from "./credentials-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 describe("private audit stored-byte golden events", () => {
   const actions = ["item.create", "item.replace", "item.rotate", "item.restore", "item.update", "item.delete", "item.rehome", "intake.complete", "intake.cancel", "oauth.connect", "oauth.reconnect", "oauth.refresh", "relay.allow", "relay.deny", "relay.refuse", "relay.tripwire", "relay.echo", "intake.request", "oauth.connect_request", "oauth.connect_start", "oauth.connect_cancel", "oauth.refresh_attempt", "credential.request_superseded", "project.references.remove"]
   for (const action of actions)
@@ -48,7 +49,7 @@ it("keeps a deleted private credential's echo minimal and never serialises the i
       const invocation = await deviceInvocation(ctx)
       const material = await authoriseWorkspaceRelay(ctx, devicePrincipal(), { item: item.slug, method: "GET", url: "https://api.example.com/echo", headers: [] }, invocation)
       ctx.sql.exec("DELETE FROM item_secrets WHERE item=?", item.id)
-      ctx.sql.exec("DELETE FROM items WHERE id=?", item.id)
+      fixtureSql(ctx).exec("DELETE FROM items WHERE id=?", item.id)
       setUpstreamFetch(async () => new Response("test-secret-never-returned"))
       const response = await forwardRelay(material, null, { onEcho: (slugs) => { workspaceRelayOps["relay.echo"]!.handler(ctx, { kind: "system" }, { items: slugs, host: "api.example.com", workspaceAudit: material.workspaceAudit }, { ...invocation, auth: { kind: "system" } }); } })
       const body = await response.text()
@@ -98,7 +99,7 @@ it("minimises real private relay allow, binding refusal and policy denial before
     await authoriseWorkspaceRelay(ctx,p,req,i)
     const open=vi.spyOn(ctx,"openField"),send=vi.spyOn(globalThis,"fetch")
     await expect(authoriseWorkspaceRelay(ctx,p,{...req,url:"https://wrong.example.com/secret-path"},i)).rejects.toMatchObject({code:"binding_refused"})
-    ctx.sql.exec("UPDATE items SET policy=? WHERE id=?",JSON.stringify({default:"deny",rules:[]}),item.id)
+    fixtureSql(ctx).exec("UPDATE items SET policy=? WHERE id=?",JSON.stringify({default:"deny",rules:[]}),item.id)
     await expect(authoriseWorkspaceRelay(ctx,p,req,i)).rejects.toMatchObject({code:"policy_denied"})
     const rows=ctx.sql.exec<AuditRow>("SELECT * FROM audit ORDER BY seq").toArray()
     for(const [action,outcome] of [["relay.allow","allowed"],["relay.refuse","refused:binding_refused"],["relay.deny","refused:policy_denied"]]){
@@ -117,7 +118,7 @@ it("an old private echo keeps its run id and never flags a replacement with the 
   const f=await credentialsFixture()
   await inAccess(f.tenant,async ctx=>{
     const old=await seedCredential(ctx,"reused-private",{kind:"member",member:"mem_member"})
-    ctx.sql.exec("DELETE FROM item_secrets WHERE item=?",old.id);ctx.sql.exec("DELETE FROM items WHERE id=?",old.id)
+    ctx.sql.exec("DELETE FROM item_secrets WHERE item=?",old.id);fixtureSql(ctx).exec("DELETE FROM items WHERE id=?",old.id)
     const replacement=await seedCredential(ctx,old.slug,{kind:"member",member:"mem_member"})
     await workspaceRelayOps["relay.echo"]!.handler(ctx,{kind:"system"},{items:[old.slug],host:"private.example",workspaceAudit:[{item:{id:old.id,slug:old.slug,home:old.home},device:"dev_member",owner:{kind:"member",member:"mem_member"},session:null,run:"run_original"}]},{workspace:{id:ctx.tenant,slug:"work",name:"Work"},auth:{kind:"system"}})
     expect(items.getItem(ctx,replacement.slug)?.review).toBeNull()

@@ -43,7 +43,7 @@ export const mandateViewSchema = z.object({
   note: z.string(),
   createdAt: timestamp,
   expiresAt: timestamp,
-  endedReason: z.enum(["stopped", "expired", "replaced"]).nullable(),
+  endedReason: z.enum(["stopped", "expired", "replaced", "revoked"]).nullable(),
   proposal: MandateProposalIdSchema.nullable().optional().catch(undefined),
 }) satisfies z.ZodType<MachineMandateView>
 const receiptSchema = z.object({
@@ -153,13 +153,15 @@ export function stateText(view: Pick<MachineMandateView, "state" | "endedReason"
   if (view.state === "paused") return `Paused: nothing goes through on trust; ${resumeWords(url)}.`
   if (view.state === "tripped") return `Tripped: more than ${MANDATE_RATE_LIMIT} requests beyond reading in a minute, so nothing goes through on trust; ${resumeWords(url)}, with their passkey.`
   if (view.state === "expired") return `Ended ${clockText(view.expiresAt, options) ?? view.expiresAt}: it covers nothing.${again}`
+  if (view.endedReason === "revoked") return "Ended for good: this machine was revoked."
   return view.endedReason === "replaced" ? `Replaced by a newer mandate: it covers nothing.${url ? ` Its page: ${url}` : ""}` : `Stopped by a person: it covers nothing.${again}`
 }
 
 // The step for a mandate that covers nothing now: its page, for the person
-// who signed it. Null for an active one, or with no page to link.
+// who signed it. Null for an active one, one ended by revoking its machine,
+// which nobody can sign again, or with no page to link.
 export function mandateNext(view: Pick<MachineMandateView, "id" | "state" | "endedReason">, url: AskUrl | null): NextStep | null {
-  if (view.state === "active" || url === null) return null
+  if (view.state === "active" || view.endedReason === "revoked" || url === null) return null
   if (view.state === "paused" || view.state === "tripped") return { url, say: `Mandate ${view.id} is ${view.state}: pass ${url} to the person who signed it, who can resume it there${view.state === "tripped" ? " with their passkey" : ""}. Until then, ask for each request as usual.` }
   if (view.endedReason === "replaced") return { url, command: "mehen mandate ls", say: `Mandate ${view.id} was replaced by a newer one; mehen mandate ls shows it.` }
   return { url, say: `Mandate ${view.id} has ended: pass ${url} to the person who signed it to sign it again, or propose a new one. Until then, ask for each request as usual.` }

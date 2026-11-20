@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { can } from "../src/vault/access.ts"
 import { accessState, authorise, principalOf, registerAccessChangeHook, newMember } from "../src/vault/areas/workspace-runtime.ts"
 import { beginAccessSideEffectChecks, finishAccessSideEffectChecks, accessFixture, accessSnapshot, accountAuth, inAccess, registerFixtureLifecycleHooks, workspaceInvoke } from "./access-test-support.ts"
+import { withTrustedSchema } from "../src/vault/areas/management-guard.ts"
 
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
@@ -9,7 +10,7 @@ afterEach(finishAccessSideEffectChecks)
 describe("access suspension", () => {
   it("empties human and machine authority, invalidates consent, and reinstates rights only", async () => {
     const { tenant } = await accessFixture()
-    await inAccess(tenant, (ctx) => { registerFixtureLifecycleHooks(); ctx.sql.exec("CREATE TABLE fixture_consent(revoked INTEGER NOT NULL)"); ctx.sql.exec("INSERT INTO fixture_consent VALUES (0)"); registerAccessChangeHook("consent", (c) => { c.sql.exec("UPDATE fixture_consent SET revoked=1") }) })
+    await inAccess(tenant, (ctx) => { registerFixtureLifecycleHooks(); withTrustedSchema(ctx, () => ctx.sql.exec("CREATE TABLE fixture_consent(revoked INTEGER NOT NULL)")); ctx.sql.exec("INSERT INTO fixture_consent VALUES (0)"); registerAccessChangeHook("consent", (c) => { c.sql.exec("UPDATE fixture_consent SET revoked=1") }) })
     expect(await workspaceInvoke(tenant, "access.members.suspend", { member: "mem_member" }, accountAuth("owner", { type: "member.suspend", member: "mem_member" }))).toMatchObject({ ok: true })
     await inAccess(tenant, (ctx) => {
       const state = accessState(ctx)

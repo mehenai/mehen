@@ -6,6 +6,7 @@ import { RescopeProposalViewSchema, canonicalJson } from "@mehen/protocol"
 import type { RescopeProposalView, Share, WorkspaceDeviceScope, WorkspaceStepUpAction } from "@mehen/protocol"
 import { accessState, installSecurity, setProjectShare, updateRestriction } from "../src/vault/areas/workspace-runtime.ts"
 import { accessFixture, accessSnapshot, accountAuth, beginAccessSideEffectChecks, finishAccessSideEffectChecks, inAccess, registerFixtureLifecycleHooks, workspaceInvoke } from "./access-test-support.ts"
+import { fixtureSql } from "./fixture-sql.ts"
 
 beforeEach(beginAccessSideEffectChecks)
 afterEach(finishAccessSideEffectChecks)
@@ -312,7 +313,7 @@ describe("rescope reject refusal boundaries", () => {
       const saved = JSON.parse(ctx.sql.exec<{ value: string }>("SELECT value FROM device_rescope_proposals WHERE id=?", proposal.id).toArray()[0]!.value) as Record<string, unknown>
       if (variant === "expired") ctx.sql.exec("UPDATE device_rescope_proposals SET value=? WHERE id=?", canonicalJson({ ...saved, expiresAt: new Date(ctx.now() - 1).toISOString() }), proposal.id)
       if (variant === "scope_rev") ctx.sql.exec("UPDATE devices SET scope_rev=scope_rev+1 WHERE id='dev_member'")
-      if (variant === "owner") ctx.sql.exec("UPDATE members SET revision=revision+1 WHERE id='mem_member'")
+      if (variant === "owner") fixtureSql(ctx).exec("UPDATE members SET revision=revision+1 WHERE id='mem_member'")
       if (variant === "key") ctx.sql.exec("UPDATE devices SET thumbprint='different' WHERE id='dev_member'")
       if (variant === "revoked") ctx.sql.exec("UPDATE devices SET revoked_at=? WHERE id='dev_member'", ctx.now())
     })
