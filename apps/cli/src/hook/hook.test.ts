@@ -1092,6 +1092,11 @@ describe("sixth review: reproductions", () => {
     for (const command of ["grep -r --include='.e[[:digit:]]v' x .", "grep -r --include='*.[[:alpha:]]d' x ."]) none("proj", command)
   })
 
+  test("with ${!v} or a name reference, any key variable named on the line, however spelt, counts as read", () => {
+    for (const command of ['v=OPENAI_API_KEY[0]; printf "%s\\n" "${!v}"', 'declare -n r=OPENAI_API_KEY[0]; printf "%s\\n" "$r"', 'v=${X:-OPENAI_API_KEY}; echo "${!v}"', 'v="OPENAI_""API_KEY"; echo "${!v}"']) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ['echo "${!OPENAI*}"', 'v=PATH; echo "${!v}"', "declare -n r=PATH; echo $r", "for i in 1; do X=OPENAI_API_KEY; done"]) none("proj", command)
+  })
+
   test("a class the guard cannot decide never hides a file: an --exclude it cannot decide leaves the file in", () => {
     for (const command of ["grep -r --exclude='[[:nonsense:]]*' x .", "grep -r --exclude='.e[![:nonsense:]]v' x .", "grep -r --exclude-dir='[[:nonsense:]]*' x ."]) expect(refused("proj", command)).toEqual(yes(command))
     none("proj", "grep -r --exclude='.e[[:alpha:]]v' x .")

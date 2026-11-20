@@ -1075,8 +1075,10 @@ function xargsNames(ctx: Context, state: State, node: CommandNode, producer: Com
 // `words` holds every command's words, for the check on a line outside
 // the grammar.
 // `arithmetic`: the line has let or an integer variable (declare -i), so a
-// key variable named bare in any word may be read.
-type Context = { home: string; vaultDirs: string[]; command: string; findings: Finding[]; outside: string[]; reads: boolean; nested: number; words: Word[][]; arithmetic: boolean }
+// key variable named bare in any word may be read. `indirect`: it reads a
+// variable through another (declare -n), so any key variable named on it
+// may be.
+type Context = { home: string; vaultDirs: string[]; command: string; findings: Finding[]; outside: string[]; reads: boolean; nested: number; words: Word[][]; arithmetic: boolean; indirect: boolean }
 
 function outside(ctx: Context, why: string, runs = false): void {
   if (!ctx.outside.includes(why)) ctx.outside.push(why)
@@ -1580,7 +1582,10 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
   }
   if (["declare", "typeset", "local"].includes(program)) {
     const flags = args.filter((a) => !a.dynamic && /^[-+][A-Za-z]+$/.test(a.text)).map((a) => a.text.slice(1)).join("")
-    if (flags.includes("n")) outside(ctx, `${program} -n`)
+    if (flags.includes("n")) {
+      outside(ctx, `${program} -n`)
+      ctx.indirect = true
+    }
     // An integer variable evaluates what is assigned to it as arithmetic.
     if (flags.includes("i")) {
       outside(ctx, `${program} -i`)
@@ -1863,11 +1868,7 @@ function anyWordReads(ctx: Context): boolean {
     for (const [i, word] of words.entries()) {
       if (word.vars.some((v) => KEY_VARIABLE.test(v))) return true
       if (word.dynamic || word.process) continue
-      // A key variable's name given as a value (v=OPENAI_API_KEY), which
-      // ${!v} or a name reference (declare -n) then reads.
       const text = word.text
-      const named = /^[A-Za-z_][A-Za-z0-9_]*=([A-Za-z_][A-Za-z0-9_]*)$/.exec(text)?.[1]
-      if (named !== undefined && KEY_VARIABLE.test(named)) return true
       if (ctx.arithmetic && (text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).some((name) => KEY_VARIABLE.test(name))) return true
       const program = basename(text)
       if (isReader(program) || program in INTERPRETERS || program === "printenv") return true
@@ -1887,8 +1888,13 @@ export function commandFindings(command: string, cwd: string, home = homedir(), 
   const findings: Finding[] = []
   const inText = secretInText(command)
   if (inText) findings.push({ rule: "secret-in-command", reason: `the command carries ${inText}` })
-  const ctx: Context = { home, vaultDirs, command, findings, outside: [], reads: false, nested: 0, words: [], arithmetic: false }
+  const ctx: Context = { home, vaultDirs, command, findings, outside: [], reads: false, nested: 0, words: [], arithmetic: false, indirect: false }
   lines(ctx, { cwds: [cwd], stack: [], links: new Map() }, parseShell(command, home))
+  // ${!v} reads the variable v names (not ${!prefix*} or ${!a[@]}, which list
+  // names): with it, or a name reference, any key variable named anywhere
+  // on the line, however it is spelt or built, may be what is read.
+  if (/\$\{![A-Za-z_][A-Za-z0-9_]*(\[[^\]@*]*\])?\}/.test(command)) ctx.indirect = true
+  if (ctx.indirect && (command.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).some((name) => KEY_VARIABLE.test(name))) ctx.reads = true
   if (ctx.outside.length && !ctx.reads) ctx.reads = anyWordReads(ctx)
   // The allowlist: a line that uses anything outside the grammar and reads
   // a file or prints the environment is refused, whatever else was found.
