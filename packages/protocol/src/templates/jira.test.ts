@@ -210,3 +210,10 @@ describe("jira refusals", () => {
     }
   })
 })
+
+describe("jira fifth review fix", () => {
+  it("holds an issue notification, which emails users and groups the body chooses, whatever the item's policy says", () => {
+    const notify = { subject: "Update", textBody: "See ACME-1", to: { reporter: false, assignee: false, watchers: true, users: [{ accountId: "5b10ac8d82e05b22cc7d4ef5" }], groups: [{ name: "everyone" }] } }
+    expectBoth([["POST", `${API}/issue/ACME-1/notify`, "approve", "approve", notify]])
+  })
+})
