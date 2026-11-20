@@ -303,7 +303,9 @@ export function workspaceApproval(ctx: VaultContext, id: string): WorkspaceAppro
 // is (a bundle takes it in when it is in none); otherwise the ask it
 // replaces is superseded before the cap is counted, so a re-ask at the cap
 // succeeds, and a failed insert keeps the old ask.
-export function requestWorkspaceApproval(ctx: VaultContext, state: AccessState, ask: AccessAsk, workspace: WorkspaceRef, subject: ApprovalSubject, presentation: ApprovalPresentation, snapshot: unknown, now: number, batch: ApprovalAskBatch): WorkspaceApprovalRow {
+// session: the agent's label from the signed proof (MEHEN_SESSION), shown
+// beside the machine on the ask's page and in Needs you, never verified.
+export function requestWorkspaceApproval(ctx: VaultContext, state: AccessState, ask: AccessAsk, workspace: WorkspaceRef, subject: ApprovalSubject, presentation: ApprovalPresentation, snapshot: unknown, now: number, batch: ApprovalAskBatch, session: string | null = null): WorkspaceApprovalRow {
   const { digest: binding, snapshotDigest, presentationDigest } = approvalBinding(subject, presentation, snapshot)
   const old = one(ctx.sql.exec<WorkspaceApprovalRow>("SELECT * FROM approvals WHERE device=? AND workload IS ? AND binding_digest=? AND status='pending' AND policy_status IS NULL AND expires_at>? ORDER BY created_at LIMIT 1", ask.device, ask.workload ?? null, binding, now))
   if (old && batch.bundle !== undefined && !old.bundle && batchesHere(ctx)) {
@@ -321,7 +323,7 @@ export function requestWorkspaceApproval(ctx: VaultContext, state: AccessState, 
   const name = devicePolicyState(ctx, device.id)?.name
   if (name === undefined) throw new VaultError("not_found", "No such object.")
   const group = batches ? approvalReviewGroup(workspace.id, ask) : null
-  ctx.sql.exec("INSERT INTO approvals(id,device,device_name,session,item,digest,subject,presentation,binding_code,status,created_at,expires_at,ask,snapshot,binding_digest,workspace,snapshot_digest,presentation_digest,workload,review_group,shape,floor,bundle) VALUES(?,?,?,NULL,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)", id, device.id, name, subject.item, binding, JSON.stringify(subject), JSON.stringify(presentation), bindingCode(), now, now + 3_600_000, JSON.stringify(ask), canonicalJson(snapshot), binding, JSON.stringify(workspace), snapshotDigest, presentationDigest, ask.workload ?? null, group, batches ? batch.shape : null, batches && batch.floor !== null ? JSON.stringify([...new Set(batch.floor)].sort()) : null, batches ? batch.bundle ?? null : null)
+  ctx.sql.exec("INSERT INTO approvals(id,device,device_name,session,item,digest,subject,presentation,binding_code,status,created_at,expires_at,ask,snapshot,binding_digest,workspace,snapshot_digest,presentation_digest,workload,review_group,shape,floor,bundle) VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)", id, device.id, name, session, subject.item, binding, JSON.stringify(subject), JSON.stringify(presentation), bindingCode(), now, now + 3_600_000, JSON.stringify(ask), canonicalJson(snapshot), binding, JSON.stringify(workspace), snapshotDigest, presentationDigest, ask.workload ?? null, group, batches ? batch.shape : null, batches && batch.floor !== null ? JSON.stringify([...new Set(batch.floor)].sort()) : null, batches ? batch.bundle ?? null : null)
   if (group !== null && batch.bundle === undefined) keepGroupCode(ctx, group, id, now + 3_600_000, now)
   const credential = state.credentials.find((c) => c.id === ask.credential)
   if (credential?.home.kind === "member") auditPrivateEvent(ctx, { action: "approval.request", at: now, actor: { kind: "device", device: device.id, owner: device.owner.kind === "member" ? { kind: "member", member: device.owner.id } : { kind: "team", team: device.owner.id } }, session: null, item: credential.id, slug: subject.item, outcome: "pending", run: null }, credential.home.member)

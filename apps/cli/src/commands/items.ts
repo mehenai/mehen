@@ -97,6 +97,13 @@ export async function listAllItems(env: Env, filters: ItemFilters): Promise<{ li
   return { list: { items }, unavailable }
 }
 
+// `mehen ls --json` leaves out an item's null and false fields (no
+// provider, account unverified, never used): a missing field reads as null
+// or false. `workspace` is always the whole object.
+export function compactListedItem(item: ListedItem): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(item).filter(([key, value]) => key === "workspace" || (value !== null && value !== false && value !== undefined)))
+}
+
 export const lsCommand: Command = {
   summary: "list the items this machine may use",
   spec: {
@@ -109,7 +116,7 @@ export const lsCommand: Command = {
     const { list, unavailable } = await listAllItems(env, { tag: args.string("tag"), kind: args.string("kind"), provider: args.string("provider") })
     for (const gone of unavailable) note(`mehen: warning: the vault for ${gone.slot} could not be asked (${gone.error}: ${gone.message}); its items are not listed.`)
     if (json) {
-      printJson(list)
+      printJson({ items: list.items.map(compactListedItem) })
       return EXIT.ok
     }
     if (list.items.length === 0) {

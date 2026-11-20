@@ -82,10 +82,10 @@ export const vaultWait = tool({
   name: "vault_wait",
   title: "Wait for a human",
   description:
-    `Wait for a human to finish an intake (int_), an approval (apr_), an OAuth connection (con_), a policy proposal (pol_), an adoption batch (adp_), a bundle from vault_plan (bnd_: done when every request in it is approved; a denial is an error that names the approved ones, which stay usable) or an enrolment this machine started at its terminal (enr_). The id is found in the one workspace this server may use that recorded it; pass workspace only when the call should be held to one. Returns the outcome; a human who has not acted yet is a \`timeout\` error: call it again, and remind the human of the link if needed. ` +
+    `Wait for a human to finish an intake (int_), an approval (apr_), an OAuth connection (con_), a policy proposal (pol_), an adoption batch (adp_), a bundle from vault_plan (bnd_: done when every request in it is approved; a denial is an error that names the approved ones, which stay usable), a mandate proposal (mdp_: done once signed) or an enrolment this machine started at its terminal (enr_). The id is found in the one workspace this server may use that recorded it; pass workspace only when the call should be held to one. Returns the outcome; a human who has not acted yet is a \`timeout\` error: call it again, and remind the human of the link if needed. ` +
     `Default ${WAIT_DEFAULT_SECONDS} s, at most ${WAIT_MAX_SECONDS} s. Decides nothing itself.`,
   input: z.object({
-    id: z.string().describe("int_..., apr_..., con_..., pol_..., adp_..., bnd_... or enr_..."),
+    id: z.string().describe("int_..., apr_..., con_..., pol_..., adp_..., bnd_..., mdp_... or enr_..."),
     timeoutSeconds: z.number().int().min(0).max(WAIT_MAX_SECONDS).optional(),
     workspace: WORKSPACE_ARG,
   }),
@@ -164,7 +164,7 @@ export async function waitSlot(deps: ToolDeps, id: string, workspace: string | n
   const only = hits[0] ?? (span.active.length === 1 ? span.active[0] : undefined)
   if (only) return only
   if (span.active.length === 0) throw notEnrolled()
-  throw new CliError("not_found", `${id} is not recorded in any workspace this server may use.`, { say: "Call vault_pending to see what is open and in which workspace, or pass workspace to ask that workspace's vault." })
+  throw new CliError("not_found", `${id} is not recorded in any workspace this server may use.`, { say: id.startsWith("mdp_") ? 'Pass workspace to ask that workspace\'s vault; vault_mandate { "action": "list" } with workspace lists its open mandate proposals.' : "Call vault_pending to see what is open and in which workspace, or pass workspace to ask that workspace's vault." })
 }
 
 // Does a slot under pending/ that reads as active (the interim form of an

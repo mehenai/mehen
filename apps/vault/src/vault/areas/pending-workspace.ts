@@ -264,8 +264,27 @@ export type WorkspaceInboxAnswer = { viewer: { member: string; role: WorkspaceRo
 
 const ASK_ACTIONS: Record<PendingKind, InboxAction> = { approval: "decide", intake: "open", connect: "connect", review: "review", reconnect: "reconnect", policy: "review", "policy-review": "review", adoption: "review" }
 function workspacePath(workspace: WorkspaceRef, path: string): string { return `/w/${encodeURIComponent(workspace.slug)}${path}` }
-function askDetailHref(workspace: WorkspaceRef, detail: Extract<WorkspacePendingAsk, { view: "detail" }>["detail"]): string {
+// The agent's open reconnect link a Reconnect row carries
+// (credentials-pending.ts), as a path, when it is exactly this vault's
+// connect page for this workspace; null for any other link.
+const CONNECT_ID = /^con_[A-Za-z0-9_-]{1,64}$/
+export function agentReconnectPath(origin: string, workspace: WorkspaceRef, link: string): string | null {
+  let url: URL, own: URL
+  try { url = new URL(link); own = new URL(origin) } catch { return null }
+  if (url.origin !== own.origin || url.search !== "" || url.hash !== "" || url.username !== "" || url.password !== "") return null
+  const prefix = workspacePath(workspace, "/c/")
+  if (!url.pathname.startsWith(prefix)) return null
+  const id = url.pathname.slice(prefix.length)
+  return CONNECT_ID.test(id) ? workspacePath(workspace, `/c/${id}`) : null
+}
+// A Reconnect row opens the agent's reconnect link when there is one, so
+// the person's sign-in ends the agent's wait; else the connection's page.
+function askDetailHref(origin: string, workspace: WorkspaceRef, detail: Extract<WorkspacePendingAsk, { view: "detail" }>["detail"]): string {
   const id = encodeURIComponent(detail.id)
+  if (detail.kind === "reconnect") {
+    const agents = agentReconnectPath(origin, workspace, detail.url)
+    if (agents !== null) return agents
+  }
   switch (detail.kind) {
     case "approval": return workspacePath(workspace, `/a/${id}`)
     case "intake": return workspacePath(workspace, `/i/${id}`)
@@ -292,7 +311,7 @@ function stopHref(workspace: WorkspaceRef, id: string): string {
 }
 function askItem(ctx: VaultContext, workspace: WorkspaceRef, ask: WorkspacePendingAsk): InboxItem {
   if (ask.view === "stop") return { kind: "ask", workspace, href: stopHref(workspace, ask.stop.id), action: "stop", ...stopTimes(ctx, ask.stop.id), ask }
-  return { kind: "ask", workspace, href: askDetailHref(workspace, ask.detail), action: ASK_ACTIONS[ask.detail.kind], createdAt: ask.detail.createdAt ?? null, expiresAt: ask.detail.expiresAt, ask }
+  return { kind: "ask", workspace, href: askDetailHref(ctx.env.VAULT_ORIGIN, workspace, ask.detail), action: ASK_ACTIONS[ask.detail.kind], createdAt: ask.detail.createdAt ?? null, expiresAt: ask.detail.expiresAt, ask }
 }
 // Members who joined through an invitation and wait for confirmation, listed
 // to a caller who could confirm them now: the invitation is unexpired, its

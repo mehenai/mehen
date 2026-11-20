@@ -25,6 +25,8 @@ const mehenHome = join(root, "home")
 const upstream: { authorization: string | null; url: string }[] = []
 const realFetch = globalThis.fetch
 let vault: LocalVault
+// The person who signed up in the journey, kept for the tests after it.
+let journeyPerson: Person
 
 beforeAll(async () => {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -56,6 +58,7 @@ test("a request addressed to another host name is refused (DNS rebinding)", asyn
 test("sign up, enrol the real CLI, store a key and relay with it", async () => {
   expect(vault.state()).toMatchObject({ origin: vault.origin, accounts: false, bootstrap: true, workspaces: [] })
   const person = new Person(vault.origin)
+  journeyPerson = person
   await person.signUp((await Bun.file(join(dataDir, BOOTSTRAP_FILE)).text()).trim())
   expect(await Bun.file(join(dataDir, BOOTSTRAP_FILE)).exists()).toBe(false)
   expect(vault.state().bootstrap).toBe(false)
@@ -83,4 +86,36 @@ test("sign up, enrol the real CLI, store a key and relay with it", async () => {
   expect(refused.code).toBe(5)
   expect(refused.out + refused.err).toContain("binding_refused")
   expect(upstream).toHaveLength(1)
+}, 60_000)
+
+// Bun's server closes a connection idle for 10 s unless told otherwise, and
+// the vault holds a ?wait=1 poll for up to 25 s: an agent's wait held past
+// 10 s still gets its answer, with every poll signed once.
+test("an agent's request --wait held past 10 s gets the credential once a person adds it", async () => {
+  const person = journeyPerson
+  const proc = Bun.spawn(["bun", CLI, "request", "api-key", "--name", "held-key", "--host", "api.example.com", "--header", "Authorization", "--format", "Bearer {key}", "--reason", "hold a wait past the idle timeout", "--wait", "--timeout", "60", "--json"], { env: { ...process.env, MEHEN_HOME: mehenHome, MEHEN_VAULT_URL: vault.origin, MEHEN_NO_AUTO_UPDATE: "1" }, stdout: "pipe", stderr: "pipe" })
+  const err = new Response(proc.stderr).text()
+  // The ask's line comes first; the wait's answer is the last line.
+  const reader = proc.stdout.getReader()
+  let stdout = ""
+  while (!stdout.includes("\n")) {
+    const chunk = await reader.read()
+    if (chunk.done) break
+    stdout += new TextDecoder().decode(chunk.value)
+  }
+  const intake = (JSON.parse(stdout.split("\n")[0] ?? "{}") as { intake?: string }).intake ?? null
+  const rest = (async () => {
+    for (;;) {
+      const chunk = await reader.read()
+      if (chunk.done) return
+      stdout += new TextDecoder().decode(chunk.value)
+    }
+  })()
+  expect(intake).toMatch(/^int_/)
+  await Bun.sleep(12_000)
+  await person.fulfilIntake("local", intake as string, "held-key-value-not-a-secret")
+  const [code, stderr] = await Promise.all([proc.exited, err, rest])
+  expect(stdout + stderr).not.toContain("proof_invalid")
+  expect(code).toBe(0)
+  expect(stdout.trim().split("\n").at(-1)).toContain("\"status\":\"completed\"")
 }, 60_000)

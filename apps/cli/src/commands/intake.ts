@@ -453,6 +453,13 @@ export function outcomeLines(result: WaitResult, s: Styler, options: { now?: Dat
     const lines = [segments(s.ok("Approved"), `: adoption ${adoption} stored ${made} credential${made === 1 ? "" : "s"}${refused?.length ? `; ${refused.length} refused` : ""}.`)]
     return [...lines, then("mehen adopt apply, then mehen adopt verify")]
   }
+  if (result.kind === "mandate") {
+    const { mandate, state } = result.status
+    // The person's decision, not a promise: the vault checks each request.
+    const checks = " The vault checks each request against it when it is sent."
+    const lead = state === "signed" ? segments(s.ok("Signed"), `: a person signed mandate ${mandate} for this machine.${checks}`) : segments(s.ok("Settled"), `: a person signed mandate ${mandate} for this machine instead, which closed this proposal.${checks}`)
+    return [lead, then(`mehen mandate show ${mandate}, then repeat the requests`)]
+  }
   if (result.kind === "enrol") {
     const { tenant, device } = result.status
     const workspace = (result.status as { workspace?: { slug?: unknown; name?: unknown } }).workspace
@@ -596,7 +603,7 @@ export const SETTLED_CODES: ReadonlySet<CliError["code"]> = new Set<CliError["co
 // the link is built from the id on this vault; check and expiry are what
 // the status says.
 function askFromPending(kind: WaitKind, id: string, value: unknown, vaultUrl: AskVault, by: Ask["requestedBy"]): Ask | null {
-  if (kind === "enrol") return null
+  if (kind === "enrol" || kind === "mandate") return null
   const v = value as { summary?: unknown; bindingCode?: unknown; account?: unknown; expiresAt?: unknown }
   const text = (field: unknown) => (typeof field === "string" ? field : null)
   if (kind === "policy") {
@@ -769,7 +776,7 @@ async function runEnrolmentWait(env: Env, id: string, options: RunWaitOptions): 
 }
 
 export const waitCommand: Command = {
-  summary: "wait for an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_) or bundle (bnd_)",
+  summary: "wait for an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_), adoption batch (adp_), bundle (bnd_) or mandate proposal (mdp_)",
   spec: {
     usage: "mehen wait <id> [--timeout <duration>] [--json [--events]]",
     flags: { timeout: { type: "string" }, events: { type: "boolean" } },
@@ -778,6 +785,7 @@ export const waitCommand: Command = {
   examples: [["wait", "int_3kQ9vXyZ7", "--timeout", "10m"], ["wait", "apr_7Hq2", "--json", "--events"]],
   notes: [
     "A human who has not acted by the timeout is exit 4 (timeout) with the ask handed back: relay it again and wait again. Ctrl-C leaves the link valid.",
+    "A mandate proposal (mdp_, from mehen mandate propose) ends once a person signs it, or signs this machine another mandate first: exit 0 with the mandate; 1 (expired) when it lapsed unsigned.",
     "A bundle (bnd_, from mehen plan submit) ends once none of its requests waits: exit 0 when all were approved, 5 when any was denied, stopped or replaced (the approved ones stay usable, and next.say names them), 4 on timeout.",
   ],
   async run({ args, json, env }) {

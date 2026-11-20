@@ -155,11 +155,12 @@ export function askView(value: unknown): AskView | null {
 
 // The card for a vault_request, vault_connect, vault_policy or vault_pending
 // result, or for an error that hands over an ask. Anything else draws nothing.
+// A pending ask marked stale (its vault did not confirm it) may be settled: no card.
 export function askCardView(result: CallToolResult): AskCardView {
   const structured = record(result.structuredContent)
   if (!structured) return { kind: "none" }
   if (Array.isArray(structured.pending)) {
-    const asks = structured.pending.map(askView).filter((a): a is AskView => a !== null)
+    const asks = structured.pending.filter((entry) => record(entry)?.stale !== true).map(askView).filter((a): a is AskView => a !== null)
     if (asks.length === 0) return { kind: "none" }
     if (asks.length === 1) return { kind: "single", ask: asks[0] as AskView, note: null }
     return { kind: "list", asks: asks.slice(0, LIST_LIMIT), more: Math.max(asks.length - LIST_LIMIT, 0) }

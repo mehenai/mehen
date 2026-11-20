@@ -4,7 +4,7 @@
 
 import { z } from "zod"
 import { ERROR_CODES, ERROR_HEADER, type ErrorCode } from "@mehen/protocol/api"
-import { PROOF_HEADER, type ProofRequest, type ProofSigner, createProof } from "@mehen/protocol/proof"
+import { PROOF_HEADER, type ProofRequest, type ProofSigner, createProof, fetchSignedOnce } from "@mehen/protocol/proof"
 import { MehenRefusal, MehenTransport, type RefusalFields } from "./errors.ts"
 import { vaultLink } from "./origin.ts"
 import { EnrolStatusSchema, NextStepSchema } from "./responses.ts"
@@ -40,7 +40,7 @@ export function transportFor(origin: string, options: TransportOptions): Transpo
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError("timeoutMs must be a positive number of milliseconds.")
   return {
     origin,
-    fetch: options.fetch ?? ((request) => fetch(request)),
+    fetch: options.fetch ?? fetchSignedOnce,
     userAgent: extra ? `${CLIENT_PRODUCT} ${extra}` : CLIENT_PRODUCT,
     timeoutMs,
   }

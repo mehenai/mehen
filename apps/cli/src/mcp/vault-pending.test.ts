@@ -1,5 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test"
+import { approvalAsk, askUrlFor } from "../ask.ts"
+import { addLedgerEntry } from "../ledger.ts"
 import { MockVault } from "../testing/mock-vault.ts"
+import { askCardView } from "./ui/ask-card-logic.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
 
 let vault: MockVault
@@ -108,4 +111,80 @@ test("vault_pending carries each ask's group and the top-level groups, and says 
   expect(result.structuredContent.groups).toEqual([{ id: "grp_Q2mX9", url: groupUrl, approvals: ["apr_g1", "apr_g2"], bundle: false }])
   expect(result.structuredContent.pending.map((a) => a.group)).toEqual([{ id: "grp_Q2mX9", url: groupUrl, open: 2 }, { id: "grp_Q2mX9", url: groupUrl, open: 2 }])
   expect(result.content[0]?.text).toStartWith(`2 asks from sam-mac-mini: review together at ${groupUrl}`)
+})
+
+test("offline, vault_pending marks each recorded ask stale, warns from the unreachable vault and hands none over", async () => {
+  const shared = vault
+  vault = new MockVault()
+  await dir.remove()
+  dir = await tempDir()
+  try {
+    env = { MEHEN_CONFIG_DIR: dir.path, MEHEN_VAULT_URL: vault.url }
+    await vault.enrolSoftware(dir.path)
+    const slot = vault.slotDir(dir.path)
+    const url = askUrlFor(vault.askVault(), "approval", "apr_7Hq2")!.url
+    await addLedgerEntry(slot, vault.ledgerScope(), { ask: approvalAsk({ id: "apr_7Hq2", url, summary: "Send an email", bindingCode: "K7Q2MX", expiresAt: new Date(Date.now() + 3_600_000).toISOString(), requestedBy: { device: "test-machine", session: null } }) })
+    vault.stop()
+    const result = await pending()
+    expect(result.structuredContent.pending).toMatchObject([{ id: "apr_7Hq2", stale: true }])
+    expect(result.structuredContent.warning).toContain(`the vault for ${slot} could not be asked (network`)
+    expect(result.structuredContent.warning).toContain("marked stale")
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(false)
+    expect(result.content.map((c) => c.text ?? "").join("\n")).not.toContain('vault_wait { "id": "apr_7Hq2" }')
+  } finally {
+    vault = shared
+  }
+})
+
+test("an ask the vault did not confirm is stale and never handed over: a workspace that refuses, and one a working vault's answer leaves out", async () => {
+  const second = { id: "tn_second00000001", slug: "second-space", name: "Second Space" }
+  const inAnHour = new Date(Date.now() + 3_600_000).toISOString()
+  const ask = (id: string, workspace: string) => approvalAsk({ id, url: askUrlFor({ ...vault.askVault(), workspaceSlug: workspace }, "approval", id)!.url, summary: "Send an email", bindingCode: "K7Q2MX", expiresAt: inAnHour, requestedBy: { device: "test-machine", session: null } })
+  await addLedgerEntry(vault.slotDir(dir.path), vault.ledgerScope(), { ask: ask("apr_live", "mock-space") })
+  await addLedgerEntry(vault.slotDir(dir.path), vault.ledgerScope(), { ask: ask("apr_gone", "mock-space") })
+  const b = await vault.enrolSoftware(dir.path, { config: { tenant: second.id, workspaceSlug: second.slug, workspaceName: second.name } })
+  const secondScope = { vaultUrl: vault.url, workspace: second.id, device: b, workspaceSlug: second.slug }
+  await addLedgerEntry(vault.slotDir(dir.path, second.id), secondScope, { ask: ask("apr_revoked", second.slug) })
+  const record = vault.devices.get(b)
+  if (record) record.revoked = true
+  vault.pending = [{ kind: "approval", id: "apr_live", url: `${vault.url}/w/mock-space/a/apr_live`, title: "Send an email", expiresAt: inAnHour, bindingCode: "K7Q2MX" }]
+  try {
+    const result = await pending()
+    expect(result.structuredContent.pending.map((a) => [a.id, a.stale])).toEqual([["apr_live", undefined], ["apr_gone", true], ["apr_revoked", true]])
+    expect(result.structuredContent.warning).toContain("marked stale")
+    expect(result.content.filter((c) => c.type === "resource_link").map((c) => c.uri)).toEqual([`${vault.url}/w/mock-space/a/apr_live`])
+    const text = result.content.map((c) => c.text ?? "").join("\n")
+    expect(text).not.toMatch(/apr_gone|apr_revoked/)
+    expect(askCardView(result as never)).toMatchObject({ kind: "single", ask: { id: "apr_live" } })
+  } finally {
+    if (record) record.revoked = false
+  }
+})
+
+test("a pending enrolment gets a handover only while the vault says it waits; approved, rejected or unreachable, it is stale with none", async () => {
+  vault.enrolOutcome = { pendingPolls: 1000, result: "active" }
+  const enrolment = (JSON.parse((await runJv(["enrol", "--workspace", "personal", "--json"], env)).stdout) as { enrolment: string }).enrolment
+  const links = (result: PendingResult) => result.content.filter((c) => c.type === "resource_link").map((c) => c.uri)
+  const waiting = await pending()
+  expect(waiting.structuredContent.pending.map((a) => [a.id, a.stale])).toEqual([[enrolment, undefined]])
+  expect(links(waiting)).toHaveLength(1)
+  expect(askCardView(waiting as never)).toMatchObject({ kind: "single", ask: { id: enrolment } })
+  try {
+    for (const result of ["active", "rejected"] as const) {
+      vault.enrolOutcome = { pendingPolls: 0, result }
+      const settled = await pending()
+      expect(settled.structuredContent.pending.map((a) => [a.id, a.stale]), result).toEqual([[enrolment, true]])
+      expect(links(settled), result).toEqual([])
+      expect(askCardView(settled as never), result).toEqual({ kind: "none" })
+    }
+    vault.enrolOutcome = { pendingPolls: 1000, result: "active" }
+    // A proxy in front of an unreachable vault.
+    vault.overrides.set(`GET /v1/enrol/${enrolment}`, () => new Response("upstream down", { status: 503 }))
+    const unread = await pending()
+    expect(unread.structuredContent.pending.map((a) => [a.id, a.stale])).toEqual([[enrolment, true]])
+    expect(links(unread)).toEqual([])
+  } finally {
+    vault.overrides.clear()
+    vault.enrolOutcome = { pendingPolls: 2, result: "active" }
+  }
 })

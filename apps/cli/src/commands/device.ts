@@ -19,11 +19,11 @@ import type { Command } from "../command.ts"
 import { isFingerprint } from "@mehen/protocol/fingerprint"
 import type { DeviceJwk } from "@mehen/protocol/proof"
 import { type Backend, type Config, type Env, configWorkspace, isMachineName, resolveVaultUrl } from "../config.ts"
-import { CliError, type CliErrorCode, toCliError } from "../errors.ts"
+import { CliError, type CliErrorCode, exitCodeFor, toCliError } from "../errors.ts"
 import { managedHost, resolveHome } from "../home.ts"
 import { assertSafeRoot, enterRoot, legacyLayout, migrationState } from "../migration.ts"
-import { type CliState, cliState } from "../install-state.ts"
-import { readLedger } from "../ledger.ts"
+import { type StatusCli, cliState, statusCli } from "../install-state.ts"
+import { isListedAsk, readLedger } from "../ledger.ts"
 import { type MandateStatus, mandateProposalsText, mandateStatusText, readMandateStatus } from "../mandate-operations.ts"
 import { readPolicyState, policyStateLines } from "../policy-operations.ts"
 import { printJson, printLine } from "../output.ts"
@@ -150,7 +150,7 @@ export async function status(env: Record<string, string | undefined>, opened?: V
   if (options.refreshNames) await refreshNames(configDir, config, vaultUrl, me, signedWith ?? null)
   const { workspace, owner } = meWorkspace(me, config)
   if (options.persist !== false) await refreshDisplay(configDir, config, signedWith ?? null, workspace, owner, isMachineName(me.name) ? me.name : null)
-  const ledger = await readLedger(configDir, scope)
+  const ledger = (await readLedger(configDir, scope)).filter(isListedAsk)
   const [policyState, mandate] = await Promise.all([readPolicyState(api, vaultUrl, me), readMandateStatus(session)])
   return {
     vault: vaultUrl,
@@ -199,7 +199,9 @@ export function statusLines(result: StatusResult, colour = styler(false), place:
     ...(typeof privateCredentials === "boolean" ? [segments(`  private:         ${privateCredentials ? "yes" : "no (ask with --home project or workspace)"}`)] : []),
     segments(`  pending:         ${result.pending === 0 ? "nothing waiting for a human" : `${result.pending} ask${result.pending === 1 ? "" : "s"} waiting for a human (mehen pending)`}`),
   ]
-  for (const line of policyStateLines(result.policyState)) lines.push(segments(`  ${line}`))
+  // Policy windows were replaced by standing rules (mehen policy ls); a vault
+  // that does not report them prints no line rather than "unavailable".
+  if (result.policyState) for (const line of policyStateLines(result.policyState)) lines.push(segments(`  ${line}`))
   if (result.mandate !== undefined) lines.push(segments(`  mandate:         ${result.mandate ? mandateStatusText(result.mandate) : "none"}`))
   if (result.mandateProposals) lines.push(segments(`  proposals:       ${mandateProposalsText(result.mandateProposals)}`))
   if (result.frozen) lines.push(segments("  The workspace is ", colour.danger("FROZEN"), ": every use is refused until a human unfreezes it in the vault."))
@@ -213,7 +215,7 @@ export type SlotStatus = Omit<StatusResult, "context"> & { slot: string }
 // Nothing in a check is ever deleted: a failing check is reported only.
 export type VaultCheck = { ok: true; status: SlotStatus } | { ok: false; error: CliErrorCode; message: string; next: NextStep | null }
 export type StatusEntry = (ActiveSlot & { check: VaultCheck }) | PendingSlot | CorruptSlot | EndedSlot | AbsentEntry
-export type StatusAll = { home: string; allowed: string[] | null; workspaces: StatusEntry[]; selected: string | null; next: NextStep | null; cli: CliState }
+export type StatusAll = { home: string; allowed: string[] | null; workspaces: StatusEntry[]; selected: string | null; next: NextStep | null; cli: StatusCli }
 
 export function slotStatus(result: StatusResult): SlotStatus {
   const { context: slot, ...rest } = result
@@ -248,9 +250,20 @@ async function selectedSlot(env: Env, manifest: ManifestWorkspace | null): Promi
   }
 }
 
+// The first active workspace's failed check when no active workspace's
+// check passed: nothing this machine is in can be used now.
+export function allChecksFailed(entries: StatusEntry[]): Extract<VaultCheck, { ok: false }> | null {
+  const active = entries.filter((e): e is ActiveSlot & { check: VaultCheck } => e.state === "active")
+  if (active.length === 0 || active.some((e) => e.check.ok)) return null
+  const first = active[0]?.check
+  return first && !first.ok ? first : null
+}
+
 // What to do when no slot is active: wait on the one pending enrolment, or
 // enrol (again, with the kept key, for the one attempt that ended).
 export function statusNext(entries: StatusEntry[], vaultUrl: string): NextStep | null {
+  const failed = allChecksFailed(entries)
+  if (failed) return failed.next ?? { command: "mehen doctor --json", say: "No workspace this machine is in answered; `mehen doctor --json` names the fix." }
   if (entries.some((e) => e.state === "active")) return null
   const pending = entries.filter((e): e is PendingSlot => e.state === "pending")
   const first = pending[0]
@@ -305,7 +318,7 @@ export async function statusAll(env: Env): Promise<StatusAll> {
     for (const slot of [...found.slots, ...found.corrupt] as FoundSlot[]) workspaces.push(await entryOf(env, slot, device))
     for (const entry of found.absent) workspaces.push(absentEntry(entry.text, entry.selector))
   }
-  return { home, allowed, workspaces, selected: await selectedSlot(env, manifest), next: statusNext(workspaces, resolveVaultUrl(env, null)), cli: await cliState(env) }
+  return { home, allowed, workspaces, selected: await selectedSlot(env, manifest), next: statusNext(workspaces, resolveVaultUrl(env, null)), cli: statusCli(await cliState(env)) }
 }
 
 async function entryOf(env: Env, found: FoundSlot, device: string): Promise<StatusEntry> {
@@ -369,7 +382,7 @@ export const statusCommand: Command = {
   spec: { usage: "mehen status [--workspace <slug or id>]", flags: {}, positionals: { min: 0, max: 0 } },
   examples: [["status"], ["status", "--json"], ["status", "--workspace", "acme"]],
   notes: [
-    "Lists every workspace slot this machine may use (active, pending, ended with the key kept, corrupt, and MEHEN_WORKSPACES entries not enrolled yet), each active one checked with the vault; a failing check is reported, never deleted. Exit 0.",
+    "Lists every workspace slot this machine may use (active, pending, ended with the key kept, corrupt, and MEHEN_WORKSPACES entries not enrolled yet), each active one checked with the vault; a failing check is reported, never deleted. A workspace is usable when its state is active and check.ok is true. Exit 0, unless every active workspace's check failed: then the first failure's exit code (7 for network), and its error, message and next at the top level.",
     "With --workspace (or MEHEN_WORKSPACE): that one workspace's status; a workspace this machine is not enrolled in is exit 2 (workspace_unknown) with next.command mehen enrol --workspace <slug>, and a revoked or unrecognised machine is exit 6. When something else is wrong, mehen doctor checks everything at once.",
   ],
   async run({ json, env }) {
@@ -381,9 +394,11 @@ export const statusCommand: Command = {
       return EXIT.ok
     }
     const result = await statusAll(env)
-    if (json) printJson(result)
+    const failed = allChecksFailed(result.workspaces)
+    // A non-zero exit carries its failure on top, as every other --json error does.
+    if (json) printJson(failed ? { error: failed.error, message: failed.message, ...result } : result)
     else for (const line of statusAllLines(result, resolveVaultUrl(env, null), styler(colourEnabled(process.stdout, env)))) printLine(line)
-    return EXIT.ok
+    return failed ? exitCodeFor(failed.error) : EXIT.ok
   },
 }
 

@@ -67,6 +67,16 @@ export type CliMcp = { running: string; installed: string; action: "switch" } | 
 //
 export type CliState = { version: string; commit: string | null; build: "release" | "dev" | null; path: string; autoUpdate: AutoUpdateMode; mcpHandover: McpHandover } & Omit<InstallState, "v"> & { mcp?: CliMcp }
 
+// What `mehen status` embeds: this mehen, whether it updates itself and an
+// update in progress (`pending`, null unless one is). The install records,
+// release check, vault advice and last update are doctor's.
+export type StatusCli = Pick<CliState, "version" | "commit" | "build" | "path" | "autoUpdate" | "mcpHandover" | "mcp" | "pending">
+
+export function statusCli(cli: CliState): StatusCli {
+  const { version, commit, build, path, autoUpdate, mcpHandover, mcp, pending } = cli
+  return { version, commit, build, path, autoUpdate, mcpHandover, ...(mcp ? { mcp } : {}), pending }
+}
+
 // What cliState embeds when no state file exists; `vault` is `{}`, never
 // null.
 export const FRESH_INSTALL_STATE: Omit<InstallState, "v"> = { installed: null, previous: null, highestSeen: null, holdBelow: null, pending: null, check: null, vault: {}, lastUpdate: null }

@@ -7,6 +7,7 @@ import type { CliError } from "./errors.ts"
 import { MockVault } from "./testing/mock-vault.ts"
 import { VERSION } from "./version.ts"
 import { type JvResult, runJv, tempDir } from "./testing/run-mehen.ts"
+import { RUN_USAGE } from "./run/index.ts"
 
 let vault: MockVault
 let dir: { path: string; remove(): Promise<void> }
@@ -210,8 +211,8 @@ test("policy is registered with local help and refuses an agent approval before 
 
 test("run, env and init refuse a bad line as a usage error with next before opening a session, enrolled or not", async () => {
   const cases: [string[], string, string][] = [
-    [["run"], "Name the command to run. Usage: mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--] <command> [args...]", "mehen run --help"],
-    [["run", "--bogus", "x"], "Unknown option --bogus for `mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--] <command> [args...]`.", "mehen run --help"],
+    [["run"], `Name the command to run. Usage: ${RUN_USAGE}`, "mehen run --help"],
+    [["run", "--bogus", "x"], `Unknown option --bogus for \`${RUN_USAGE}\`.`, "mehen run --help"],
     [["env"], "mehen env needs a subcommand: ls, check or set.", "mehen env --help"],
     [["env", "bogus"], "Unknown subcommand bogus; use ls, check or set.", "mehen env --help"],
     [["env", "set", "DATABASE_URL", "--env", "dev", "--item", "db", "--plain", "x"], "Pass --item or --plain, not both.", "mehen env --help"],

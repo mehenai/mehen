@@ -26,7 +26,7 @@ import { type CliError, type CliErrorCode, exitCodeFor, toCliError } from "../er
 import { PENDING_DIR, WORKSPACES_DIR, managedHost, resolveHome } from "../home.ts"
 import { HttpVaultApi } from "../http-client.ts"
 import { type CliState, type LockHolder, cliState, installation, lockGuardPresent, lockHolder, onPathCheck, readInstallState, selfExecutable, updateDoctorCheck } from "../install-state.ts"
-import { readLedger } from "../ledger.ts"
+import { isListedAsk, readLedger } from "../ledger.ts"
 import { type KeyringHost, LOCAL_VAULT_RECORD, defaultVault, keyringAdvice, keyringHost } from "../local-vault.ts"
 import { type MigrationJournal, type MigrationStep, ROOT_OWN, assertSafeRoot, legacyLayout, migrationState, readMigrationJournal } from "../migration.ts"
 import { printJson, printLine } from "../output.ts"
@@ -408,7 +408,7 @@ async function activeSigned(env: Env, found: FoundActive, session: string | null
   else if (me.frozen) {
     checks.push({ check: "frozen", status: "fail", detail: "The workspace is frozen: every use is refused until a human unfreezes it.", error: "frozen", next: { say: "The vault is frozen. Tell the human; they review the audit log and unfreeze it in the vault with their passkey." } })
   } else checks.push({ check: "frozen", status: "ok", detail: "Not frozen." })
-  const pending = (await readLedger(dir, { vaultUrl: config.vault, workspace: config.tenant, device: config.device, workspaceSlug: config.workspaceSlug ?? null }).catch(() => [])).length
+  const pending = (await readLedger(dir, { vaultUrl: config.vault, workspace: config.tenant, device: config.device, workspaceSlug: config.workspaceSlug ?? null }).catch(() => [])).filter(isListedAsk).length
   checks.push(
     pending === 0
       ? { check: "pending", status: "ok", detail: "Nothing waiting for a human." }

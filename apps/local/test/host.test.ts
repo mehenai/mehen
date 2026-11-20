@@ -213,3 +213,26 @@ describe("the host", () => {
 test.if(process.platform === "linux")("on Linux the process stops being dumpable", () => {
   expect(hardenProcess()).toEqual({ dumpable: "off", detail: null })
 })
+
+// Bun closes a connection idle for 10 s by default; the vault holds a
+// ?wait=1 poll for up to 25 s, so the server keeps a quiet connection open
+// longer than that.
+test("a connection quiet for 12 s is still open, and answers its next request", async () => {
+  const vault = await startLocalVault({ dataDir: scratch(), port: 0, hostname: "127.0.0.1", origin: null }, FILE_ONLY)
+  started.push(vault)
+  const { port } = new URL(vault.origin)
+  const answers: string[] = []
+  let closed = false
+  const socket = await Bun.connect({ hostname: "127.0.0.1", port: Number(port), socket: { data(_s, chunk) { answers.push(chunk.toString()) }, close() { closed = true } } })
+  const ask = () => socket.write(`GET /healthz HTTP/1.1\r\nHost: ${vault.origin.replace("http://", "")}\r\nConnection: keep-alive\r\n\r\n`)
+  ask()
+  await Bun.sleep(500)
+  expect(answers.join("")).toStartWith("HTTP/1.1 200")
+  answers.length = 0
+  await Bun.sleep(12_000)
+  expect(closed).toBe(false)
+  ask()
+  await Bun.sleep(500)
+  expect(answers.join("")).toStartWith("HTTP/1.1 200")
+  socket.end()
+}, 30_000)
