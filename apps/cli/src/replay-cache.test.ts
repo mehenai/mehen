@@ -80,7 +80,8 @@ test("a claim that was never sent is put back, and only it", async () => {
   const again = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
   expect(again.request.approval).toBe("apr_1")
   await again.spent()
-  expect((await readdir(join(env.MEHEN_HOME as string, "pending-requests")))).toEqual([])
+  // The marker stays for the hour, so the approval is not saved again.
+  expect((await readdir(join(env.MEHEN_HOME as string, "pending-requests")))).toEqual(["apr_1.spent"])
   const write = { method: "POST" }, read = { method: "GET" }
   const aborted = AbortSignal.abort()
   const live = new AbortController().signal
@@ -135,4 +136,64 @@ test("saving sweeps entries past their hour, and leaves newer ones", async () =>
   await utimes(savedRequestPath(env, "apr_old"), old, old)
   await saveHeldRequest(env, owner, "apr_third", request, now)
   expect((await readdir(join(env.MEHEN_HOME as string, "pending-requests"))).sort()).toEqual(["apr_new.json", "apr_third.json"])
+})
+
+// The vault reuses one pending approval for identical asks, so a duplicate
+// request's save can land after the first was claimed and sent. Save, claim
+// and restore share per-approval state: a lock, and a marker kept for the
+// entry's hour once the approval is claimed.
+test("a save delayed across a claim and its send does not publish the approval again", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  let release: () => void = () => undefined
+  const barrier = new Promise<void>((resolve) => (release = resolve))
+  let reached: () => void = () => undefined
+  const paused = new Promise<void>((resolve) => (reached = resolve))
+  const late = saveHeldRequest(env, owner, "apr_1", request, now, { beforeLock: async () => { reached(); await barrier } })
+  await paused
+  const claimed = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  await claimed.spent()
+  release()
+  const note = await late
+  expect(note).toMatchObject({ saved: false })
+  expect(note.saved === false && note.reason).toContain("already sent again")
+  await expect(stat(savedRequestPath(env, "apr_1"))).rejects.toMatchObject({ code: "ENOENT" })
+  expect((await refusal(readSavedRequest(env, "apr_1", now))).code).toBe("replay_missing")
+  // An in-flight claim refuses a save the same way.
+  await saveHeldRequest(env, owner, "apr_2", request, now)
+  const flying = await claimSavedRequest(env, await readSavedRequest(env, "apr_2", now), owner)
+  expect((await saveHeldRequest(env, owner, "apr_2", request, now)).saved).toBe(false)
+  await flying.spent()
+})
+
+test("a restore puts back only its own claim, and never once a newer claim of the approval exists", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  const a = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  // Nobody else can claim or save it while a has it.
+  expect((await saveHeldRequest(env, owner, "apr_1", request, now)).saved).toBe(false)
+  await a.unsent()
+  const b = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  await b.spent()
+  // a's second restore (a stale one) finds a newer claim and puts nothing back.
+  await a.unsent()
+  await expect(stat(savedRequestPath(env, "apr_1"))).rejects.toMatchObject({ code: "ENOENT" })
+  expect((await refusal(readSavedRequest(env, "apr_1", now))).code).toBe("replay_missing")
+  expect((await saveHeldRequest(env, owner, "apr_1", request, now)).saved).toBe(false)
+})
+
+test("a lock left by a stopped process is broken once it is stale, and markers and aside files are swept after the hour", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  const folder = join(env.MEHEN_HOME as string, "pending-requests")
+  await writeFile(join(folder, "apr_1.lock"), "", { mode: 0o600 })
+  const stale = new Date(Date.now() - 60_000)
+  await utimes(join(folder, "apr_1.lock"), stale, stale)
+  const claimed = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  await claimed.spent()
+  expect((await readdir(folder)).sort()).toEqual(["apr_1.spent"])
+  const old = new Date(now.getTime() - 2 * REPLAY_TTL_SECONDS * 1000)
+  for (const name of ["apr_1.spent", "apr_9.json.claimed.1.1", "apr_8.lock"]) {
+    await writeFile(join(folder, name), "", { mode: 0o600 }).catch(() => undefined)
+    await utimes(join(folder, name), old, old)
+  }
+  await saveHeldRequest(env, owner, "apr_new", request, now)
+  expect((await readdir(folder)).sort()).toEqual(["apr_new.json"])
 })

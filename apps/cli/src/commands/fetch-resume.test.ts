@@ -35,6 +35,16 @@ beforeEach(async () => {
 afterEach(async () => dir.remove())
 
 const cache = () => join(dir.path, "pending-requests")
+// Holds every request under `id` until it carries that approval: each round
+// of a test that holds again needs its own approval, since a spent one is
+// never saved again.
+const holdAs = (id: string) => {
+  vault.relay = (request) => {
+    sent.push(request)
+    if (request.approval === id) return new Response('{"id":"msg_1"}', { status: 200, headers: { [UPSTREAM_HEADER]: "1", "Content-Type": "application/json" } })
+    return vaultError("approval_required", "This request needs a human's approval.", { next: { url: `${vault.url}/w/mock-space/a/${id}`, command: `mehen wait ${id}`, say: "Ask the human." }, approval: id, bindingCode: "K7Q2" })
+  }
+}
 const json = (result: JvResult) => JSON.parse(result.stdout) as Record<string, unknown>
 const held = (extra: string[] = []) => runJv(["fetch", "gmail-support", "POST", "https://gmail.googleapis.com/send", "-H", "Content-Type: application/json", "-d", '{"to":"sam@example.com"}', ...extra], env)
 const approved = () => vault.sequences.set("approval:apr_1", [{ approval: "apr_1", status: "approved", bindingCode: "K7Q2", summary: "Send an email" }])
@@ -179,11 +189,12 @@ test("vault_wait with execute sends the saved request once approved, and on a pu
 // with the label the request was held with, so the proof and the body
 // agree with what the human saw, whatever MEHEN_SESSION says now.
 test("a replay is signed with the saved session label, whether MEHEN_SESSION changed or is unset", async () => {
-  for (const now of [{ MEHEN_SESSION: "agent-2" }, {}] as Record<string, string>[]) {
+  for (const [round, now] of ([{ MEHEN_SESSION: "agent-2" }, {}] as Record<string, string>[]).entries()) {
     sent = []
+    holdAs(`apr_round${round}`)
     await held()
     const { MEHEN_SESSION: _label, ...base } = env
-    const resumed = await runJv(["fetch", "--resume", "apr_1", "--json"], { ...base, ...now })
+    const resumed = await runJv(["fetch", "--resume", `apr_round${round}`, "--json"], { ...base, ...now })
     expect(resumed.code).toBe(EXIT.ok)
     expect(sent[1]?.session).toBe("agent-1")
     expect(vault.seen.at(-1)?.claims.sid).toBe("agent-1")
@@ -191,9 +202,10 @@ test("a replay is signed with the saved session label, whether MEHEN_SESSION cha
   // Held with no label, resumed with one: the proof carries none either.
   const { MEHEN_SESSION: _label, ...unlabelled } = env
   sent = []
+  holdAs("apr_unlabelled")
   await runJv(["fetch", "gmail-support", "POST", "https://gmail.googleapis.com/send", "-d", "{}"], unlabelled)
   expect(sent[0]?.session).toBeUndefined()
-  expect((await runJv(["fetch", "--resume", "apr_1"], { ...unlabelled, MEHEN_SESSION: "agent-3" })).code).toBe(EXIT.ok)
+  expect((await runJv(["fetch", "--resume", "apr_unlabelled"], { ...unlabelled, MEHEN_SESSION: "agent-3" })).code).toBe(EXIT.ok)
   expect(sent[1]?.session).toBeUndefined()
   expect(vault.seen.at(-1)?.claims.sid).toBeUndefined()
 })
@@ -205,11 +217,12 @@ test("vault_fetch and vault_wait replay with the saved session label too", async
   expect(sent[1]?.session).toBe("agent-1")
   expect(vault.seen.at(-1)?.claims.sid).toBe("agent-1")
   env = { ...env, MEHEN_SESSION: "agent-1" }
+  holdAs("apr_2")
   await call("vault_fetch", { item: "gmail-support", method: "POST", url: "https://gmail.googleapis.com/send", body: "{}" })
-  approved()
+  vault.sequences.set("approval:apr_2", [{ approval: "apr_2", status: "approved", bindingCode: "K7Q2", summary: "Send an email" }])
   const { MEHEN_SESSION: _label, ...unset } = env
   env = unset
-  expect((await call("vault_wait", { id: "apr_1", execute: true, timeoutSeconds: 5 })).isError).toBe(false)
+  expect((await call("vault_wait", { id: "apr_2", execute: true, timeoutSeconds: 5 })).isError).toBe(false)
   expect(sent.at(-1)?.session).toBe("agent-1")
   expect(vault.seen.at(-1)?.claims.sid).toBe("agent-1")
 })
@@ -241,4 +254,16 @@ test("vault_fetch with a bad select keeps the saved request, and the corrected c
   expect(sent).toHaveLength(2)
   expect((await call("vault_fetch", { approval: "apr_1" })).structuredContent).toMatchObject({ error: "replay_missing" })
   expect(sent).toHaveLength(2)
+})
+
+// The vault reuses one pending approval for identical asks: a duplicate
+// request held after the first was sent again is not saved again, so it
+// is never sent a second time.
+test("an identical request held again after its approval was sent again is not saved, and resume sends nothing more", async () => {
+  await held()
+  expect((await runJv(["fetch", "--resume", "apr_1"], env)).code).toBe(EXIT.ok)
+  const again = await held(["--json"])
+  expect(json(again)).toMatchObject({ error: "approval_required", approval: "apr_1", replay: { saved: false, reason: expect.stringContaining("already sent again") } })
+  expect((await runJv(["fetch", "--resume", "apr_1", "--json"], env)).code).toBe(EXIT.error)
+  expect(sent.filter((request) => request.approval === "apr_1")).toHaveLength(1)
 })
