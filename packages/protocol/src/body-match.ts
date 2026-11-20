@@ -6,7 +6,7 @@
 //   - "graphql-query" is the only matcher an allow rule may carry, and it
 //     matches only a request it can prove is a single plain query;
 //   - the JSON field matchers ("json-remote-mcp", "json-webhook",
-//     "json-public-url") go on
+//     "json-media-export") go on
 //     deny and approve rules and match a body that is not one strict JSON
 //     object, or that names a field the matcher lists (JSON_FIELD_MATCHERS),
 //     so an allow on the same route applies only to bodies proved not to.
@@ -17,7 +17,7 @@
 //
 // No dependencies, so the browser bundle and the CLI can use it.
 
-export const BODY_MATCHERS = ["graphql-mutation", "graphql-query", "json-remote-mcp", "json-webhook", "json-public-url"] as const
+export const BODY_MATCHERS = ["graphql-mutation", "graphql-query", "json-remote-mcp", "json-webhook", "json-media-export"] as const
 
 export type BodyMatcher = (typeof BODY_MATCHERS)[number]
 
@@ -36,7 +36,7 @@ export function bodyMatches(matcher: BodyMatcher, body: Uint8Array | null, searc
       return search === "" && graphqlIsQuery(body)
     case "json-remote-mcp":
     case "json-webhook":
-    case "json-public-url":
+    case "json-media-export":
       return jsonNamesField(matcher, body)
   }
 }
@@ -68,15 +68,21 @@ const JSON_FIELD_MATCHERS: Record<JsonFieldMatcher, (body: JsonObject) => boolea
     someObject(body, (object) => Object.entries(object).some(([key, value]) => (keyIs(key, "type") && typeof value === "string" && value.toLowerCase() === "mcp") || keyIs(key, "server_url"))),
   // A URL the provider would send the result to: a top-level "webhook".
   "json-webhook": (body) => Object.keys(body).some((key) => keyIs(key, "webhook")),
-  // Storage options that publish the output at a permanent unauthenticated
-  // URL: at any depth (a batch nests whole requests), a "storage_options"
-  // that is not an object, or whose "public_url" is anything but false.
-  "json-public-url": (body) =>
+  // Generated media leaving the provider's private storage, at any depth (a
+  // batch nests whole requests): a "storage_options" that publishes it at a
+  // permanent unauthenticated URL ("public_url" anything but false), or an
+  // "output" that has the provider upload it to a caller's URL
+  // ("upload_url" or "upload_urls", whatever the value). Either key in a
+  // shape this cannot read counts too: a "storage_options" that is not an
+  // object, or an "output" that is not an object and not a string (a
+  // function call's output is a string and names no destination).
+  "json-media-export": (body) =>
     someObject(body, (object) =>
       Object.entries(object).some(([key, value]) => {
-        if (!keyIs(key, "storage_options")) return false
-        if (typeof value !== "object" || value === null || Array.isArray(value)) return true
-        return Object.entries(value as JsonObject).some(([k, v]) => keyIs(k, "public_url") && v !== false)
+        const readable = typeof value === "object" && value !== null && !Array.isArray(value)
+        if (keyIs(key, "storage_options")) return !readable || Object.entries(value as JsonObject).some(([k, v]) => keyIs(k, "public_url") && v !== false)
+        if (keyIs(key, "output")) return typeof value !== "string" && (!readable || Object.keys(value as JsonObject).some((k) => keyIs(k, "upload_url") || keyIs(k, "upload_urls")))
+        return false
       }),
     ),
 }

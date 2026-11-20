@@ -15,10 +15,13 @@ import { BEARER, MODEL_CALLS, NAMED_READS, READS, WRITES } from "./shared.ts"
 // request names, and its MCP tools do not honour require_approval. Stored
 // responses are pinned to an approval too, since their tools carry those
 // headers and that authorization. An image or video request, direct or
-// added inline to a batch, whose storage_options publish the output at a
-// permanent unauthenticated URL (public_url anything but false), or that
-// cannot be read, is pinned to an approval; ordinary generation and
-// private storage pass. The API key's details, realtime client
+// added inline to a batch, that sends the output out of xAI's private
+// storage is pinned to an approval: storage_options that publish it at a
+// permanent unauthenticated URL (public_url anything but false), or an
+// output.upload_url or output.upload_urls that has xAI PUT it to a URL the
+// request names (a video extension's output includes the original video),
+// or a body that cannot be read. Ordinary generation and private storage
+// pass. The API key's details, realtime client
 // secrets and phone numbers are pinned to an approval; every other read
 // asks, as do deletes and anything else.
 // https://api.x.ai/api-docs/openapi.json
@@ -62,8 +65,8 @@ export const xai: Template = {
         action: "approve",
         methods: ["POST"],
         paths: ["/v1/images/generations", "/v1/images/edits", "/v1/videos/generations", "/v1/videos/edits", "/v1/videos/extensions", "/v1/batches/*/requests"],
-        body: "json-public-url",
-        note: "publishes the output at a permanent public URL, or cannot be read",
+        body: "json-media-export",
+        note: "publishes the output at a public URL or uploads it to a URL the request names, or cannot be read",
       },
       { action: "approve", methods: READS, paths: ["/v1/api-key"], note: "the API key's own details" },
       {
