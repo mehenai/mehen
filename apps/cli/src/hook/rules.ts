@@ -440,31 +440,42 @@ function either(a: Membership, b: Membership): Membership {
   return a === true || b === true ? true : a === null || b === null ? null : false
 }
 
+// One member of a bracket set, starting at `k`: a character (plain, escaped
+// with \\, or a one-character [=c=] or [.c.]), a [:class:], or something the
+// guard cannot read (a longer collating name); `end` is its last index.
+type SetAtom = { kind: "char"; c: string; end: number } | { kind: "class"; test: (c: string) => Membership; end: number }
+
+function setAtom(set: string, k: number): SetAtom {
+  const end = posixEnd(set, k)
+  if (end !== -1) {
+    const name = set.slice(k + 2, end - 2)
+    if (set[k + 1] !== ":" && name.length === 1) return { kind: "char", c: name, end: end - 1 }
+    const known = set[k + 1] === ":" ? POSIX_CLASSES[name] : undefined
+    return { kind: "class", test: known ? (c) => (c.charCodeAt(0) > 0x7f ? null : known.test(c)) : () => null, end: end - 1 }
+  }
+  if (set[k] === "\\" && k + 1 < set.length) return { kind: "char", c: set[k + 1] as string, end: k + 1 }
+  return { kind: "char", c: set[k] as string, end: k }
+}
+
 function globClass(body: string, ignoreCase: boolean, more: boolean): (c: string) => boolean {
   const negate = body.startsWith("!") || body.startsWith("^")
   const items: [string, string][] = []
   const classes: ((c: string) => Membership)[] = []
   const set = negate ? body.slice(1) : body
-  // \ makes the next character a plain member, as fnmatch reads it.
-  const member = (k: number): [string, number] => (set[k] === "\\" && k + 1 < set.length ? [set[k + 1] as string, k + 1] : [set[k] as string, k])
   for (let k = 0; k < set.length; k++) {
-    const end = posixEnd(set, k)
-    if (end !== -1) {
-      const name = set.slice(k + 2, end - 2)
-      const known = set[k + 1] === ":" ? POSIX_CLASSES[name] : undefined
-      if (known) classes.push((c) => (c.charCodeAt(0) > 0x7f ? null : known.test(c)))
-      else if (set[k + 1] !== ":" && name.length === 1) items.push([name, name])
+    const first = setAtom(set, k)
+    k = first.end
+    // A range a-z, either end of which may be [.c.] or [=c=] (a-[.z.]); a
+    // range with a class or an unreadable name at an end is not known.
+    if (set[k + 1] === "-" && k + 2 < set.length && set[k + 2] !== "]") {
+      const second = setAtom(set, k + 2)
+      k = second.end
+      if (first.kind === "char" && second.kind === "char") items.push([first.c, second.c])
       else classes.push(() => null)
-      k = end - 1
       continue
     }
-    const [lo, at] = member(k)
-    k = at
-    if (set[k + 1] === "-" && k + 2 < set.length) {
-      const [hi, end2] = member(k + 2)
-      items.push([lo, hi])
-      k = end2
-    } else items.push([lo, lo])
+    if (first.kind === "char") items.push([first.c, first.c])
+    else classes.push(first.test)
   }
   const inSet = (c: string): Membership => {
     if (items.some(([lo, hi]) => c >= lo && c <= hi)) return true

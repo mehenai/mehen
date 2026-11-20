@@ -1092,6 +1092,11 @@ describe("sixth review: reproductions", () => {
     for (const command of ["grep -r --include='.e[[:digit:]]v' x .", "grep -r --include='*.[[:alpha:]]d' x ."]) none("proj", command)
   })
 
+  test("a range end may be a collating symbol, as fnmatch reads it", () => {
+    for (const command of ["grep -r --include='.e[a-[.z.]]v' x .", "grep -r --include='.e[[.a.]-z]v' x .", "grep -r --exclude='.e[[.a.]-m]v' x .", "grep -r --include='.e[[:alpha:]-z]v' x ."]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["grep -r --exclude='.e[[.a.]-z]v' x .", "cat .e[a-]v"]) none("proj", command)
+  })
+
   test("a read through another variable, ${!v} with any operator or a name reference, is stopped: the guard cannot name what it reads", () => {
     for (const command of ['v=OPENAI_API_KEY[0]; printf "%s\\n" "${!v}"', 'declare -n r=OPENAI_API_KEY[0]; printf "%s\\n" "$r"', 'v=${X:-OPENAI_API_KEY}; echo "${!v}"', 'v="OPENAI_""API_KEY"; echo "${!v}"', 'v=OPENAI_API_KEY; printf "%s\\n" "${!v:-fallback}"', 'v=OPENAI_API_KEY; printf "%s\\n" "${!v@Q}"', 'v=OPENAI_API_K\\E\\Y; printf "%s\\n" "${!v}"', "v=$'OPENAI_API_\\x4bEY'; echo \"${!v}\"", 'v=PATH; echo "${!v}"', "declare -n r=PATH; echo $r"]) expect(refused("proj", command)).toEqual(yes(command))
     for (const command of ['echo "${!OPENAI*}"', 'echo "${!BASH@}"', 'a=(x y); echo "${!a[@]}"', "for i in 1; do X=OPENAI_API_KEY; done"]) none("proj", command)
