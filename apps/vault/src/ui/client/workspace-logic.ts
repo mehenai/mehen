@@ -269,9 +269,33 @@ export function homeInput(home: CredentialHome): { home: "private" | "workspace"
   return home.kind === "project" ? { home: "project", project: home.project } : { home: home.kind === "member" ? "private" : "workspace" }
 }
 
-// The body to start a credential by intake or by connection.
-export function credentialStart(provider: string, way: "intake" | "connect", slug: string, home: CredentialHome): { path: "/intakes" | "/connect"; body: Record<string, unknown> } {
-  return way === "intake" ? { path: "/intakes", body: { provider, slug, ...homeInput(home) } } : { path: "/connect", body: { provider, slug, requestClient: true, ...homeInput(home) } }
+export type CredentialStartWay = "intake" | "connect" | "custom-host" | "lease"
+
+// The body to start a credential by intake, custom host, lease-only kind or connection.
+export function credentialStart(
+  provider: string,
+  way: CredentialStartWay,
+  slug: string,
+  home: CredentialHome,
+  custom?: { host?: string; header?: string },
+): { path: "/intakes" | "/connect"; body: Record<string, unknown> } {
+  if (way === "connect") return { path: "/connect", body: { provider, slug, requestClient: true, ...homeInput(home) } }
+  if (way === "lease") return { path: "/intakes", body: { kind: provider, slug, ...homeInput(home) } }
+  if (way === "custom-host") {
+    const host = (custom?.host ?? "").trim().toLowerCase()
+    const header = (custom?.header ?? "").trim()
+    return {
+      path: "/intakes",
+      body: {
+        kind: provider,
+        slug,
+        binding: { hosts: [host], schemes: ["https"] },
+        ...(header !== "" ? { injection: { in: "header", name: header, format: "{key}" } } : {}),
+        ...homeInput(home),
+      },
+    }
+  }
+  return { path: "/intakes", body: { provider, slug, ...homeInput(home) } }
 }
 
 // Where a started credential is filled in: a connection that first needs

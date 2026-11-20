@@ -294,6 +294,10 @@ describe("layout and emphasis", () => {
     expect(between(list, '<header class="page-head"', "</header>")).toContain('data-action="open-add"')
     expect(list).toMatch(/<div class="sheet" data-region="add-credential" role="dialog" aria-modal="true" aria-labelledby="add-credential-title" hidden>/)
     expect(body("ws-credentials-adding")).not.toMatch(/data-region="add-credential"[^>]* hidden>/)
+    expect(body("ws-credentials-adding")).toContain('<optgroup label="Other">')
+    expect(body("ws-credentials-adding")).toContain('data-way="custom-host"')
+    expect(body("ws-credentials-adding")).toContain('data-way="lease"')
+    expect(body("ws-credentials-adding")).toContain('data-region="custom-host" hidden')
   })
 
   it("folds an investigator's facts about a credential under Details", () => {

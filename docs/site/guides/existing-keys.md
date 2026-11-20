@@ -21,7 +21,7 @@ Decide first who it belongs to. **Only me** (private, the default for an agent's
 ## Two ways in
 
 - **Ask your agent.** It runs `mehen request` (or `vault_request`) and gives you a link; you paste the key on that page. [Ask a human for a credential](request-a-credential.md) shows it from the agent's side.
-- **Add it yourself, no agent needed.** In the web app, open **Credentials** and choose **Add a credential**: pick the service (paste a key for a template, or sign in for an OAuth provider), name it, choose where it belongs, and Continue. The next page seals the key in your browser and you confirm with your passkey. A service with no template cannot start there: ask an agent on one of your machines to request it with the service's host (`--host`), and the page asks you to check that destination before anything is saved. A secret that only a program reads, such as `JWT_SECRET` or `DATABASE_URL`, needs no host: requested as a `generic` or `database-url` without `--host`, it is lease-only, and only `mehen run` delivers it.
+- **Add it yourself, no agent needed.** In the web app, open **Credentials** and choose **Add a credential**: pick a service (paste a key for a template, sign in for an OAuth provider, choose **Other API (custom host)** with its destination host and optional header, or choose **Database URL** / **Other secret** for a lease-only value delivered only by `mehen run`), name it, choose where it belongs, and Continue. The next page seals the key in your browser and you confirm with your passkey.
 
 ## Then clear out the `.env`
 
