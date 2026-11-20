@@ -6,8 +6,8 @@ import { usageError } from "../errors.ts"
 import { bodyForJson, rejectedHint, type UpstreamHead, fetchContext, parseSelectPath, readLimited, relayReplaces, relayRequest, replacingRefused, selectBody, upstreamHead } from "../operations.ts"
 import { mandateAllowed, mandateCapped } from "../mandate-operations.ts"
 import { type PostureAllowed, type RuleAllowed, postureAllowed, ruleEnded, rulesAllowed } from "../policy-operations.ts"
-import { claimSavedRequest, readSavedRequest } from "../replay-cache.ts"
-import { type VaultSession, sessionLabel } from "../session.ts"
+import { type ClaimedRequest, assertSavedBy, claimSavedRequest, neverSent, readSavedRequest } from "../replay-cache.ts"
+import { type VaultSession, sessionLabel, sessionWithLabel } from "../session.ts"
 import { retrySafeMethod } from "../vault-api.ts"
 import { type ToolCall, type ToolDeps, type ToolOutput, WORKSPACE_ARG, outputSchema, plain, tool } from "./shared.ts"
 import { FETCH_BODY_LIMIT } from "./constants.ts"
@@ -41,13 +41,19 @@ type RelayOptions = { select?: string | undefined; timeoutSeconds?: number | und
 
 // One request through the relay, as vault_fetch answers it. A held answer
 // saves the request for sending again once approved.
-async function relayOutput(session: VaultSession, request: RelayRequestInput, options: RelayOptions, deps: ToolDeps, call: ToolCall): Promise<ToolOutput> {
+async function relayOutput(session: VaultSession, source: RelayRequestInput | (() => Promise<ClaimedRequest>), options: RelayOptions, deps: ToolDeps, call: ToolCall): Promise<ToolOutput> {
   const select = options.select === undefined ? null : parseSelectPath(options.select, MCP_SELECT)
   const { api } = session
+  // A saved request is claimed only now, once every local check has passed.
+  const claimed = typeof source === "function" ? await source() : null
+  const request = claimed ? claimed.request : (source as RelayRequestInput)
   const timeout = options.timeoutSeconds === undefined ? null : AbortSignal.timeout(options.timeoutSeconds * 1000)
   const signal = timeout ? AbortSignal.any([call.signal, timeout]) : call.signal
+  let reached = false
   try {
     const response = await api.relay(request, { signal })
+    reached = true
+    await claimed?.spent()
     const upstream = upstreamHead(response)
     const rules = await rulesAllowed(api, response, request.item ?? null, signal)
     const postures = postureAllowed(response)
@@ -67,6 +73,7 @@ async function relayOutput(session: VaultSession, request: RelayRequestInput, op
     }
     return await fetchOutput(head, response, request.method)
   } catch (error) {
+    if (claimed && !reached) await (neverSent(error, request, signal) ? claimed.unsent() : claimed.spent())
     if (timeout?.aborted && !call.signal.aborted && options.timeoutSeconds !== undefined) throw timedOut(options.timeoutSeconds, request.method)
     const held = call.signal.aborted ? null : await heldRequestNote(deps.env, session, request, error)
     throw withReplayNote(replacingRefused(ruleEnded(await mandateCapped(api, error, signal)), request, "mcp"), held)
@@ -74,12 +81,15 @@ async function relayOutput(session: VaultSession, request: RelayRequestInput, op
 }
 
 // The request saved for an approval, sent again once from the enrolment
-// that saved it: vault_fetch with approval alone, and vault_wait with execute.
+// that saved it, signed with the session label it was held with:
+// vault_fetch with approval alone, and vault_wait with execute.
 export async function resumeVaultFetch(approval: string, deps: ToolDeps, call: ToolCall, options: RelayOptions & { workspace?: string | undefined } = {}): Promise<ToolOutput> {
+  if (options.select !== undefined) parseSelectPath(options.select, MCP_SELECT)
   const saved = await readSavedRequest(deps.env, approval)
-  const session = await deps.session(options.workspace ?? saved.workspace)
-  const request = await claimSavedRequest(deps.env, saved, replayOwner(session))
-  return relayOutput(session, request, options, deps, call)
+  const opened = await deps.session(options.workspace ?? saved.workspace)
+  assertSavedBy(saved, replayOwner(opened))
+  const session = await sessionWithLabel(deps.env, opened, saved.request.session ?? null)
+  return relayOutput(session, () => claimSavedRequest(deps.env, saved, replayOwner(session)), options, deps, call)
 }
 
 export const vaultFetch = tool({

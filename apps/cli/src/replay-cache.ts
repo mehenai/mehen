@@ -4,8 +4,10 @@
 // --resume, mehen wait --execute, vault_fetch with approval alone,
 // vault_wait with execute) and the agent never rebuilds it. Each file is
 // 0600 in a 0700 folder, holds the request as the agent sent it (references
-// and placeholders, never a credential value) and lasts an hour; a claim
-// removes it, so an approval is replayed once. Nothing in it is logged.
+// and placeholders, never a credential value) and lasts an hour. It is
+// claimed right before it is sent, after every local check, and removed
+// once it may have reached the vault, so an approval is replayed once.
+// Nothing in it is logged.
 
 import { readdir, rename, unlink } from "node:fs/promises"
 import { join } from "node:path"
@@ -16,6 +18,7 @@ import { readRegularFile, writeNewFile } from "./backup/files.ts"
 import type { Env } from "./config.ts"
 import { CliError, usageError } from "./errors.ts"
 import { REPLAY_DIR, assertPrivateDirs, ensureSafeRoot, mkdirPrivate, resolveHome } from "./home.ts"
+import { RelayOutcomeUnknownError, VaultApiError, VaultNetworkError, retrySafeMethod } from "./vault-api.ts"
 
 export { REPLAY_DIR }
 
@@ -126,17 +129,45 @@ export async function readSavedRequest(env: Env, approval: string, now = new Dat
   return saved.data
 }
 
-// Claims a saved request for sending: from the enrolment that saved it,
-// and only once, since the claim removes the file before anything is sent.
-// The request comes back with its approval.
-export async function claimSavedRequest(env: Env, saved: SavedRequest, owner: ReplayOwner): Promise<RelayRequestInput> {
+// The saved request is this enrolment's: checked before anything is
+// claimed, so a refusal changes nothing on disk.
+export function assertSavedBy(saved: SavedRequest, owner: ReplayOwner): void {
   if (saved.vault !== owner.vault || saved.workspace !== owner.workspace || saved.device !== owner.device) {
     throw rebuild(`The saved request for ${saved.approval} was made by another machine or workspace; mehen sends it again only from the one that made it.`)
   }
+}
+
+// A claimed request: its file moved aside, so no other call can claim it.
+// `spent` removes it once the request may have reached the vault; `unsent`
+// puts it back when it certainly did not.
+export type ClaimedRequest = { request: RelayRequestInput; spent(): Promise<void>; unsent(): Promise<void> }
+
+// Claims a saved request for sending, right before it is sent: from the
+// enrolment that saved it, and only once. The request comes back with its
+// approval.
+export async function claimSavedRequest(env: Env, saved: SavedRequest, owner: ReplayOwner): Promise<ClaimedRequest> {
+  assertSavedBy(saved, owner)
+  const path = savedRequestPath(env, saved.approval)
+  const claimed = `${path}.claimed.${process.pid}.${Date.now()}`
   try {
-    await unlink(savedRequestPath(env, saved.approval))
+    await rename(path, claimed)
   } catch {
     throw rebuild(`The saved request for ${saved.approval} was sent again already.`)
   }
-  return { ...saved.request, approval: saved.approval }
+  return {
+    request: { ...saved.request, approval: saved.approval },
+    spent: () => unlink(claimed).catch(() => undefined),
+    unsent: () => rename(claimed, path).catch(() => undefined),
+  }
+}
+
+// Whether a failed send certainly never reached the vault: anything thrown
+// before the connection (signing, say), or, for a write, a connection that
+// was refused (HttpVaultApi reports any other failure of a write as
+// RelayOutcomeUnknownError). A read's network error may have come after it
+// was sent, and a cancelled call may have gone too.
+export function neverSent(error: unknown, request: Pick<RelayRequestInput, "method">, signal: AbortSignal): boolean {
+  if (signal.aborted || error instanceof VaultApiError || error instanceof RelayOutcomeUnknownError) return false
+  if (error instanceof VaultNetworkError) return !retrySafeMethod(request.method)
+  return true
 }

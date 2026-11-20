@@ -4,7 +4,8 @@ import { join } from "node:path"
 import type { RelayRequestInput } from "@mehen/protocol/api"
 import { base64UrlEncode, utf8 } from "@mehen/protocol/bytes"
 import { CliError } from "./errors.ts"
-import { MAX_REPLAY_BODY_BYTES, REPLAY_TTL_SECONDS, claimSavedRequest, readSavedRequest, saveHeldRequest, savedRequestPath } from "./replay-cache.ts"
+import { MAX_REPLAY_BODY_BYTES, REPLAY_TTL_SECONDS, claimSavedRequest, neverSent, readSavedRequest, saveHeldRequest, savedRequestPath } from "./replay-cache.ts"
+import { RelayOutcomeUnknownError, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 import { tempDir } from "./testing/run-mehen.ts"
 
 let dir: Awaited<ReturnType<typeof tempDir>>
@@ -60,12 +61,35 @@ test("an id that is not an approval id is never a file name", async () => {
 test("a saved request is claimed once: the claim removes it, and a second is replay_missing", async () => {
   await saveHeldRequest(env, owner, "apr_1", request, now)
   const saved = await readSavedRequest(env, "apr_1", now)
-  expect(await claimSavedRequest(env, saved, owner)).toEqual({ ...request, approval: "apr_1" })
+  const claimed = await claimSavedRequest(env, saved, owner)
+  expect(claimed.request).toEqual({ ...request, approval: "apr_1" })
   await expect(stat(savedRequestPath(env, "apr_1"))).rejects.toMatchObject({ code: "ENOENT" })
+  await claimed.spent()
   const again = await refusal(readSavedRequest(env, "apr_1", now))
   expect(again.code).toBe("replay_missing")
   expect(again.next?.say).toContain("byte for byte")
   expect((await refusal(claimSavedRequest(env, saved, owner))).code).toBe("replay_missing")
+})
+
+// A claim that never reached the network (a local failure, a connection
+// refused for a write) puts the request back; one that may have is spent.
+test("a claim that was never sent is put back, and only it", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  const claimed = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  await claimed.unsent()
+  const again = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
+  expect(again.request.approval).toBe("apr_1")
+  await again.spent()
+  expect((await readdir(join(env.MEHEN_HOME as string, "pending-requests")))).toEqual([])
+  const write = { method: "POST" }, read = { method: "GET" }
+  const aborted = AbortSignal.abort()
+  const live = new AbortController().signal
+  expect(neverSent(new Error("signing failed"), write, live)).toBe(true)
+  expect(neverSent(new VaultNetworkError("refused"), write, live)).toBe(true)
+  expect(neverSent(new VaultNetworkError("refused"), read, live)).toBe(false)
+  expect(neverSent(new RelayOutcomeUnknownError("maybe"), write, live)).toBe(false)
+  expect(neverSent(new VaultApiError(403, { error: "forbidden", message: "no" }), write, live)).toBe(false)
+  expect(neverSent(new Error("aborted"), write, aborted)).toBe(false)
 })
 
 test("an entry past its hour is removed when read and is replay_missing", async () => {

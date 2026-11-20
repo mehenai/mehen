@@ -28,8 +28,8 @@ import {
 import { mandateAllowed, mandateAllowedText, mandateCapped } from "../mandate-operations.ts"
 import { note, printJson, writeStdout } from "../output.ts"
 import { postureAllowed, postureAllowedText, ruleAllowedText, ruleEnded, rulesAllowed } from "../policy-operations.ts"
-import { type ReplayNote, type ReplayOwner, claimSavedRequest, readSavedRequest, saveHeldRequest } from "../replay-cache.ts"
-import { type VaultSession, openSession, sessionLabel } from "../session.ts"
+import { type ClaimedRequest, type ReplayNote, type ReplayOwner, assertSavedBy, claimSavedRequest, neverSent, readSavedRequest, saveHeldRequest } from "../replay-cache.ts"
+import { type VaultSession, openSession, sessionLabel, sessionWithLabel } from "../session.ts"
 import { type VaultApi, VaultApiError, retrySafeMethod } from "../vault-api.ts"
 
 async function readData(data: string | null): Promise<Bytes | null> {
@@ -167,19 +167,34 @@ export function withReplayNote(error: unknown, note: ReplayNote | null): unknown
   return new CliError(failure.code, failure.message, failure.next, { ...failure.extras, replay: note })
 }
 
+// A request to send: given, or a saved one, claimed only once every local
+// step before the network has passed.
+export type FetchSource = RelayRequestInput | (() => Promise<ClaimedRequest>)
+
 // One request through the relay, its answer printed as the flags ask.
-export async function sendFetch(env: Env, session: VaultSession, request: RelayRequestInput, options: FetchOutputOptions): Promise<number> {
+export async function sendFetch(env: Env, session: VaultSession, source: FetchSource, options: FetchOutputOptions): Promise<number> {
   const { json, output, select, selectText, maxTime } = options
-  const item = request.item ?? null
   const file = output === null ? null : { handle: await openOutput(output), path: output }
+  let claimed: ClaimedRequest | null = null
+  try {
+    claimed = typeof source === "function" ? await source() : null
+  } catch (error) {
+    if (file) await file.handle.close().catch(() => undefined)
+    throw error
+  }
+  const request = claimed ? claimed.request : (source as RelayRequestInput)
+  const item = request.item ?? null
   let answered: number | null = null
   let failed = false
+  let reached = false
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | null = null
   const api: VaultApi = session.api
   try {
     timer = maxTime === null ? null : setTimeout(() => controller.abort(), maxTime * 1000)
     const response = await api.relay(request, { signal: controller.signal })
+    reached = true
+    await claimed?.spent()
     const upstream = upstreamHead(response)
     answered = upstream.status
     if (options.include) for (const line of headerLines(upstream)) note(line)
@@ -224,6 +239,7 @@ export async function sendFetch(env: Env, session: VaultSession, request: RelayR
     return EXIT.ok
   } catch (error) {
     failed = true
+    if (claimed && !reached) await (neverSent(error, request, controller.signal) ? claimed.unsent() : claimed.spent())
     if (controller.signal.aborted && maxTime !== null) throw timedOut(maxTime, request.method)
     const held = await heldRequestNote(env, session, request, error)
     throw withReplayNote(replacingRefused(ruleEnded(await mandateCapped(api, error, controller.signal)), request, "cli"), held)
@@ -234,12 +250,14 @@ export async function sendFetch(env: Env, session: VaultSession, request: RelayR
 }
 
 // The saved request for an approval, sent again once from the enrolment
-// that saved it; the claim removes it first, so nothing sends it twice.
+// that saved it, signed with the session label it was held with. Every
+// local check runs first; the claim comes right before sending.
 export async function resumeFetch(env: Env, approval: string, options: FetchOutputOptions = PLAIN_OUTPUT): Promise<number> {
   const saved = await readSavedRequest(env, approval)
-  const session = await openSession({ ...env, MEHEN_WORKSPACE: env.MEHEN_WORKSPACE ?? saved.workspace })
-  const request = await claimSavedRequest(env, saved, replayOwner(session))
-  return sendFetch(env, session, request, options)
+  const opened = await openSession({ ...env, MEHEN_WORKSPACE: env.MEHEN_WORKSPACE ?? saved.workspace })
+  assertSavedBy(saved, replayOwner(opened))
+  const session = await sessionWithLabel(env, opened, saved.request.session ?? null)
+  return sendFetch(env, session, () => claimSavedRequest(env, saved, replayOwner(session)), options)
 }
 
 // Flags that change the request, which --resume takes from what was saved.

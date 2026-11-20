@@ -174,3 +174,71 @@ test("vault_wait with execute sends the saved request once approved, and on a pu
   expect(push.structuredContent).toMatchObject({ id: "apr_p1", kind: "approval", push: { state: "done" } })
   expect(sent).toHaveLength(2)
 })
+
+// The session label is a display label, not authority: a replay is signed
+// with the label the request was held with, so the proof and the body
+// agree with what the human saw, whatever MEHEN_SESSION says now.
+test("a replay is signed with the saved session label, whether MEHEN_SESSION changed or is unset", async () => {
+  for (const now of [{ MEHEN_SESSION: "agent-2" }, {}] as Record<string, string>[]) {
+    sent = []
+    await held()
+    const { MEHEN_SESSION: _label, ...base } = env
+    const resumed = await runJv(["fetch", "--resume", "apr_1", "--json"], { ...base, ...now })
+    expect(resumed.code).toBe(EXIT.ok)
+    expect(sent[1]?.session).toBe("agent-1")
+    expect(vault.seen.at(-1)?.claims.sid).toBe("agent-1")
+  }
+  // Held with no label, resumed with one: the proof carries none either.
+  const { MEHEN_SESSION: _label, ...unlabelled } = env
+  sent = []
+  await runJv(["fetch", "gmail-support", "POST", "https://gmail.googleapis.com/send", "-d", "{}"], unlabelled)
+  expect(sent[0]?.session).toBeUndefined()
+  expect((await runJv(["fetch", "--resume", "apr_1"], { ...unlabelled, MEHEN_SESSION: "agent-3" })).code).toBe(EXIT.ok)
+  expect(sent[1]?.session).toBeUndefined()
+  expect(vault.seen.at(-1)?.claims.sid).toBeUndefined()
+})
+
+test("vault_fetch and vault_wait replay with the saved session label too", async () => {
+  await call("vault_fetch", { item: "gmail-support", method: "POST", url: "https://gmail.googleapis.com/send", body: "{}" })
+  env = { ...env, MEHEN_SESSION: "agent-2" }
+  expect((await call("vault_fetch", { approval: "apr_1" })).isError).toBe(false)
+  expect(sent[1]?.session).toBe("agent-1")
+  expect(vault.seen.at(-1)?.claims.sid).toBe("agent-1")
+  env = { ...env, MEHEN_SESSION: "agent-1" }
+  await call("vault_fetch", { item: "gmail-support", method: "POST", url: "https://gmail.googleapis.com/send", body: "{}" })
+  approved()
+  const { MEHEN_SESSION: _label, ...unset } = env
+  env = unset
+  expect((await call("vault_wait", { id: "apr_1", execute: true, timeoutSeconds: 5 })).isError).toBe(false)
+  expect(sent.at(-1)?.session).toBe("agent-1")
+  expect(vault.seen.at(-1)?.claims.sid).toBe("agent-1")
+})
+
+// Every check that can fail on this machine runs before the saved request
+// is claimed: a failure sends nothing and keeps it for a corrected call.
+test("a local failure before sending keeps the saved request, and the corrected call sends it exactly once", async () => {
+  await held()
+  const missing = join(dir.path, "no-such-folder", "out.json")
+  const refused = await runJv(["fetch", "--resume", "apr_1", "-o", missing, "--json"], env)
+  expect(refused.code).toBe(EXIT.usage)
+  for (const bad of [["--select", "["], ["--max-time", "0"], ["--select", "a", "-o", join(dir.path, "x")]]) expect((await runJv(["fetch", "--resume", "apr_1", ...bad, "--json"], env)).code).toBe(EXIT.usage)
+  expect(sent).toHaveLength(1)
+  expect((await stat(join(cache(), "apr_1.json"))).isFile()).toBe(true)
+  const written = join(dir.path, "out.json")
+  expect((await runJv(["fetch", "--resume", "apr_1", "-o", written], env)).code).toBe(EXIT.ok)
+  expect(await readFile(written, "utf8")).toBe('{"id":"msg_1"}')
+  expect(sent).toHaveLength(2)
+  expect((await runJv(["fetch", "--resume", "apr_1"], env)).code).toBe(EXIT.error)
+  expect(sent).toHaveLength(2)
+})
+
+test("vault_fetch with a bad select keeps the saved request, and the corrected call sends it exactly once", async () => {
+  await call("vault_fetch", { item: "gmail-support", method: "POST", url: "https://gmail.googleapis.com/send", body: "{}" })
+  for (const args of [{ approval: "apr_1", select: "[" }, { approval: "apr_1", timeoutSeconds: 0 }]) expect((await call("vault_fetch", args)).structuredContent).toMatchObject({ error: "usage" })
+  expect(sent).toHaveLength(1)
+  expect((await stat(join(cache(), "apr_1.json"))).isFile()).toBe(true)
+  expect((await call("vault_fetch", { approval: "apr_1", select: "id" })).structuredContent).toMatchObject({ selected: "msg_1", found: true })
+  expect(sent).toHaveLength(2)
+  expect((await call("vault_fetch", { approval: "apr_1" })).structuredContent).toMatchObject({ error: "replay_missing" })
+  expect(sent).toHaveLength(2)
+})

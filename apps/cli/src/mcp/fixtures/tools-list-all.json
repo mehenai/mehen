@@ -1043,9 +1043,9 @@
       },
       "annotations": {
         "readOnlyHint": false,
-        "destructiveHint": false,
-        "idempotentHint": true,
-        "openWorldHint": false
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
       }
     },
     {

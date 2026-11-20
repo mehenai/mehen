@@ -91,7 +91,9 @@ export const vaultWait = tool({
     execute: z.boolean().optional().describe("apr_ only: once approved, send the saved request and answer with its result"),
     workspace: WORKSPACE_ARG,
   }),
-  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  // With execute, a wait can send a saved write: the conservative hints,
+  // as vault_fetch has.
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async call(args, deps, call) {
     const target = waitTarget(args.id)
     const now = new Date()
