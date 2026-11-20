@@ -35,7 +35,7 @@ import type { z } from "zod"
 import { relativeExpiry } from "./ask.ts"
 import { CliError, outcomeUnknown, usageError } from "./errors.ts"
 import { MANDATES_OFF_LINE } from "./mandate-operations.ts"
-import { type VaultApi, VaultApiError, VaultNetworkError, retrySafeMethod } from "./vault-api.ts"
+import { RelayOutcomeUnknownError, type VaultApi, VaultApiError, VaultNetworkError, retrySafeMethod } from "./vault-api.ts"
 
 export function zodMessage(error: z.ZodError): string {
   return error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message)).join("; ")
@@ -767,7 +767,8 @@ export async function waitFor(api: VaultApi, id: string, options: WaitOptions): 
       if (pollTimeout?.aborted) break
       // A held poll whose connection dropped (an idle timeout at a server or
       // proxy): poll again, with a proof of its own, never the spent one.
-      if (longPoll && error instanceof VaultNetworkError && Date.now() - started >= DROPPED_POLL_MS && Date.now() < deadline) continue
+      // Never an outcome mehen cannot know: that is a write's, never redialled.
+      if (longPoll && error instanceof VaultNetworkError && !(error instanceof RelayOutcomeUnknownError) && Date.now() - started >= DROPPED_POLL_MS && Date.now() < deadline) continue
       throw error instanceof VaultApiError && error.body.error === "not_found" ? waitNotFound(target, id, error) : error
     }
     const result = settle(target.kind, id, value, options.ledger)

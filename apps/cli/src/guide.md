@@ -81,7 +81,7 @@ Without `mandateCover`, no mandate would cover the request: do not propose one. 
 
 ## Several writes at once
 
-`mehen plan submit <plan.json> --json` sends up to 20 requests to the vault, which checks each without sending any upstream and holds those that need a human in one bundle (`bnd_`) at one link; the ask's check is every request's binding code in order. `mehen wait <bnd_id> --timeout 60 --json` follows it; then send each request with its `repeat` command. A denial names the approved ones, which stay usable. `mehen check --plan <plan.json>` says first how many would go through, ask or be refused.
+`mehen plan submit <plan.json> --json` sends up to 20 requests to the vault, which checks each without sending any upstream and holds those that need a human in one bundle (`bnd_`) at one link; the ask's check is the bundle's one code (from an older vault, every request's binding code in order): relay `ask.check` as it is. `mehen wait <bnd_id> --timeout 60 --json` follows it; then send each request with its `repeat` command. A denial names the approved ones, which stay usable. `mehen check --plan <plan.json>` says first how many would go through, ask or be refused.
 
 ## Mandates
 
