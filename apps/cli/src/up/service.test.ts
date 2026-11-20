@@ -457,20 +457,24 @@ describe("mehen up guard defaults", () => {
     expect(() => parseUpGuard("strict")).toThrow(CliError)
   })
 
-  test("a fresh home starts at warn; re-runs keep an existing choice; explicit --guard overrides", () => {
-    const dir = tempDir("mehen-up-guard-")
-    expect(ensureUpGuardLevel(dir, null)).toBe("warn")
-    const path = join(dir, "guard.json")
-    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "warn" })
-    expect(statSync(path).mode & 0o777).toBe(0o600)
+  test("a fresh home starts at warn; re-runs keep an existing choice; explicit --guard overrides", async () => {
+    const dir = await tempDir()
+    try {
+      expect(ensureUpGuardLevel(dir.path, null)).toBe("warn")
+      const path = join(dir.path, "guard.json")
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "warn" })
+      expect(statSync(path).mode & 0o777).toBe(0o600)
 
-    // Re-running with a saved choice leaves it alone.
-    writeFileSync(path, '{"level":"block"}\n', { mode: 0o600 })
-    expect(ensureUpGuardLevel(dir, null)).toBeNull()
-    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "block" })
+      // Re-running with a saved choice leaves it alone.
+      writeFileSync(path, '{"level":"block"}\n', { mode: 0o600 })
+      expect(ensureUpGuardLevel(dir.path, null)).toBeNull()
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "block" })
 
-    // Explicit --guard overrides.
-    expect(ensureUpGuardLevel(dir, "off")).toBe("off")
-    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "off" })
+      // Explicit --guard overrides.
+      expect(ensureUpGuardLevel(dir.path, "off")).toBe("off")
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ level: "off" })
+    } finally {
+      await dir.remove()
+    }
   })
 })
