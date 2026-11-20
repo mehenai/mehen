@@ -316,7 +316,7 @@ describe("mehen fetch", () => {
         if (code === "frozen") expect(human.stderr).toContain(`  open:    ${vault.url}/w/mock-space/`)
         else expect(human.stderr).not.toContain("open: ")
       }
-    })
+    }, 20_000) // six refusals, each a CLI run twice: slow on a loaded runner
   }
 
   test("a refusal of any code with a foreign next.url never prints or returns the link", async () => {

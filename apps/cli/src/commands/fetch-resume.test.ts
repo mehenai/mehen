@@ -69,7 +69,8 @@ test("mehen fetch --resume sends the identical request once, with its approval, 
   expect(resumed.stdout).toBe('{"id":"msg_1"}')
   expect(sent).toHaveLength(2)
   expect(sent[1]).toEqual({ ...first, approval: "apr_1" })
-  await expect(stat(join(cache(), "apr_1.json"))).rejects.toMatchObject({ code: "ENOENT" })
+  // The request stays where it was; the marker spends the approval.
+  expect((await stat(join(cache(), "apr_1.spent"))).isFile()).toBe(true)
   const again = await runJv(["fetch", "--resume", "apr_1", "--json"], env)
   expect(again.code).toBe(EXIT.error)
   expect(json(again)).toMatchObject({ error: "replay_missing", next: { say: expect.stringContaining("byte for byte") } })
@@ -263,7 +264,14 @@ test("an identical request held again after its approval was sent again is not s
   await held()
   expect((await runJv(["fetch", "--resume", "apr_1"], env)).code).toBe(EXIT.ok)
   const again = await held(["--json"])
-  expect(json(again)).toMatchObject({ error: "approval_required", approval: "apr_1", replay: { saved: false, reason: expect.stringContaining("already sent again") } })
+  expect(json(again)).toMatchObject({ error: "approval_required", approval: "apr_1", replay: { saved: false, reason: "spent" } })
   expect((await runJv(["fetch", "--resume", "apr_1", "--json"], env)).code).toBe(EXIT.error)
+  expect(sent.filter((request) => request.approval === "apr_1")).toHaveLength(1)
+})
+
+test("two resumes at once send the request exactly once", async () => {
+  await held()
+  const results = await Promise.all([runJv(["fetch", "--resume", "apr_1"], env), runJv(["fetch", "--resume", "apr_1"], env)])
+  expect(results.map((result) => result.code).sort()).toEqual([EXIT.ok, EXIT.error])
   expect(sent.filter((request) => request.approval === "apr_1")).toHaveLength(1)
 })
