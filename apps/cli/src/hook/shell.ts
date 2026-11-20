@@ -646,9 +646,11 @@ export function logicalText(s: string): string {
     let wordStart = true
     let depth = 0
     const docs: HereDoc[] = []
-    const nested = (open: string, close: ")" | "`") => {
+    // A substitution opening at i, its opener `open` ending at `body` (a
+    // continuation may sit between $ and its parenthesis).
+    const nested = (open: string, body: number, close: ")" | "`") => {
       out += open
-      i += open.length
+      i = body
       if (level >= MAX_LOGICAL_DEPTH) {
         out += s.slice(i)
         i = s.length
@@ -673,13 +675,15 @@ export function logicalText(s: string): string {
         i += 2
         continue
       }
-      if (c === "'" || (c === "$" && s[i + 1] === "'")) {
-        // As written to the closing quote; in $'...' a backslash escapes.
+      if (c === "'" || (c === "$" && s[skipContinuations(s, i + 1)] === "'")) {
+        // As written to the closing quote; in $'...' (a continuation may sit
+        // between the $ and the quote) a backslash escapes.
         const ansi = c === "$"
-        let j = i + (ansi ? 2 : 1)
+        const quote = ansi ? skipContinuations(s, i + 1) : i
+        let j = quote + 1
         while (j < s.length && s[j] !== "'") j += ansi && s[j] === "\\" ? 2 : 1
         const end = Math.min(j + 1, s.length)
-        out += s.slice(i, end)
+        out += (ansi ? "$" : "") + s.slice(quote, end)
         i = end
         wordStart = false
         continue
@@ -691,8 +695,8 @@ export function logicalText(s: string): string {
           if (s[i] === "\\") {
             if (s[i + 1] !== "\n") out += s.slice(i, i + 2)
             i += 2
-          } else if (s[i] === "$" && s[i + 1] === "(") nested("$(", ")")
-          else if (s[i] === "`") nested("`", "`")
+          } else if (s[i] === "$" && s[skipContinuations(s, i + 1)] === "(") nested("$(", skipContinuations(s, i + 1) + 1, ")")
+          else if (s[i] === "`") nested("`", i + 1, "`")
           else {
             out += s[i]
             i++
@@ -705,13 +709,13 @@ export function logicalText(s: string): string {
         wordStart = false
         continue
       }
-      if (c === "$" && s[i + 1] === "(") {
-        nested("$(", ")")
+      if (c === "$" && s[skipContinuations(s, i + 1)] === "(") {
+        nested("$(", skipContinuations(s, i + 1) + 1, ")")
         wordStart = false
         continue
       }
       if (c === "`") {
-        nested("`", "`")
+        nested("`", i + 1, "`")
         wordStart = false
         continue
       }
