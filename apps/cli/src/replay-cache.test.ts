@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { chmod, readFile, readdir, stat, symlink, utimes, writeFile } from "node:fs/promises"
+import { chmod, mkdir, readFile, readdir, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { RelayRequestInput } from "@mehen/protocol/api"
 import { base64UrlEncode, utf8 } from "@mehen/protocol/bytes"
 import { CliError } from "./errors.ts"
-import { MAX_REPLAY_BODY_BYTES, REPLAY_TTL_SECONDS, claimSavedRequest, neverSent, readSavedRequest, saveHeldRequest, savedRequestPath } from "./replay-cache.ts"
+import { MAX_REPLAY_BODY_BYTES, REPLAY_TTL_SECONDS, SWEEP_BUDGET, claimSavedRequest, neverSent, readSavedRequest, saveHeldRequest, savedRequestPath, withApprovalLock } from "./replay-cache.ts"
 import { RelayOutcomeUnknownError, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 import { tempDir } from "./testing/run-mehen.ts"
 
@@ -81,7 +81,7 @@ test("a claim that was never sent is put back, and only it", async () => {
   expect(again.request.approval).toBe("apr_1")
   await again.spent()
   // The marker stays for the hour, so the approval is not saved again.
-  expect((await readdir(join(env.MEHEN_HOME as string, "pending-requests")))).toEqual(["apr_1.spent"])
+  expect((await readdir(join(env.MEHEN_HOME as string, "pending-requests"))).filter((name) => name !== ".swept")).toEqual(["apr_1.spent"])
   const write = { method: "POST" }, read = { method: "GET" }
   const aborted = AbortSignal.abort()
   const live = new AbortController().signal
@@ -134,8 +134,9 @@ test("saving sweeps entries past their hour, and leaves newer ones", async () =>
   await saveHeldRequest(env, owner, "apr_new", request, now)
   const old = new Date(now.getTime() - 2 * REPLAY_TTL_SECONDS * 1000)
   await utimes(savedRequestPath(env, "apr_old"), old, old)
-  await saveHeldRequest(env, owner, "apr_third", request, now)
-  expect((await readdir(join(env.MEHEN_HOME as string, "pending-requests"))).sort()).toEqual(["apr_new.json", "apr_third.json"])
+  // A minute on, the next save sweeps again.
+  await saveHeldRequest(env, owner, "apr_third", request, new Date(now.getTime() + 61_000))
+  expect((await readdir(join(env.MEHEN_HOME as string, "pending-requests"))).filter((name) => name !== ".swept").sort()).toEqual(["apr_new.json", "apr_third.json"])
 })
 
 // The vault reuses one pending approval for identical asks, so a duplicate
@@ -180,20 +181,111 @@ test("a restore puts back only its own claim, and never once a newer claim of th
   expect((await saveHeldRequest(env, owner, "apr_1", request, now)).saved).toBe(false)
 })
 
-test("a lock left by a stopped process is broken once it is stale, and markers and aside files are swept after the hour", async () => {
+// A lock is never broken by age: its holders only rename and write small
+// files, so a contender waits about two seconds and then fails closed.
+test("two contenders for one approval's lock are never both in", async () => {
+  await mkdir(join(env.MEHEN_HOME as string, "pending-requests"), { recursive: true, mode: 0o700 })
+  const events: string[] = []
+  let release: () => void = () => undefined
+  const barrier = new Promise<void>((resolve) => (release = resolve))
+  let entered: () => void = () => undefined
+  const inside = new Promise<void>((resolve) => (entered = resolve))
+  const a = withApprovalLock(env, "apr_1", async () => {
+    events.push("a in")
+    entered()
+    await barrier
+    events.push("a out")
+  })
+  await inside
+  const b = withApprovalLock(env, "apr_1", async () => {
+    events.push("b in")
+  })
+  await Bun.sleep(100)
+  expect(events).toEqual(["a in"])
+  release()
+  await Promise.all([a, b])
+  expect(events).toEqual(["a in", "a out", "b in"])
+})
+
+test("a lock a crashed holder left, however old, is replay_locked naming its path, pid and host, and a save is not saved: locked", async () => {
   await saveHeldRequest(env, owner, "apr_1", request, now)
+  const lock = join(env.MEHEN_HOME as string, "pending-requests", "apr_1.lock")
+  await writeFile(lock, `${JSON.stringify({ token: "crashed", pid: 4242, host: "old-box" })}\n`, { mode: 0o600 })
+  const old = new Date(Date.now() - 2 * REPLAY_TTL_SECONDS * 1000)
+  await utimes(lock, old, old)
+  const started = Date.now()
+  const locked = await refusal(claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner))
+  expect(Date.now() - started).toBeGreaterThanOrEqual(1500)
+  expect(locked.code).toBe("replay_locked")
+  for (const part of [lock, "4242", "old-box"]) expect(locked.message).toContain(part)
+  expect(locked.next?.say).toContain(`delete ${lock}`)
+  expect(await saveHeldRequest(env, owner, "apr_1", request, now)).toEqual({ saved: false, reason: "locked" })
+  // Nothing broke the lock, the sweep included, and the saved request is as it was.
+  expect((await stat(lock)).isFile()).toBe(true)
+  expect((await stat(savedRequestPath(env, "apr_1"))).isFile()).toBe(true)
+})
+
+test("a holder releases only its own lock", async () => {
+  await mkdir(join(env.MEHEN_HOME as string, "pending-requests"), { recursive: true, mode: 0o700 })
+  const lock = join(env.MEHEN_HOME as string, "pending-requests", "apr_1.lock")
+  await withApprovalLock(env, "apr_1", async () => {
+    // Someone replaced the lock under this holder (by hand, say).
+    await unlink(lock)
+    await writeFile(lock, `${JSON.stringify({ token: "someone-else", pid: 1, host: "h" })}\n`, { mode: 0o600 })
+  })
+  expect(JSON.parse(await readFile(lock, "utf8"))).toMatchObject({ token: "someone-else" })
+  await unlink(lock)
+  await withApprovalLock(env, "apr_1", async () => undefined)
+  await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" })
+})
+
+// A marker or lock is read as any other file mehen keeps there: a regular
+// file this user owns, nobody else can open, small, with a token mehen wrote.
+test("a marker that is a link, not a regular file, open to others, oversized or not mehen's refuses the claim and the save", async () => {
   const folder = join(env.MEHEN_HOME as string, "pending-requests")
-  await writeFile(join(folder, "apr_1.lock"), "", { mode: 0o600 })
-  const stale = new Date(Date.now() - 60_000)
-  await utimes(join(folder, "apr_1.lock"), stale, stale)
-  const claimed = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner)
-  await claimed.spent()
-  expect((await readdir(folder)).sort()).toEqual(["apr_1.spent"])
-  const old = new Date(now.getTime() - 2 * REPLAY_TTL_SECONDS * 1000)
-  for (const name of ["apr_1.spent", "apr_9.json.claimed.1.1", "apr_8.lock"]) {
-    await writeFile(join(folder, name), "", { mode: 0o600 }).catch(() => undefined)
-    await utimes(join(folder, name), old, old)
+  const marker = join(folder, "apr_1.spent")
+  const cases: [string, () => Promise<void>][] = [
+    ["link", () => symlink(join(dir.path, "elsewhere"), marker)],
+    ["fifo", async () => { expect(Bun.spawnSync(["mkfifo", "-m", "600", marker]).exitCode).toBe(0) }],
+    ["open", () => writeFile(marker, "1.1.abc", { mode: 0o644 }).then(() => chmod(marker, 0o644))],
+    ["large", () => writeFile(marker, "x".repeat(4096), { mode: 0o600 })],
+    ["foreign", () => writeFile(marker, "not a token\n", { mode: 0o600 })],
+  ]
+  for (const [name, make] of cases) {
+    await saveHeldRequest(env, owner, "apr_1", request, now)
+    await make()
+    const claim = await refusal(claimSavedRequest(env, await readSavedRequest(env, "apr_1", now), owner))
+    expect(claim.code, name).toBe("failed")
+    expect(claim.message, name).toContain(marker)
+    const note = await saveHeldRequest(env, owner, "apr_1", request, now)
+    expect(note.saved, name).toBe(false)
+    expect((await stat(savedRequestPath(env, "apr_1"))).isFile(), name).toBe(true)
+    await unlink(marker)
   }
+})
+
+// The sweep is throttled to once a minute and examines a bounded number of
+// entries, so one save never walks a folder of any size.
+test("one save examines at most the sweep's budget, sweeps at most once a minute, and never removes a lock", async () => {
+  const folder = join(env.MEHEN_HOME as string, "pending-requests")
+  await mkdir(folder, { recursive: true, mode: 0o700 })
+  const old = new Date(now.getTime() - 2 * REPLAY_TTL_SECONDS * 1000)
+  const count = SWEEP_BUDGET + 100
+  for (let i = 0; i < count; i++) {
+    const path = join(folder, `apr_old${i}.json`)
+    await writeFile(path, "{}", { mode: 0o600 })
+    await utimes(path, old, old)
+  }
+  await writeFile(join(folder, "apr_held.lock"), "{}", { mode: 0o600 })
+  await utimes(join(folder, "apr_held.lock"), old, old)
+  const left = async () => (await readdir(folder)).filter((name) => name.startsWith("apr_old")).length
   await saveHeldRequest(env, owner, "apr_new", request, now)
-  expect((await readdir(folder)).sort()).toEqual(["apr_new.json"])
+  const afterFirst = await left()
+  expect(afterFirst).toBeGreaterThanOrEqual(count - SWEEP_BUDGET)
+  expect(afterFirst).toBeLessThan(count)
+  await saveHeldRequest(env, owner, "apr_newer", request, new Date(now.getTime() + 30_000))
+  expect(await left()).toBe(afterFirst)
+  await saveHeldRequest(env, owner, "apr_newest", request, new Date(now.getTime() + 61_000))
+  expect(await left()).toBeLessThan(afterFirst)
+  expect((await stat(join(folder, "apr_held.lock"))).isFile()).toBe(true)
 })

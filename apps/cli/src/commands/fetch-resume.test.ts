@@ -53,7 +53,7 @@ test("a held fetch saves the request and says how to send it again once approved
   const result = await held(["--json"])
   expect(result.code).toBe(EXIT.approval)
   expect(json(result)).toMatchObject({ error: "approval_required", approval: "apr_1", replay: { saved: true, expiresAt: expect.any(String) } })
-  expect(await readdir(cache())).toEqual(["apr_1.json"])
+  expect((await readdir(cache())).filter((name) => name !== ".swept")).toEqual(["apr_1.json"])
   expect((await stat(join(cache(), "apr_1.json"))).mode & 0o777).toBe(0o600)
   const human = await held()
   // The folder is the root's own: the next command finds nothing to migrate.

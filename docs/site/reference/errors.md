@@ -440,6 +440,12 @@ Where [mandates](../concepts/mandates.md) are on, two more fields may come with 
 
 **What you do.** Build the request again and send it byte for byte from the machine that made it, with the approval id (`mehen fetch ... --approval <apr_id>`, or `approval` with the full request in `vault_fetch`). See [Sending an approved request again](../guide.md#sending-an-approved-request-again).
 
+### `replay_locked`
+
+**What it means.** Another `mehen` holds the lock for this approval's saved request (`MEHEN_HOME/pending-requests/<apr_id>.lock`), and it was still held after about two seconds, so nothing was claimed, sent or put back. The message names the lock and the pid and host written in it. A lock is never broken by its age: one left by a `mehen` that stopped stays until someone removes it.
+
+**What you do.** Wait for the other command and run this one again. If no other `mehen` is running (the pid is gone), delete the lock file the message names and run it again.
+
 ### `tool_not_served`
 
 **What it means.** An MCP client called a tool in a toolset this `mehen mcp` server was not started with. By default the server serves only the core toolset; the message names the toolset that has the tool. Nothing was sent.
