@@ -587,11 +587,6 @@ class Parser {
   }
 }
 
-// The command as bash reads it once its line continuations are gone: a
-// backslash before a newline is removed with the newline, except inside
-// single quotes or $'...', in a comment, and in the body of a quoted
-// here-document, as bash does. So `$\<newline>{!v}` is `${!v}` and
-// `$\<newline>OPENAI_API_KEY` expands the key.
 // A word with its quoting removed as bash removes it: a backslash makes
 // the next character plain, '...' is taken as written, and in "..." a
 // backslash escapes only $, `, " and itself. A quote that was escaped is
@@ -623,150 +618,196 @@ function skipContinuations(s: string, at: number): number {
   return j
 }
 
+// The command as bash reads it once its line continuations are gone: a
+// backslash before a newline is removed with the newline, except inside
+// single quotes or $'...', in a comment, and in the body of a quoted
+// here-document, as bash does. A command substitution, $(...) or `...`, is
+// a shell of its own, even inside double quotes, with its own quotes,
+// comments and here-documents. So `$\<newline>{!v}` is `${!v}` and
+// `$\<newline>OPENAI_API_KEY` expands the key. Past MAX_LOGICAL_DEPTH
+// nested substitutions the rest is left as written; the parser refuses a
+// command nested that deep.
+const MAX_LOGICAL_DEPTH = 64
+
+type HereDoc = { delimiter: string; strip: boolean; quoted: boolean }
+
 export function logicalText(s: string): string {
-  let out = ""
   let i = 0
-  let wordStart = true
-  const docs: { delimiter: string; strip: boolean; quoted: boolean }[] = []
-  // Copies a quoted run whose opening is `open` characters long, to its
-  // closing quote: backslash escapes the next character when `escapes`,
-  // and drops with a newline when `continuations`.
-  const copyQuoted = (open: number, close: string, escapes: boolean, continuations: boolean) => {
-    out += s.slice(i, i + open)
-    i += open
-    while (i < s.length && s[i] !== close) {
-      if (escapes && s[i] === "\\") {
-        if (!(continuations && s[i + 1] === "\n")) out += s.slice(i, i + 2)
+  // One shell's text, from i up to `stop` (the ) of $(...) or the closing
+  // backquote), which it leaves for the caller. Here-documents still open
+  // when it stops are handed to the caller, whose next newline reads them.
+  const scan = (stop: ")" | "`" | null, level: number, outer: HereDoc[]): string => {
+    let out = ""
+    let wordStart = true
+    let depth = 0
+    const docs: HereDoc[] = []
+    const nested = (open: string, close: ")" | "`") => {
+      out += open
+      i += open.length
+      if (level >= MAX_LOGICAL_DEPTH) {
+        out += s.slice(i)
+        i = s.length
+        return
+      }
+      out += scan(close, level + 1, docs)
+      if (s[i] === close) {
+        out += close
+        i++
+      }
+    }
+    while (i < s.length) {
+      const c = s[i] as string
+      if ((stop === ")" && c === ")" && depth === 0) || (stop === "`" && c === "`")) break
+      if (c === "\\") {
+        // A continuation vanishes, so whether a word starts here is as it
+        // was before it; an escaped character is part of a word.
+        if (s[i + 1] !== "\n") {
+          out += s.slice(i, i + 2)
+          wordStart = false
+        }
         i += 2
         continue
       }
-      out += s[i]
-      i++
-    }
-    if (i < s.length) {
-      out += s[i]
-      i++
-    }
-  }
-  while (i < s.length) {
-    const c = s[i] as string
-    if (c === "\\") {
-      // A continuation vanishes, so whether a word starts here is as it was
-      // before it; an escaped character is part of a word.
-      if (s[i + 1] !== "\n") {
-        out += s.slice(i, i + 2)
+      if (c === "'" || (c === "$" && s[i + 1] === "'")) {
+        // As written to the closing quote; in $'...' a backslash escapes.
+        const ansi = c === "$"
+        let j = i + (ansi ? 2 : 1)
+        while (j < s.length && s[j] !== "'") j += ansi && s[j] === "\\" ? 2 : 1
+        const end = Math.min(j + 1, s.length)
+        out += s.slice(i, end)
+        i = end
         wordStart = false
+        continue
       }
-      i += 2
-      continue
-    }
-    if (c === "'") {
-      copyQuoted(1, "'", false, false)
-      wordStart = false
-      continue
-    }
-    if (c === "$" && s[i + 1] === "'") {
-      copyQuoted(2, "'", true, false)
-      wordStart = false
-      continue
-    }
-    if (c === '"') {
-      copyQuoted(1, '"', true, true)
-      wordStart = false
-      continue
-    }
-    if (c === "#" && wordStart) {
-      const eol = s.indexOf("\n", i)
-      const end = eol === -1 ? s.length : eol
-      out += s.slice(i, end)
-      i = end
-      continue
-    }
-    // A here-document: `<<` or `<<-` and its delimiter word, any of them
-    // split by continuations, which bash removes first. The delimiter is
-    // quoted if any part of it is, continuations aside.
-    const second = skipContinuations(s, i + 1)
-    const third = skipContinuations(s, second + 1)
-    // A here-string, <<<, is one operator: its last two < never open a
-    // here-document.
-    if (c === "<" && s[second] === "<" && s[third] === "<") {
-      out += "<<<"
-      i = third + 1
-      wordStart = false
-      continue
-    }
-    if (c === "<" && s[second] === "<") {
-      let j = third
-      const strip = s[j] === "-"
-      if (strip) j = skipContinuations(s, j + 1)
-      let blanks = ""
-      while (s[j] === " " || s[j] === "\t" || (s[j] === "\\" && s[j + 1] === "\n")) {
-        if (s[j] === "\\") j += 2
-        else blanks += s[j++]
-      }
-      let raw = ""
-      while (j < s.length && !/[\s;&|<>()]/.test(s[j] as string)) {
-        if (s[j] === "\\" && s[j + 1] === "\n") j += 2
-        else if (s[j] === "'") {
-          const close = s.indexOf("'", j + 1)
-          const stop = close === -1 ? s.length : close + 1
-          raw += s.slice(j, stop)
-          j = stop
-        } else if (s[j] === '"') {
-          // To the closing quote, a backslash escaping the next character.
-          let k = j + 1
-          while (k < s.length && s[k] !== '"') k += s[k] === "\\" ? 2 : 1
-          const stop = Math.min(k + 1, s.length)
-          raw += s.slice(j, stop)
-          j = stop
-        } else {
-          const step = s[j] === "\\" ? 2 : 1
-          raw += s.slice(j, j + step)
-          j += step
-        }
-      }
-      docs.push({ delimiter: unquoteWord(raw), strip, quoted: /['"\\]/.test(raw) })
-      out += `<<${strip ? "-" : ""}${blanks}${raw}`
-      i = j
-      wordStart = false
-      continue
-    }
-    if (c === "\n") {
-      out += c
-      i++
-      wordStart = true
-      // The bodies of the here-documents this line opened, line by line: a
-      // quoted one as written, an unquoted one with its continuations gone.
-      for (const doc of docs) {
-        while (i < s.length) {
-          let line = ""
-          let ended = false
-          while (i < s.length) {
-            if (s[i] === "\n") {
-              i++
-              ended = true
-              break
-            }
-            if (!doc.quoted && s[i] === "\\") {
-              if (s[i + 1] !== "\n") line += s.slice(i, i + 2)
-              i += 2
-              continue
-            }
-            line += s[i]
+      if (c === '"') {
+        out += c
+        i++
+        while (i < s.length && s[i] !== '"') {
+          if (s[i] === "\\") {
+            if (s[i + 1] !== "\n") out += s.slice(i, i + 2)
+            i += 2
+          } else if (s[i] === "$" && s[i + 1] === "(") nested("$(", ")")
+          else if (s[i] === "`") nested("`", "`")
+          else {
+            out += s[i]
             i++
           }
-          out += ended ? `${line}\n` : line
-          if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delimiter) break
         }
+        if (i < s.length) {
+          out += s[i]
+          i++
+        }
+        wordStart = false
+        continue
       }
-      docs.length = 0
-      continue
+      if (c === "$" && s[i + 1] === "(") {
+        nested("$(", ")")
+        wordStart = false
+        continue
+      }
+      if (c === "`") {
+        nested("`", "`")
+        wordStart = false
+        continue
+      }
+      if (c === "#" && wordStart) {
+        let end = s.indexOf("\n", i)
+        if (end === -1) end = s.length
+        out += s.slice(i, end)
+        i = end
+        continue
+      }
+      const second = skipContinuations(s, i + 1)
+      const third = skipContinuations(s, second + 1)
+      // A here-string, <<<, is one operator: its last two < never open a
+      // here-document.
+      if (c === "<" && s[second] === "<" && s[third] === "<") {
+        out += "<<<"
+        i = third + 1
+        wordStart = false
+        continue
+      }
+      if (c === "<" && s[second] === "<") {
+        // A here-document: `<<` or `<<-` and its delimiter word, any of
+        // them split by continuations, which bash removes first. The
+        // delimiter is quoted if any part of it is, continuations aside.
+        let j = third
+        const strip = s[j] === "-"
+        if (strip) j = skipContinuations(s, j + 1)
+        let blanks = ""
+        while (s[j] === " " || s[j] === "\t" || (s[j] === "\\" && s[j + 1] === "\n")) {
+          if (s[j] === "\\") j += 2
+          else blanks += s[j++]
+        }
+        let raw = ""
+        while (j < s.length && !/[\s;&|<>()`]/.test(s[j] as string)) {
+          if (s[j] === "\\" && s[j + 1] === "\n") j += 2
+          else if (s[j] === "'") {
+            const close = s.indexOf("'", j + 1)
+            const end = close === -1 ? s.length : close + 1
+            raw += s.slice(j, end)
+            j = end
+          } else if (s[j] === '"') {
+            let k = j + 1
+            while (k < s.length && s[k] !== '"') k += s[k] === "\\" ? 2 : 1
+            const end = Math.min(k + 1, s.length)
+            raw += s.slice(j, end)
+            j = end
+          } else {
+            const step = s[j] === "\\" ? 2 : 1
+            raw += s.slice(j, j + step)
+            j += step
+          }
+        }
+        docs.push({ delimiter: unquoteWord(raw), strip, quoted: /['"\\]/.test(raw) })
+        out += `<<${strip ? "-" : ""}${blanks}${raw}`
+        i = j
+        wordStart = false
+        continue
+      }
+      if (c === "\n") {
+        out += c
+        i++
+        wordStart = true
+        // The bodies of the here-documents opened before this newline,
+        // line by line: a quoted one as written, an unquoted one with its
+        // continuations gone.
+        for (const doc of docs) {
+          while (i < s.length) {
+            let line = ""
+            let ended = false
+            while (i < s.length) {
+              if (s[i] === "\n") {
+                i++
+                ended = true
+                break
+              }
+              if (!doc.quoted && s[i] === "\\") {
+                if (s[i + 1] !== "\n") line += s.slice(i, i + 2)
+                i += 2
+                continue
+              }
+              line += s[i]
+              i++
+            }
+            out += ended ? `${line}\n` : line
+            if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delimiter) break
+          }
+        }
+        docs.length = 0
+        continue
+      }
+      if (c === "(") depth++
+      else if (c === ")") depth--
+      out += c
+      i++
+      wordStart = /[\s;&|()]/.test(c)
     }
-    out += c
-    i++
-    wordStart = /[\s;&|()]/.test(c)
+    outer.push(...docs)
+    return out
   }
-  return out
+  const rest: HereDoc[] = []
+  return scan(null, 0, rest)
 }
 
 export function parseShell(command: string, home: string): ShellNode[] {
