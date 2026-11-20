@@ -1073,7 +1073,7 @@ describe("sixth review: reproductions", () => {
 
   test("a key variable read by name inside arithmetic is a key variable expanded", () => {
     for (const command of [`printf '%s\\n' "$((OPENAI_API_KEY))"`, "echo $(( GITHUB_TOKEN + 0 ))", "cat <<EOF\n$((STRIPE_SECRET_KEY))\nEOF", "echo $[OPENAI_API_KEY]", "let x=OPENAI_API_KEY; echo $x", 'declare -n r=OPENAI_API_KEY; echo "$r"', 'v=OPENAI_API_KEY; echo "${!v}"']) expect(refused("proj", command)).toEqual(yes(command))
-    for (const command of ['echo "$((1 + 2))"', "echo $((n * 2))", "echo $((0x1F))", "echo $[1 + 2]", "let n=n+1", "declare -n r=PATH; echo $r"]) none("proj", command)
+    for (const command of ['echo "$((1 + 2))"', "echo $((n * 2))", "echo $((0x1F))", "echo $[1 + 2]", "let n=n+1"]) none("proj", command)
   })
 
   test("a key variable's name as plain text is not a read, even outside the grammar; given as a value or in (( )) it is", () => {
@@ -1092,9 +1092,9 @@ describe("sixth review: reproductions", () => {
     for (const command of ["grep -r --include='.e[[:digit:]]v' x .", "grep -r --include='*.[[:alpha:]]d' x ."]) none("proj", command)
   })
 
-  test("with ${!v} or a name reference, any key variable named on the line, however spelt, counts as read", () => {
-    for (const command of ['v=OPENAI_API_KEY[0]; printf "%s\\n" "${!v}"', 'declare -n r=OPENAI_API_KEY[0]; printf "%s\\n" "$r"', 'v=${X:-OPENAI_API_KEY}; echo "${!v}"', 'v="OPENAI_""API_KEY"; echo "${!v}"']) expect(refused("proj", command)).toEqual(yes(command))
-    for (const command of ['echo "${!OPENAI*}"', 'v=PATH; echo "${!v}"', "declare -n r=PATH; echo $r", "for i in 1; do X=OPENAI_API_KEY; done"]) none("proj", command)
+  test("a read through another variable, ${!v} with any operator or a name reference, is stopped: the guard cannot name what it reads", () => {
+    for (const command of ['v=OPENAI_API_KEY[0]; printf "%s\\n" "${!v}"', 'declare -n r=OPENAI_API_KEY[0]; printf "%s\\n" "$r"', 'v=${X:-OPENAI_API_KEY}; echo "${!v}"', 'v="OPENAI_""API_KEY"; echo "${!v}"', 'v=OPENAI_API_KEY; printf "%s\\n" "${!v:-fallback}"', 'v=OPENAI_API_KEY; printf "%s\\n" "${!v@Q}"', 'v=OPENAI_API_K\\E\\Y; printf "%s\\n" "${!v}"', "v=$'OPENAI_API_\\x4bEY'; echo \"${!v}\"", 'v=PATH; echo "${!v}"', "declare -n r=PATH; echo $r"]) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ['echo "${!OPENAI*}"', 'echo "${!BASH@}"', 'a=(x y); echo "${!a[@]}"', "for i in 1; do X=OPENAI_API_KEY; done"]) none("proj", command)
   })
 
   test("a class the guard cannot decide never hides a file: an --exclude it cannot decide leaves the file in", () => {
