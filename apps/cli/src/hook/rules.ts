@@ -1435,7 +1435,9 @@ function command(ctx: Context, state: State, node: CommandNode, producer: Comman
   const first = unwrapped.words[0]
   const name = first === undefined ? "the redirect" : first.dynamic ? "the command" : `\`${basename(first.text)}\``
   if (node.inputs.length || unwrapped.reads.length) ctx.reads = true
-  if (first && (first.dynamic || isReader(basename(first.text)))) ctx.reads = true
+  // A line of only NAME=value assignments runs no program, whatever the value.
+  const assignsOnly = unwrapped.words.length === 1 && first !== undefined && ASSIGNMENT.test(first.text)
+  if (first && !assignsOnly && (first.dynamic || isReader(basename(first.text)))) ctx.reads = true
   for (const input of node.inputs) if (judgeRead(ctx, state, state.cwds, name, input, true)) break
   if (unwrapped.refuse) {
     refuse(ctx, unwrapped.refuse)

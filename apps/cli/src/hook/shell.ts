@@ -24,6 +24,9 @@ export type Word = {
   process?: boolean
 }
 
+// The reserved words after which (( still starts an arithmetic command.
+const ARITHMETIC_AFTER = new Set(["if", "elif", "while", "until", "then", "do", "else", "!", "for", "time", "{"])
+
 // A variable whose name says it holds a key.
 export const KEY_VARIABLE = /^[A-Za-z0-9_]*(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)[A-Za-z0-9_]*$/i
 
@@ -162,14 +165,18 @@ class Parser {
         }
         continue
       }
-      if (c === "(" && this.s[this.i + 1] === "(" && !words.length) {
-        // (( ... )): an arithmetic command, which reads variables by name.
-        // It runs no program; the word stands for it, with the names it reads.
-        const word: Word = { text: "((", dynamic: false, glob: false, brace: false, pattern: "((", vars: [] }
-        this.arithmetic(word, nodes, 2)
-        word.dynamic = false
-        words.push(word)
-        continue
+      if (c === "(" && this.s[this.i + 1] === "(" && words.every((w) => !w.dynamic && ARITHMETIC_AFTER.has(w.text))) {
+        // (( ... )) where a command starts, after `if`, `while`, `for` and
+        // the like: an arithmetic command, which reads variables by name.
+        // It runs no program; the word stands for it, with the names it
+        // reads. When bash would not read it as arithmetic, it is subshells.
+        const end = this.arithmeticEnd(this.i + 2)
+        if (end !== -1) {
+          const word: Word = { text: "((", dynamic: false, glob: false, brace: false, pattern: "((", vars: [] }
+          this.arithmetic(word, nodes, this.i + 2, end)
+          words.push(word)
+          continue
+        }
       }
       if (c === "(") {
         this.i++
@@ -435,27 +442,41 @@ class Parser {
     word.dynamic = true
   }
 
-  // $(( ... )): arithmetic, read to its matching )). A command
-  // substitution inside it is not followed, and is refused.
-  private arithmetic(word: Word, nodes: ShellNode[], open = 3): void {
+  // Where (( or $(( ends, by bash's rule: the ) that matches the second (
+  // must be followed at once by another ), or bash reads the text as a
+  // subshell (or a command substitution holding one) instead. Quotes and
+  // escapes are skipped as bash skips them. -1 when it is not arithmetic.
+  private arithmeticEnd(from: number): number {
     const s = this.s
-    nodes.push({ kind: "unknown", why: "arithmetic" })
-    let depth = 2
-    let j = this.i + open
-    for (; j < s.length && depth > 0; j++) {
+    let depth = 1
+    for (let j = from; j < s.length; j++) {
       const c = s[j] as string
-      if (c === "(") depth++
-      else if (c === ")") depth--
-      else if (c === "`" || (c === "$" && s[j + 1] === "(" && s[j + 2] !== "(")) {
-        nodes.push({ kind: "unknown", why: "a command substitution inside $(( ))", runs: true })
-      }
+      if (c === "\\") j++
+      else if (c === "'") {
+        const close = s.indexOf("'", j + 1)
+        if (close === -1) return -1
+        j = close
+      } else if (c === '"') {
+        let k = j + 1
+        for (; k < s.length && s[k] !== '"'; k++) if (s[k] === "\\") k++
+        if (k >= s.length) return -1
+        j = k
+      } else if (c === "(") depth++
+      else if (c === ")" && --depth === 0) return s[j + 1] === ")" ? j : -1
     }
-    if (depth > 0) nodes.push({ kind: "unknown", why: "an unclosed $((", runs: true })
-    // Arithmetic reads a variable by its bare name, so every name in it
-    // counts as one the word expands.
-    for (const name of s.slice(this.i + open, j).match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) word.vars.push(name)
-    this.i = j
-    word.dynamic = true
+    return -1
+  }
+
+  // (( ... )) or $(( ... )), its text from `from` to `end`, the first of
+  // the two closing parentheses. A command substitution inside it is not
+  // followed, and is refused. Arithmetic reads a variable by its bare
+  // name, so every name in it counts as one the word expands.
+  private arithmetic(word: Word, nodes: ShellNode[], from: number, end: number): void {
+    nodes.push({ kind: "unknown", why: "arithmetic" })
+    const body = this.s.slice(from, end)
+    if (/`|\$\((?!\()/.test(body)) nodes.push({ kind: "unknown", why: "a command substitution inside $(( ))", runs: true })
+    for (const name of body.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) word.vars.push(name)
+    this.i = end + 2
   }
 
   // $[ ... ]: bash's old spelling of arithmetic, read to its matching ].
@@ -480,7 +501,14 @@ class Parser {
     const s = this.s
     const next = s[this.i + 1]
     if (next === "(") {
-      if (s[this.i + 2] === "(") return this.arithmetic(word, nodes)
+      if (s[this.i + 2] === "(") {
+        const end = this.arithmeticEnd(this.i + 3)
+        if (end !== -1) {
+          this.arithmetic(word, nodes, this.i + 3, end)
+          word.dynamic = true
+          return
+        }
+      }
       this.i += 2
       nodes.push({ kind: "open", op: "start", sub: true }, ...this.list(")"), { kind: "close" })
       word.dynamic = true

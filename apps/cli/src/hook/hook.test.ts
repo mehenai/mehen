@@ -1092,6 +1092,11 @@ describe("sixth review: reproductions", () => {
     expect(refused("proj", `cat ${"*".repeat(40)}.e*v`)).toEqual(yes(`cat ${"*".repeat(40)}.e*v`))
   })
 
+  test("(( )) after if, while or for is arithmetic; where bash would not read it as arithmetic it is subshells", () => {
+    for (const command of ['if (( n = DB_PASSWORD )); then echo "$n"; fi', 'for ((n = DB_PASSWORD; n; n=0)); do echo "$n"; done', "while (( DB_PASSWORD > 0 )); do break; done", "((cat .env); true)", "((cat .env) )", "echo $((cat .env); true)", '((cat ".env))"); true)']) expect(refused("proj", command)).toEqual(yes(command))
+    for (const command of ["while (( i < 10 )); do i=$((i+1)); done", "i=$((i+1))", "echo $(( (1+2) * 3 ))", "if (( 1 )); then echo hi; fi"]) none("proj", command)
+  })
+
   test("an integer variable evaluates a key variable named bare", () => {
     for (const command of ['declare -i n=DB_PASSWORD; echo "$n"', "typeset -i n; n=GITHUB_TOKEN+0; echo $n", "f() { local -i n=OPENAI_API_KEY; echo $n; }; f"]) expect(refused("proj", command)).toEqual(yes(command))
     for (const command of ["declare -i n=5; echo $n", "declare -i n=n+1"]) none("proj", command)
