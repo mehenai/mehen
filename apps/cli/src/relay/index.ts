@@ -4,7 +4,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { VaultApi } from "../vault-api.ts"
+import type { VaultApi, VaultApiError } from "../vault-api.ts"
 import { createRunCa } from "./ca.ts"
 import { type BaseUrlRoute, type ItemRoute, type RelaySeen, startLocalRelay } from "./relay.ts"
 import { loadSystemRoots } from "./system-roots.ts"
@@ -24,6 +24,8 @@ export type RunRelayOptions = {
   parentEnv: Record<string, string | undefined>
   // mehen run --stream-writes: pass every write's answer on as it comes.
   streamWrites?: boolean
+  // Each refusal the vault made for one of the child's requests.
+  onVaultRefusal?: (error: VaultApiError) => void
 }
 
 export type RunRelay = {
@@ -52,6 +54,7 @@ export async function startRunRelay(options: RunRelayOptions): Promise<RunRelay>
     baseUrls: options.baseUrls,
     ca,
     ...(itemRoutes.length > 0 ? { itemRoutes } : {}),
+    ...(options.onVaultRefusal ? { onVaultRefusal: options.onVaultRefusal } : {}),
     ...(options.streamWrites ? { streamWrites: true } : {}),
   })
   let dir: string | null = null
