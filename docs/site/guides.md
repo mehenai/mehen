@@ -29,6 +29,7 @@ Each guide answers one question, in the order you would meet it. Setting Mehen u
 - [Type a credential into a web page](guides/fill.md): how does an agent sign in to a page, or paste a key into a dashboard, without seeing the value?
 - [Put a credential into another service](guides/push.md): how does an agent get a secret into GitHub Actions, Vercel or a Cloudflare Worker without seeing the value?
 - [Project variables with mehen run](guides/projects.md): how do I give a coding project its variables without a `.env`?
+- [Which programs work with mehen run](guides/run-compatibility.md): which runtimes and HTTP clients work with placeholders, which do not, and what do I use instead?
 - [Move existing keys in](guides/existing-keys.md): I already have keys and `.env` files; how do I move them into Mehen?
 - [Bring a machine's credentials into Mehen](guides/adopt.md): I have `.env` files across my repos and services; how do I bring them all in at once?
 - [Back up a machine before adopting](guides/backup.md): how do I keep my own encrypted copy of every file `mehen adopt` reads?

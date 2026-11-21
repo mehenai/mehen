@@ -66,12 +66,18 @@ export type LocalRelayOptions = {
   answerLimits?: AnswerLimits
 }
 
+// What reached the relay so far. interceptHosts counts connections to an
+// intercept host rather than requests: a client that reached the relay but
+// refused the run CA did not bypass the proxy, and fails loudly by itself.
+export type RelaySeen = { interceptHosts: number; baseUrls: number }
+
 export type LocalRelay = {
   port: number
   // http://mehen:<proxy password>@127.0.0.1:<port>
   proxyUrl: string
   // http://127.0.0.1:<port>/r/<run secret>/<item><upstream path>
   baseUrl(item: string): string
+  seen(): RelaySeen
   close(): Promise<void>
 }
 
@@ -333,6 +339,7 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
   const sockets = new Set<net.Socket | tls.TLSSocket>()
   const ca = options.ca
   const limits = options.answerLimits ?? PROCESS_ANSWER_LIMITS
+  const seen: RelaySeen = { interceptHosts: 0, baseUrls: 0 }
   let port = 0
 
   const isFenced = (host: string) => options.fencedHosts.some((pattern) => hostMatches(pattern, host))
@@ -401,6 +408,7 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
         },
       }
     }
+    seen.baseUrls++
     return { relay: { run: options.run, method: head.method, url, headers: forwardableHeaders(head, ["authorization"]) } }
   }
 
@@ -558,6 +566,7 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
       return
     }
     if (isIntercepted(authority.host)) {
+      seen.interceptHosts++
       // The vault decides what a placeholder may do over plain HTTP.
       const route = (h: HttpHead): Routed => ({ relay: { run: options.run, method: h.method, url: url.href, headers: forwardableHeaders(h) } })
       await serveRequests(client, reader, head, route, true)
@@ -641,8 +650,10 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
       return
     }
     const leftover = reader.detach()
-    if (isIntercepted(authority.host)) await intercept(socket, authority, leftover)
-    else tunnel(socket, authority, leftover)
+    if (isIntercepted(authority.host)) {
+      seen.interceptHosts++
+      await intercept(socket, authority, leftover)
+    } else tunnel(socket, authority, leftover)
   }
 
   const server = net.createServer((socket) => {
@@ -669,6 +680,7 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
       const path = new URL(route.upstream).pathname.replace(/\/+$/, "")
       return `http://127.0.0.1:${port}/r/${runSecret}/${item}${path}`
     },
+    seen: () => ({ ...seen }),
     close: () =>
       new Promise<void>((resolve) => {
         for (const socket of sockets) socket.destroy()

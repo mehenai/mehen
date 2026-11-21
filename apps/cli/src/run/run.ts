@@ -15,10 +15,11 @@ import { EXIT, type NextStep, type RunCreated } from "@mehen/protocol/api"
 import type { RedactionSecret, WorkspaceRunCreated } from "@mehen/protocol"
 import { startRunRelay, type RunRelay } from "../relay/index.ts"
 import { usageError } from "../errors.ts"
-import { CommandError, type Deps, askVault, cwdOf, envOf, mehenLine, reportFailure, stylerFor, wantsHelp, warningLine, writeLine, writeNext } from "./deps.ts"
+import { CommandError, type Deps, askVault, cwdOf, envOf, mehenLine, nextLines, reportFailure, stylerFor, wantsHelp, warningLine, writeLine, writeNext } from "./deps.ts"
 import { inheritedEnv, resolveEnv, writeBanner } from "./environment.ts"
 import { locateProjectManifest } from "./bound-project.ts"
 import { pipeRedacted } from "./output.ts"
+import { type RunWarning, bypassWarning, childNodeVersion, dotenvFiles, dotenvWarning, nodeWarning } from "./run-warnings.ts"
 import { type RunLogEntry, appendRunLog } from "./run-log.ts"
 import { MAX_STOP_GRACE_MS, signalProcessGroup, watchRunAuthority } from "./renewal.ts"
 
@@ -112,6 +113,13 @@ type RunWithOverrides = RunCreated & Partial<Pick<WorkspaceRunCreated, "override
 // has created the run, and the child's exit once it has one.
 // `signal`: the first SIGINT or SIGTERM mehen run received while the child ran.
 type Finished = { start: Omit<RunLogEntry, "endedAt" | "exit" | "signal" | "forwarded"> | null; exit: number | string | null; signal: (typeof FORWARDED_SIGNALS)[number] | null }
+
+function writeWarning(deps: Deps, warning: RunWarning | null): void {
+  if (warning === null) return
+  const s = stylerFor(deps, deps.stderr)
+  writeLine(deps.stderr, warningLine(s, warning.message))
+  for (const line of nextLines(warning.next, askVault(deps), s, warning.commands)) writeLine(deps.stderr, line)
+}
 
 export async function runCommand(argv: string[], deps: Deps): Promise<number> {
   const finished: Finished = { start: null, exit: null, signal: null }
@@ -221,6 +229,16 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
     }
     if (relay !== null) Object.assign(childEnv, relay.env)
 
+    const commandName = args.command[0] ?? "the command"
+    writeWarning(deps, dotenvWarning(dotenvFiles([dirname(manifest.path), cwdOf(deps)]), cwdOf(deps), commandName))
+    if (placeholders) {
+      // The version check is a second process: it gets no leased value.
+      const leasedNames = new Set(leased.map((l) => l.label))
+      const probeEnv = Object.fromEntries(Object.entries(childEnv).filter(([name]) => !leasedNames.has(name)))
+      const version = await childNodeVersion(commandName, probeEnv, cwdOf(deps))
+      if (version !== null) writeWarning(deps, nodeWarning(version))
+    }
+
     if (!Number.isFinite(Date.parse(run.expiresAt)) || Date.parse(run.expiresAt) <= Date.now()) {
       throw new CommandError(EXIT.error, `run ${run.run} expired before the child could start.`, { say: "Start a new run with mehen run." })
     }
@@ -288,6 +306,10 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
     }
     await Promise.all(pipes)
     finished.exit = child.signalCode ?? child.exitCode
+    // Not after a Ctrl-C or a stop mehen passed on: a dev server stopped
+    // before anything called it is no sign of a bypass. A quick non-zero exit
+    // still warns, since a client that skipped the proxy fails fast on the 401.
+    if (placeholders && finished.signal === null && relay !== null && relay.seen().interceptHosts === 0) writeWarning(deps, bypassWarning(run.interceptHosts, commandName))
     return exitCodeOf(child.exitCode, child.signalCode)
   } catch (error) {
     return reportFailure(deps, error)
