@@ -3,8 +3,9 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, 
 import { join } from "node:path"
 import { EXIT, type RunVar } from "@mehen/protocol/api"
 import { newPlaceholder } from "@mehen/protocol"
+import { LEASE_ONLY_HOST } from "@mehen/protocol/binding"
 import { VaultApiError, VaultNetworkError } from "../vault-api.ts"
-import { FakeVaultApi, fakeDeps, git, removeDir, runCreated, tempDir, withTimeout, writeManifest } from "./fake-vault-api.ts"
+import { FakeVaultApi, fakeDeps, git, itemDescription, removeDir, runCreated, tempDir, withTimeout, writeManifest } from "./fake-vault-api.ts"
 import { RUN_LOG_FILE, RUN_LOG_MAX_BYTES, cleanRun, readRunLog } from "./run-log.ts"
 import { RUN_USAGE, parseRunArgs, runCommand, runHelp, streamsWrites } from "./run.ts"
 
@@ -278,7 +279,7 @@ describe("mehen run", () => {
     expect(await runCommand(["--env"], fakeDeps(api, repo))).toBe(EXIT.usage)
     const deps = fakeDeps(api, repo)
     expect(await runCommand(["--bogus", "x"], deps)).toBe(EXIT.usage)
-    expect(deps.err.text()).toBe("mehen: Unknown option --bogus for `mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--stream-writes] [--] <command> [args...]`.\nnext: Check the usage with `mehen run --help`.\n  run:  mehen run --help\n")
+    expect(deps.err.text()).toBe(`mehen: Unknown option --bogus for \`${RUN_USAGE}\`.\nnext: Check the usage with \`mehen run --help\`.\n  run:  mehen run --help\n`)
     expect(api.calls).toHaveLength(0)
   })
 
@@ -515,6 +516,148 @@ describe("mehen run", () => {
       }
     }, 60_000)
   }
+})
+
+describe("mehen run --item", () => {
+  let bare: string
+
+  beforeAll(() => {
+    bare = tempDir("mehen-run-adhoc-")
+  })
+
+  afterAll(() => {
+    if (bare !== undefined) removeDir(bare)
+  })
+
+  function describing(answers: Record<string, () => unknown>): FakeVaultApi {
+    const api = new FakeVaultApi()
+    for (const [slug, answer] of Object.entries(answers)) api.on("GET", `/v1/items/${slug}`, answer)
+    return api
+  }
+
+  const curl = (out: string, auth = '-H "Authorization: Bearer $OPENAI_API_KEY"') => ["sh", "-c", `curl -sS --max-time 10 ${auth} https://api.openai.com/v1/models > ${out}`]
+
+  test("with no mehen.toml: the item's variable holds a stand-in, each request to its host is an item-mode relay call, and no vault run is made", async () => {
+    const api = describing({ openai: () => itemDescription() })
+    const deps = fakeDeps(api, bare)
+    const out = join(bare, "models.json")
+    const envOut = join(bare, "key.txt")
+    const code = await withTimeout(runCommand(["--item", "openai", "--", "sh", "-c", `printf %s "$OPENAI_API_KEY" > ${envOut}; ${curl(out)[2]}`], deps), 20_000, "mehen run --item")
+    expect(code).toBe(0)
+    const standIn = readFileSync(envOut, "utf8")
+    expect(standIn).toMatch(/^sk-proj-jvph[0-9A-Za-z]{24}$/)
+    expect(api.relayCalls).toHaveLength(1)
+    expect(api.relayCalls[0]).toMatchObject({ item: "openai", method: "GET", url: "https://api.openai.com/v1/models" })
+    expect(api.relayCalls[0]?.run).toBeUndefined()
+    expect(api.relayCalls[0]?.headers).toContainEqual(["Authorization", `Bearer ${standIn}`])
+    expect(JSON.parse(readFileSync(out, "utf8")).echoed.item).toBe("openai")
+    expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /v1/items/openai"])
+    const err = deps.err.text()
+    expect(err).toBe("mehen: ad hoc openai=OPENAI_API_KEY (each request is a fetch)\n")
+  })
+
+  test("the run CA permits exactly the hosts the vault returned, a wildcard as the subtree it admits", async () => {
+    const api = describing({ azure: () => itemDescription({ slug: "azure", provider: null, binding: { hosts: ["*.openai.azure.com", "api.example.net"] } }) })
+    const out = join(bare, "constraints.txt")
+    const code = await withTimeout(runCommand(["--item", "azure=AZURE_KEY", "--", "sh", "-c", `openssl x509 -in "$NODE_EXTRA_CA_CERTS" -noout -ext nameConstraints > ${out}`], fakeDeps(api, bare)), 20_000, "mehen run --item")
+    expect(code).toBe(0)
+    const text = readFileSync(out, "utf8")
+    expect(text).toContain("Permitted:")
+    expect(text).toContain("DNS:.openai.azure.com")
+    expect(text).toContain("DNS:api.example.net")
+    expect(text.match(/DNS:/g)).toHaveLength(2)
+    expect(text).toContain("Excluded:")
+  })
+
+  test("a request to the item's host without the stand-in is refused by the relay and never reaches the vault", async () => {
+    const api = describing({ openai: () => itemDescription() })
+    const out = join(bare, "refused.json")
+    expect(await withTimeout(runCommand(["--item", "openai", "--", ...curl(out, "")], fakeDeps(api, bare)), 20_000, "mehen run --item")).toBe(0)
+    expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ error: "forbidden" })
+    expect(api.relayCalls).toHaveLength(0)
+  })
+
+  test("what the vault refuses for the item, a credential behind a protected environment included, reaches the program as vault_fetch's refusal", async () => {
+    const api = describing({ openai: () => itemDescription() })
+    api.relayHandler = () => {
+      throw new VaultApiError(404, { error: "not_found", message: 'No credential called "openai".' })
+    }
+    const out = join(bare, "protected.json")
+    expect(await withTimeout(runCommand(["--item", "openai", "--", ...curl(out)], fakeDeps(api, bare)), 20_000, "mehen run --item")).toBe(0)
+    expect(JSON.parse(readFileSync(out, "utf8"))).toEqual({ error: "not_found", message: 'No credential called "openai".' })
+    expect(api.relayCalls).toHaveLength(1)
+  })
+
+  test("a run whose program never reached the item's host gets the bypass warning; the stand-in replaces the shell's value, with a warning", async () => {
+    const api = describing({ openai: () => itemDescription() })
+    const deps = fakeDeps(api, bare, { OPENAI_API_KEY: "sk-from-the-shell" })
+    expect(await withTimeout(runCommand(["--item", "openai", "--", "true"], deps), 20_000, "mehen run --item")).toBe(0)
+    const err = deps.err.text()
+    expect(err).toContain("mehen: warning: ignoring OPENAI_API_KEY from your shell; --item openai sets it\n")
+    expect(err).toContain("mehen: warning: no connection to api.openai.com came through mehen's local relay.")
+    expect(err).not.toContain("sk-from-the-shell")
+  })
+
+  test("refused before anything starts: a lease-only credential, one the vault will not show this machine, and a vault too old to describe it", async () => {
+    const marker = join(bare, "started")
+    const cases: [string, () => unknown, number, string][] = [
+      ["db", () => itemDescription({ slug: "db", binding: { hosts: [LEASE_ONLY_HOST] }, injection: null }), EXIT.refused, "mehen: --item db: it is a lease-only credential"],
+      ["mine", () => { throw new VaultApiError(404, { error: "not_found", message: "No credential." }) }, EXIT.error, "mehen: --item mine: the vault does not let this machine use mine outside a project"],
+      ["openai", () => ({ slug: "openai", provider: "openai", status: "active" }), EXIT.error, "mehen: --item openai: this vault cannot serve an ad hoc run"],
+    ]
+    for (const [slug, answer, code, line] of cases) {
+      const api = describing({ [slug]: answer })
+      const deps = fakeDeps(api, bare)
+      expect(await runCommand(["--item", `${slug}=K`, "--", "sh", "-c", `touch ${marker}`], deps), slug).toBe(code)
+      expect(deps.err.text(), slug).toContain(line)
+      expect(deps.err.text(), slug).toContain("  next: ")
+      expect(existsSync(marker), slug).toBe(false)
+      expect(api.relayCalls).toHaveLength(0)
+    }
+  })
+
+  test("usage errors before the vault is called: a bad variable name, the same item twice, or --env, --approval or --service with no project", async () => {
+    for (const argv of [["--item", "openai=1BAD", "true"], ["--item", "openai", "--item", "openai=B", "true"]]) {
+      const api = new FakeVaultApi()
+      expect(await runCommand(argv, fakeDeps(api, bare)), argv.join(" ")).toBe(EXIT.usage)
+      expect(api.calls).toHaveLength(0)
+    }
+    for (const flag of [["--env", "dev"], ["--approval", "apr_1"], ["--service"]]) {
+      const api = describing({ openai: () => itemDescription() })
+      const deps = fakeDeps(api, bare)
+      expect(await runCommand(["--item", "openai", ...flag, "true"], deps)).toBe(EXIT.usage)
+      expect(deps.err.text()).toContain(`${flag[0]} needs a project, and there is no mehen.toml here`)
+      expect(api.calls).toHaveLength(0)
+    }
+  })
+
+  test("in a checkout with mehen.toml: the project's run goes on beside the item, and an item setting a declared variable is refused before any run", async () => {
+    const api = apiWith(vars(), {}).on("GET", "/v1/items/github", () => itemDescription({ slug: "github", provider: "github-pat", binding: { hosts: ["api.github.com"] }, injection: { in: "header", name: "Authorization", format: "Bearer {token}" }, secretFields: [{ name: "token", prefix: "ghp_" }] }))
+    const out = join(repo, "both.json")
+    const deps = fakeDeps(api, repo)
+    expect(await withTimeout(runCommand(["--item", "github", "--", "sh", "-c", `printf '%s %s' "$GITHUB_TOKEN" "$DATABASE_URL" > ${out}`], deps), 20_000, "mehen run --item in a project")).toBe(0)
+    const [token, database] = readFileSync(out, "utf8").split(" ")
+    expect(token).toMatch(/^ghp_jvph[0-9A-Za-z]{24}$/)
+    expect(database).toBe("postgres://localhost/dev")
+    expect(api.called("POST", "/v1/runs")).toBe(true)
+    expect(api.called("DELETE", "/v1/runs/run_test1")).toBe(true)
+    expect(deps.err.text()).toContain("mehen: ad hoc github=GITHUB_TOKEN (each request is a fetch)\n")
+
+    const clash = apiWith(vars()).on("GET", "/v1/items/openai", () => itemDescription())
+    const refused = fakeDeps(clash, repo)
+    expect(await runCommand(["--item", "openai", "--", "true"], refused)).toBe(EXIT.usage)
+    expect(refused.err.text()).toContain("--item openai sets OPENAI_API_KEY, which this checkout's mehen.toml also declares.")
+    expect(clash.called("POST", "/v1/runs")).toBe(false)
+  })
+
+  test("an item bound to a host the project's run intercepts is refused, and the run is ended", async () => {
+    const api = apiWith(vars({ OPENAI_API_KEY: { name: "OPENAI_API_KEY", delivery: "placeholder", value: placeholder, item: "openai-personal", hosts: ["api.openai.com"] } }), { interceptHosts: ["api.openai.com"] })
+      .on("GET", "/v1/items/second", () => itemDescription({ slug: "second" }))
+    const deps = fakeDeps(api, repo)
+    expect(await runCommand(["--item", "second=SECOND_KEY", "--", "true"], deps)).toBe(EXIT.usage)
+    expect(deps.err.text()).toContain("--item second is bound to api.openai.com, which this project's run already intercepts")
+    expect(api.called("DELETE", "/v1/runs/run_test1")).toBe(true)
+  })
 })
 
 describe("runHelp", () => {

@@ -50,7 +50,7 @@ Node uses the proxy variables only with `NODE_USE_ENV_PROXY=1`, and only from th
 | 24.5.0 and later, 25 and later | yes | yes |
 | 23, 22.20 and older, 20, 18 | no | no |
 
-When a run has placeholders and its command is `node`, `npm`, `npx`, `pnpm`, `yarn` or `tsx`, `mehen run` asks the `node` on the child's `PATH` for its version and warns when it is older than these. It never stops the run.
+When a run has placeholders or `--item` stand-ins and its command is `node`, `npm`, `npx`, `pnpm`, `yarn` or `tsx`, `mehen run` asks the `node` on the child's `PATH` for its version and warns when it is older than these. It never stops the run.
 
 ## What does not work
 
@@ -64,10 +64,21 @@ When a run has placeholders and its command is `node`, `npm`, `npx`, `pnpm`, `ya
 
 For a program that cannot use the relay, the variable needs the real value, which is **lease** delivery: the value goes into this one child process only, and its stdout and stderr pass through the redactor. The vault decides the delivery, not the program: a lease needs an item whose ceiling is `lease`, a machine allowed leases and, for a protected environment, an approved run ([Leases](../concepts/projects.md#leases)). Database URLs and other program secrets are added that way, as **Database URL** or **Other secret** in the web app.
 
+## Runs with `--item`
+
+`mehen run --item <slug>` works with the same clients: the program gets a stand-in in the variable, and the same proxy and CA variables. The difference is behind the relay. Each request that carries the stand-in goes to the vault as a fetch, the call `mehen fetch` and `vault_fetch` make, so:
+
+- every request is decided on its own, and a write the credential's policy holds asks for approval request by request. The program gets HTTP 409 `approval_required` with the link, and must send the request again once a person approves;
+- the audit records each request as a fetch of the credential by this machine, not as a run;
+- a request to the credential's host without the stand-in is refused by the relay, and nothing is sent;
+- there are no leases, so a program that needs a real value (a database URL, a raw TCP client) still needs a project ([One credential, no project](projects.md#one-credential-no-project)).
+
+The run's CA permits only the hosts the vault returned for the credential: an exact host as itself, and `*.example.com` as the names below `example.com`, never `example.com` itself, which is what the binding admits. A credential bound to a wildcard over a whole top-level domain is refused.
+
 ## The warnings mehen run prints
 
 `mehen run` warns on stderr, once each, and never stops the run:
 
 - **A `.env` or `.env.*` file next to the run**, in the folder of `mehen.toml` or the working folder (`.env.example`, `.env.sample` and `.env.template` are left out). Bun, Next.js, Vite, dotenv and others load it by themselves, so the program can read the old plaintext value instead of the vault's. Move its keys in with `mehen adopt file <path>`, then take it out of play with `mehen adopt retire` ([Bring a machine's credentials into Mehen](adopt.md)).
 - **A Node too old for `NODE_USE_ENV_PROXY`**, as above.
-- **No connection to any bound host came through the relay.** When a run with placeholders ends and the program never connected to a host the placeholders are bound to, either it did not call that API, or its client skipped the proxy. Not printed for runs with only plain values, leases or base URLs, nor after a Ctrl-C or a stop `mehen run` passed on.
+- **No connection to any bound host came through the relay.** When a run with placeholders or `--item` stand-ins ends and the program never connected to a host they are bound to, either it did not call that API, or its client skipped the proxy. Not printed for runs with only plain values, leases or base URLs, nor after a Ctrl-C or a stop `mehen run` passed on.

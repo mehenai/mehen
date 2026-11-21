@@ -6,17 +6,20 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { VaultApi } from "../vault-api.ts"
 import { createRunCa } from "./ca.ts"
-import { type BaseUrlRoute, type RelaySeen, startLocalRelay } from "./relay.ts"
+import { type BaseUrlRoute, type ItemRoute, type RelaySeen, startLocalRelay } from "./relay.ts"
 import { loadSystemRoots } from "./system-roots.ts"
 
 export type RunRelayOptions = {
   api: VaultApi
-  run: string
+  // Null for an ad hoc run (mehen run --item with no project).
+  run: string | null
   env: string
   interceptHosts: readonly string[]
   fencedHosts: readonly string[]
   baseUrls: readonly BaseUrlRoute[]
-  // True when the run has placeholders: the child is then pointed at the proxy.
+  // Ad hoc items, each relayed as vault_fetch relays it.
+  itemRoutes?: readonly ItemRoute[]
+  // True when the run has placeholders or ad hoc items: the child is then pointed at the proxy.
   proxy: boolean
   parentEnv: Record<string, string | undefined>
   // mehen run --stream-writes: pass every write's answer on as it comes.
@@ -36,7 +39,10 @@ export type RunRelay = {
 }
 
 export async function startRunRelay(options: RunRelayOptions): Promise<RunRelay> {
-  const ca = options.proxy && options.interceptHosts.length > 0 ? await createRunCa(options.interceptHosts) : null
+  const itemRoutes = options.itemRoutes ?? []
+  // The CA permits only the hosts the vault returned: the run's own and each ad hoc item's.
+  const caHosts = options.proxy ? [...new Set([...options.interceptHosts, ...itemRoutes.flatMap((route) => route.hosts)])] : []
+  const ca = caHosts.length > 0 ? await createRunCa(caHosts) : null
   const relay = await startLocalRelay({
     api: options.api,
     run: options.run,
@@ -45,6 +51,7 @@ export async function startRunRelay(options: RunRelayOptions): Promise<RunRelay>
     fencedHosts: options.fencedHosts,
     baseUrls: options.baseUrls,
     ca,
+    ...(itemRoutes.length > 0 ? { itemRoutes } : {}),
     ...(options.streamWrites ? { streamWrites: true } : {}),
   })
   let dir: string | null = null

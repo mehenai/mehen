@@ -54,6 +54,20 @@ export function runCreated(overrides: Partial<RunCreated> = {}): RunCreated {
   }
 }
 
+// GET /v1/items/<slug> for an OpenAI key, as an ad hoc run reads it.
+export function itemDescription(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    slug: "openai",
+    provider: "openai",
+    status: "active",
+    hosts: ["api.openai.com"],
+    binding: { hosts: ["api.openai.com"] },
+    injection: { in: "header", name: "Authorization", format: "Bearer {key}" },
+    secretFields: [{ name: "key", set: true, length: 51, prefix: "sk-proj-", fingerprint: "abc" }],
+    ...overrides,
+  }
+}
+
 export type CapturedWriter = Writer & { text(): string }
 
 export function capture(): CapturedWriter {

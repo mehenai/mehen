@@ -12,6 +12,11 @@
 //   /r/<run-secret>/<item>/...: the base-URL path, forwarded to the vault
 //     relay bound to `run` and no CA at all. Base-URL delivery stays
 //     unavailable until the vault can authorise its item within the run.
+//   CONNECT to an ad hoc item's host (mehen run --item): TLS terminated the
+//     same way; a request carrying that item's stand-in is forwarded as an
+//     item-mode relay call, the one vault_fetch makes, and any other request
+//     is refused. The stand-in is never swapped here either: the vault
+//     injects the item over its declared surface.
 //
 // This process never holds a secret value and never swaps a placeholder.
 
@@ -48,15 +53,21 @@ export type BaseUrlRoute = {
   upstream: string
 }
 
+// An ad hoc item (mehen run --item): the hosts the vault returned for it and
+// the stand-in its variable holds.
+export type ItemRoute = { item: string; variable: string; hosts: readonly string[]; standIn: string }
+
 export type LocalRelayOptions = {
   api: VaultApi
-  run: string
+  // Null for an ad hoc run with no vault run: only item routes are relayed.
+  run: string | null
   env: string
   interceptHosts: readonly string[]
   fencedHosts: readonly string[]
   baseUrls: readonly BaseUrlRoute[]
   // Null when nothing is intercepted: every CONNECT is then tunnelled or fenced.
   ca: RunCa | null
+  itemRoutes?: readonly ItemRoute[]
   // Pass every write's answer on as it comes, as streamed types always are
   // (mehen run --stream-writes): a break mid-body then reaches the program
   // as an incomplete body, which some transports retry.
@@ -166,6 +177,17 @@ function forwardableHeaders(head: HttpHead, drop: readonly string[] = []): [stri
   return head.headers.filter(([name]) => {
     const lower = name.toLowerCase()
     return !HOP_BY_HOP.has(lower) && !named.has(lower) && !drop.includes(lower)
+  })
+}
+
+// Whether a request presents an ad hoc item's stand-in where a key goes: the
+// target (path or query), a header, or the password of a Basic credential.
+export function carriesStandIn(head: HttpHead, standIn: string): boolean {
+  if (head.target.includes(standIn)) return true
+  return head.headers.some(([name, value]) => {
+    if (value.includes(standIn)) return true
+    const basic = name.toLowerCase() === "authorization" ? /^basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(value) : null
+    return basic?.[1] !== undefined && Buffer.from(basic[1], "base64").toString("latin1").includes(standIn)
   })
 }
 
@@ -342,9 +364,11 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
   const seen: RelaySeen = { interceptHosts: 0, baseUrls: 0 }
   let port = 0
 
+  const itemRoutes = options.itemRoutes ?? []
+  const itemRouteFor = (host: string) => itemRoutes.find((route) => route.hosts.some((pattern) => hostMatches(pattern, host)))
   const isFenced = (host: string) => options.fencedHosts.some((pattern) => hostMatches(pattern, host))
-  const isIntercepted = (host: string) => ca !== null && options.interceptHosts.some((pattern) => hostMatches(pattern, host))
-  const guardsHosts = options.fencedHosts.length > 0 || options.interceptHosts.length > 0
+  const isIntercepted = (host: string) => ca !== null && (options.interceptHosts.some((pattern) => hostMatches(pattern, host)) || itemRouteFor(host) !== undefined)
+  const guardsHosts = options.fencedHosts.length > 0 || options.interceptHosts.length > 0 || itemRoutes.length > 0
   const isRefusedAddress = (host: string) => {
     const address = guardsHosts ? ipLiteral(host) : null
     return address !== null && !isLoopback(address) && !isIntercepted(host)
@@ -408,8 +432,29 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
         },
       }
     }
+    if (options.run === null) return { refuse: { status: 404, error: "not_found", message: "This run has no base URLs." } }
     seen.baseUrls++
     return { relay: { run: options.run, method: head.method, url, headers: forwardableHeaders(head, ["authorization"]) } }
+  }
+
+  // An intercepted request: an ad hoc item's as the item-mode call vault_fetch
+  // makes, when it carries that item's stand-in; otherwise the run's.
+  function relayRoute(head: HttpHead, host: string, url: string): Routed {
+    const route = itemRouteFor(host)
+    if (route !== undefined) {
+      if (!carriesStandIn(head, route.standIn)) {
+        return {
+          refuse: {
+            status: 403,
+            error: "forbidden",
+            message: `mehen refused this request to ${host}: it does not carry the stand-in mehen run put in ${route.variable}, so it was not sent with ${route.item}. Nothing was sent. Send the key from ${route.variable} as the program normally would.`,
+          },
+        }
+      }
+      return { relay: { item: route.item, method: head.method, url, headers: forwardableHeaders(head) } }
+    }
+    if (options.run === null) return { refuse: { status: 403, error: "forbidden", message: `mehen refused this request to ${host}: no credential of this run is bound to it. Nothing was sent.` } }
+    return { relay: { run: options.run, method: head.method, url, headers: forwardableHeaders(head) } }
   }
 
   function routeIntercepted(head: HttpHead, authority: Authority): Routed {
@@ -424,7 +469,7 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
     }
     // The URL comes from the CONNECT authority, never from a Host header.
     const origin = `https://${urlHost(authority.host)}${authority.port === 443 ? "" : `:${authority.port}`}`
-    return { relay: { run: options.run, method: head.method, url: `${origin}${pathAndQuery}`, headers: forwardableHeaders(head) } }
+    return relayRoute(head, authority.host, `${origin}${pathAndQuery}`)
   }
 
   async function callVault(relay: Omit<RelayRequestInput, "body">, body: Buffer): Promise<Response> {
@@ -568,7 +613,7 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
     if (isIntercepted(authority.host)) {
       seen.interceptHosts++
       // The vault decides what a placeholder may do over plain HTTP.
-      const route = (h: HttpHead): Routed => ({ relay: { run: options.run, method: h.method, url: url.href, headers: forwardableHeaders(h) } })
+      const route = (h: HttpHead): Routed => relayRoute(h, authority.host, url.href)
       await serveRequests(client, reader, head, route, true)
       return
     }

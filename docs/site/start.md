@@ -71,7 +71,7 @@ Your keys are probably in `.env` files, service files and CLI logins today. `meh
 Once you restart it, your agent has the `vault_*` tools and the `mehen` command.
 
 - **It needs a key it does not have.** It asks Mehen for an intake link and gives it to you. You type the key into the vault's page, never into the chat, and the agent gets the credential's name back ([Ask a human for a credential](guides/request-a-credential.md)).
-- **It calls an API.** It asks Mehen to make the call. The vault adds the key on the way out, only to the hosts the key is bound to, and scrubs it from the response, so the agent sees the result and never the key ([Find a credential and call an API](guides/call-an-api.md)). A program can run under `mehen run` instead, with placeholders in place of the keys ([Project variables with mehen run](guides/projects.md)).
+- **It calls an API.** It asks Mehen to make the call. The vault adds the key on the way out, only to the hosts the key is bound to, and scrubs it from the response, so the agent sees the result and never the key ([Find a credential and call an API](guides/call-an-api.md)). A program can run under `mehen run` instead, with placeholders in place of the keys ([Project variables with mehen run](guides/projects.md)). For a quick one-off with no project set up, `mehen run --item openai -- python app.py` gives the program `OPENAI_API_KEY` as a stand-in, and each request it makes to OpenAI goes through the vault as a fetch ([One credential, no project](guides/projects.md#one-credential-no-project)).
 - **A request needs you.** Writes, sends and anything a credential's policy holds wait for your passkey on the vault's page ([When a request needs approval](guides/approvals.md)).
 
 ## Let your agent do it

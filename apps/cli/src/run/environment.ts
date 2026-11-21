@@ -41,15 +41,22 @@ export function writeBanner(out: Writer, located: Located, env: string, service 
 }
 
 // The parent's environment minus the vault's own MEHEN_* state and minus every
-// ambient variable the manifest declares (an inherited prod DATABASE_URL from
-// another shell must not win), with a warning for each one overridden.
-export function inheritedEnv(parentEnv: Record<string, string | undefined>, manifest: Manifest, stderr: Writer): Record<string, string> {
-  const declared = new Set(manifest.vars.map((v) => v.name))
+// ambient variable the manifest declares or an --item sets (an inherited prod
+// DATABASE_URL from another shell must not win), with a warning for each one
+// overridden.
+export function inheritedEnv(parentEnv: Record<string, string | undefined>, declaredNames: readonly string[], items: readonly { item: string; variable: string }[], stderr: Writer): Record<string, string> {
+  const declared = new Set(declaredNames)
+  const fromItem = new Map(items.map((i) => [i.variable, i.item]))
   const out: Record<string, string> = {}
   for (const [name, value] of Object.entries(parentEnv)) {
     if (value === undefined || name.startsWith("MEHEN_")) continue
     if (declared.has(name)) {
       stderr.write(`mehen: warning: ignoring ${name} from your shell; mehen.toml declares it, so this run uses the project's value\n`)
+      continue
+    }
+    const item = fromItem.get(name)
+    if (item !== undefined) {
+      stderr.write(`mehen: warning: ignoring ${name} from your shell; --item ${item} sets it\n`)
       continue
     }
     out[name] = value
