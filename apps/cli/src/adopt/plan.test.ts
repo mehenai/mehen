@@ -6,7 +6,7 @@ import type { CliError } from "../errors.ts"
 import { FakeVaultApi, tempDir } from "../run/fake-vault-api.ts"
 import { VaultApiError } from "../vault-api.ts"
 import { OutputGuard } from "./output-guard.ts"
-import { type AdoptPlan, type ExistingProject, type FolderHome, type PlanConnector, type PlanContext, type PlanItem, type VarMapping, type VisibleItem, AdoptPlanSchema, GOOGLE_SERVICE_UNKNOWN, MAX_FIELD_SOURCES, activeRepos, batchGroup, buildPlan, checkPlan, liveKeyListing, packBatches, parseFolderHome, sharedIfAllowed, vaultFacts } from "./plan.ts"
+import { type AdoptPlan, type ExistingProject, type FolderHome, type PlanConnector, type PlanContext, type PlanItem, type VarMapping, type VisibleItem, AdoptPlanSchema, GOOGLE_SERVICE_UNKNOWN, MAX_FIELD_SOURCES, activeRepos, batchGroup, buildPlan, checkPlan, liveKeyListing, packBatches, parseFolderHome, sharedIfAllowed, singleSourceFile, vaultFacts } from "./plan.ts"
 import { envForFile } from "./sources.ts"
 import { type ScanResult, scan, sourceKey } from "./scan.ts"
 
@@ -1338,5 +1338,43 @@ describe("plan", () => {
     expect(parseFolderHome("/a/b=private")).toEqual({ folder: "/a/b", home: { home: "private", project: null } })
     expect(parseFolderHome("/a=project:billing-api")).toEqual({ folder: "/a", home: { home: "project", project: "billing-api" } })
     expect(parseFolderHome("/a=project")).toBeNull()
+  })
+})
+
+describe("singleSourceFile, what lets submit go ahead before a snapshot", () => {
+  async function onePlan(): Promise<{ repo: string; plan: AdoptPlan }> {
+    const { home, roots } = repositories("app")
+    const repo = roots[0] as string
+    writeFileSync(join(repo, ".env"), OPENAI)
+    const plan = buildPlan(await scanCode(home), context(home))
+    expect(plan.repos).toHaveLength(1)
+    return { repo, plan }
+  }
+
+  it("names the one file of a plan adopt file wrote", async () => {
+    const { repo, plan } = await onePlan()
+    expect(singleSourceFile({ ...plan, origin: "file" })).toBe(join(repo, ".env"))
+  })
+
+  it("is null for a plan without the origin, as every older plan and every adopt plan is, even naming one file", async () => {
+    const { plan } = await onePlan()
+    expect(plan.origin).toBeUndefined()
+    expect(singleSourceFile(plan)).toBeNull()
+  })
+
+  it("is null when the plan names a second file anywhere: another source, a repo file or a service", async () => {
+    const { repo, plan } = await onePlan()
+    const source = Object.values(plan.sources)[0] as AdoptPlan["sources"][string]
+    const other = join(repo, ".env.local")
+    expect(singleSourceFile({ ...plan, origin: "file", sources: { ...plan.sources, s999: { ...source, path: other } } })).toBeNull()
+    const repoEntry = plan.repos[0] as AdoptPlan["repos"][number]
+    expect(singleSourceFile({ ...plan, origin: "file", repos: [{ ...repoEntry, files: [...repoEntry.files, { path: ".env.local", env: "local", vars: {} }] }] })).toBeNull()
+    const service = { unit: join(repo, "app.service"), type: "systemd" as const, envFile: null, dir: repo, project: repoEntry.project, env: "dev", vars: {} }
+    expect(singleSourceFile({ ...plan, origin: "file", services: [service] })).toBeNull()
+    expect(singleSourceFile({ ...plan, origin: "file", sources: {}, repos: [] })).toBeNull()
+  })
+
+  it("is not valid in the plan file as anything but file", () => {
+    expect(AdoptPlanSchema.shape.origin.safeParse("scan").success).toBe(false)
   })
 })

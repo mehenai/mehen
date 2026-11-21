@@ -1026,7 +1026,7 @@ describe("mehen adopt inventory", () => {
 
 type AdoptInventoryJson = { items: { ref: string; slug: string; include: boolean; stale: boolean; storeOnly: boolean }[]; batches: unknown[] }
 
-describe("submit needs this machine's snapshot first", () => {
+describe("submit needs this machine's snapshot first, except for a single file adopt file planned", () => {
   // Enrolled, scanned and planned, with the batch routes ready: everything
   // submit needs except the snapshot.
   async function planned() {
@@ -1098,19 +1098,23 @@ describe("submit needs this machine's snapshot first", () => {
     const out = await runJv(["adopt", "file", envFile, "--json"], env)
     expect(out.code).toBe(EXIT.ok)
     expectNoValue(out.stdout + out.stderr)
-    const body = JSON.parse(out.stdout) as { file: string; plan: string; items: { slug: string }[]; next: { snapshot: string; submit: string; apply: string } }
+    const body = JSON.parse(out.stdout) as { file: string; plan: string; items: { slug: string }[]; next: { snapshot: string; submit: string; apply: string }; snapshotBefore: string }
     expect(body.file).toBe(envFile)
     expect(body.items.length).toBeGreaterThan(0)
     expect(body.next.snapshot).toContain(`mehen backup snapshot --plan ${body.plan}`)
     expect(body.next.submit).toContain(`mehen adopt submit --plan ${body.plan} --wait`)
     expect(body.next.apply).toContain(`mehen adopt apply --plan ${body.plan}`)
+    expect(Object.keys(body.next)).toEqual(["submit", "apply", "snapshot"])
+    expect(body.snapshotBefore).toBe("retire")
+    expect((JSON.parse(readFileSync(body.plan, "utf8")) as { origin?: string }).origin).toBe("file")
 
-    // Human output prints the item table and next commands, never a value.
+    // Human output prints the item table and next commands, never a value;
+    // the snapshot is listed last, as the step retire needs.
     const human = await runJv(["adopt", "file", envFile], env)
     expect(human.code).toBe(EXIT.ok)
     expectNoValue(human.stdout + human.stderr)
-    expect(human.stdout).toContain("next 1:")
-    expect(human.stdout).toContain("mehen backup snapshot")
+    const next = human.stdout.split("\n").filter((l) => l.startsWith("next "))
+    expect(next).toEqual([`next 1:  mehen adopt submit --plan ${body.plan} --wait`, `next 2:  mehen adopt apply --plan ${body.plan}`, `next 3:  mehen backup snapshot --plan ${body.plan} --to <dir outside your repos> --recipient <age1...> (before mehen adopt retire, which refuses without it)`])
 
     // Refuses directories and unsupported files.
     const dirResult = await runJv(["adopt", "file", repo, "--json"], env)
@@ -1120,4 +1124,86 @@ describe("submit needs this machine's snapshot first", () => {
     const unsupported = await runJv(["adopt", "file", readme, "--json"], env)
     expect(unsupported.code).toBe(EXIT.usage)
   })
+
+  test("a plan adopt file wrote for one .env submits before any snapshot, says retire needs one, and --snapshot naming an unknown one is still refused", async () => {
+    const { home, root, repo, env } = machine()
+    await vault.enrolSoftware(root)
+    const { uploads } = await adoptionRoutes()
+    expect((await runJv(["adopt", "file", join(repo, ".env")], env)).code).toBe(EXIT.ok)
+    const planPath = join(adoptDir(env), PLAN_FILE)
+    const command = `mehen backup snapshot --plan ${planPath} --to <dir outside your repos> --recipient <age1...>`
+    const unknown = await refusedSubmit(env, ["--snapshot", "snp_unknown"])
+    expect(unknown.message).toContain("No passed snapshot snp_unknown")
+    const result = await runJv(["adopt", "submit"], env)
+    expect(result.code).toBe(EXIT.ok)
+    expectNoValue(result.stdout + result.stderr)
+    expect(result.stdout).toContain("uploaded 3 items from ")
+    expect(result.stdout).not.toContain("holds every file the plan names")
+    expect(result.stdout.split("\n").filter((l) => l.startsWith("no snapshot"))).toEqual([`no snapshot holds ${join(repo, ".env")} as it is now; mehen adopt retire refuses until one does: ${command}`])
+    expect(uploads).toHaveLength(3)
+    expect(readdirSync(home)).not.toContain("Backups")
+  })
+
+  test("submit as JSON names no snapshot and the command retire will need", async () => {
+    const { root, repo, env } = machine()
+    await vault.enrolSoftware(root)
+    await adoptionRoutes()
+    expect((await runJv(["adopt", "file", join(repo, ".env")], env)).code).toBe(EXIT.ok)
+    const planPath = join(adoptDir(env), PLAN_FILE)
+    const result = await runJv(["adopt", "submit", "--json"], env)
+    expect(result.code).toBe(EXIT.ok)
+    expect(JSON.parse(result.stdout)).toMatchObject({ adoption: "adp_mock01", snapshot: null, snapshotBeforeRetire: `mehen backup snapshot --plan ${planPath} --to <dir outside your repos> --recipient <age1...>`, uploaded: { items: 3 } })
+  })
+
+  test("with a snapshot of it, a single-file plan's submit names the snapshot as before", async () => {
+    const { root, repo, env } = machine()
+    await vault.enrolSoftware(root)
+    await adoptionRoutes()
+    expect((await runJv(["adopt", "file", join(repo, ".env")], env)).code).toBe(EXIT.ok)
+    const id = await snapshotPlan(env)
+    const result = await runJv(["adopt", "submit"], env)
+    expect(result.code).toBe(EXIT.ok)
+    expect(result.stdout).toContain(`snapshot ${id} holds every file the plan names`)
+    expect(result.stdout).not.toContain("no snapshot holds")
+  })
+
+  test("a plan edited to claim adopt file's origin while naming two files is refused without a snapshot, and nothing reaches the vault", async () => {
+    const { home, root, repo, env } = machine()
+    await vault.enrolSoftware(root)
+    const { uploads } = await adoptionRoutes()
+    writeFileSync(join(repo, ".env.local"), `SESSION_SECRET=${MID}\n`)
+    expect((await runJv(["adopt", "scan", "--no-defaults", "--root", join(home, "code")], env)).code).toBe(EXIT.ok)
+    expect((await runJv(["adopt", "plan"], env)).code).toBe(EXIT.ok)
+    const planPath = join(adoptDir(env), PLAN_FILE)
+    const plan = JSON.parse(readFileSync(planPath, "utf8")) as { sources: Record<string, { path: string }> }
+    expect(new Set(Object.values(plan.sources).map((s) => s.path)).size).toBe(2)
+    writeFileSync(planPath, `${JSON.stringify({ ...plan, origin: "file" }, null, 2)}\n`, { mode: 0o600 })
+    const body = await refusedSubmit(env)
+    expect(body).toMatchObject({ error: "failed", next: { command: `mehen backup snapshot --plan ${planPath} --to <dir outside your repos> --recipient <age1...>` } })
+    expect(body.message).toContain("No passed snapshot")
+    expect(uploads).toEqual([])
+  })
+
+  test("after a single-file submit with no snapshot, retire holds the file and moves nothing, even with --yes, and unretire has nothing to put back", async () => {
+    const { root, repo, env } = machine()
+    await vault.enrolSoftware(root)
+    const { uploads, status: batch } = await adoptionRoutes()
+    expect((await runJv(["adopt", "file", join(repo, ".env")], env)).code).toBe(EXIT.ok)
+    expect((await runJv(["adopt", "submit"], env)).code).toBe(EXIT.ok)
+    batch.status = "approved"
+    batch.created = uploads.map((u) => ({ ref: u.ref, slug: u.slug }))
+    projectRoutes()
+    expect((await runJv(["adopt", "apply"], env)).code).toBe(EXIT.ok)
+    const before = readFileSync(join(repo, ".env"), "utf8")
+    const retire = await runJv(["adopt", "retire", "--json"], env)
+    expect(retire.code).toBe(EXIT.ok)
+    const listed = JSON.parse(retire.stdout) as { files: { path: string; state: string; reasons: string[] }[]; moved: number }
+    expect(listed).toMatchObject({ moved: 0, files: [{ path: join(repo, ".env"), state: "held" }] })
+    expect(listed.files[0]?.reasons.some((r) => r.startsWith("no snapshot on this machine holds it; take a new snapshot: mehen backup snapshot"))).toBe(true)
+    const yes = await runJv(["adopt", "retire", "--yes"], env)
+    expect(yes.code).toBe(EXIT.ok)
+    expect(yes.stdout).toContain("moved 0 files to ")
+    expect(JSON.parse((await runJv(["adopt", "unretire", "--all", "--json"], env)).stdout)).toEqual({ files: [], restored: 0, refused: 0, unfinished: [] })
+    expect(readFileSync(join(repo, ".env"), "utf8")).toBe(before)
+  }, 30_000)
 })

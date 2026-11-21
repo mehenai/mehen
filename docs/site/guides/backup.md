@@ -8,7 +8,7 @@ order: 97
 
 # Back up a machine before adopting
 
-Before [`mehen adopt submit`](adopt.md) sends anything, take a snapshot: one encrypted archive of every file the adopt plan names, byte for byte, with its permissions and times. It is encrypted with age, a small and widely packaged encryption tool, to a key whose private half is on no enrolled machine, and stock `age` opens it without Mehen. Every `mehen backup` command runs offline: none talks to the vault.
+Before [`mehen adopt submit`](adopt.md) sends anything, take a snapshot (for a single file planned with `mehen adopt file`, before `mehen adopt retire` instead): one encrypted archive of every file the adopt plan names, byte for byte, with its permissions and times. It is encrypted with age, a small and widely packaged encryption tool, to a key whose private half is on no enrolled machine, and stock `age` opens it without Mehen. Every `mehen backup` command runs offline: none talks to the vault.
 
 ## 1. Make the key on another machine
 
@@ -34,7 +34,7 @@ The recipient (`age1...`) is not secret: copy it to the machine you are adopting
 
 ## 3. Take the snapshot
 
-On the machine you are adopting from, after `mehen adopt plan` and before `mehen adopt submit`:
+On the machine you are adopting from, after `mehen adopt plan` and before `mehen adopt submit` (for a single file planned with `mehen adopt file`, any time before `mehen adopt retire`):
 
 ```sh
 mehen backup snapshot --plan ~/.config/mehen/adopt/<machine>/plan.json --to ~/Backups/mehen --recipient age1...
@@ -45,7 +45,7 @@ It reads every file the plan names (each source, each service's unit and env fil
 - `--to` must be outside every repo the plan adopts and outside any git work tree, so the archive is never committed. A synced folder is fine: only ciphertext lands there. It is made with mode 0700 if it does not exist.
 - It writes `<snp_id>.age`, the archive, and `<snp_id>.json`, a sidecar with the file list and the archive's checksum but no value, length or hash of any file's content.
 - Before it succeeds, it proves the archive: it reads it back from disk, opens it with a one-time key that exists only in that process, and compares every file with what is on disk again. If anything differs, it deletes what it wrote and fails.
-- It records the snapshot on this machine, so `mehen adopt submit` can find it.
+- It records the snapshot on this machine, so `mehen adopt submit` and `mehen adopt retire` can find it.
 
 Copy both files off the machine. To read one file back without Mehen:
 
@@ -89,6 +89,10 @@ mehen backup compare ~/Backups/mehen/snp_4fQ9cR2mT7.age ~/Backups/mehen/mehen-ac
 
 It opens both in memory and compares every adopted variable in the snapshot with its credential in the export. It prints paths, variable names and counts, never a value, and exits 1 on any difference or gap. With `--json` it also gives the export's time (`exportedAt`) and every source that matched (`matching`: path, variable, credential and field). `compare.json` holds no value: copy it to the machine you adopted from for [`mehen adopt retire`](adopt.md#8-retire-when-you-are-sure).
 
-## Why submit needs the snapshot
+## When submit and retire need the snapshot
 
-Adopt never rewrites or deletes an original, but once your credentials are in the vault you will start taking the files out of play, with [`mehen adopt retire`](adopt.md#8-retire-when-you-are-sure) or by hand. The snapshot is your way back that does not depend on Mehen: taken before anything was sent, encrypted to a key no agent can reach, and opened by a tool you can install anywhere. So `mehen adopt submit` refuses, and sends nothing, until a passed snapshot on this machine holds every file the plan names, with none changed since. There is no flag to skip it. Each machine needs its own snapshot, `--join` included, and a new one whenever you plan again or a planned file changes.
+Adopt never rewrites or deletes an original, but once your credentials are in the vault you will start taking the files out of play, with [`mehen adopt retire`](adopt.md#8-retire-when-you-are-sure) or by hand. The snapshot is your way back that does not depend on Mehen: encrypted to a key no agent can reach, and opened by a tool you can install anywhere.
+
+- `mehen adopt retire` holds every file no passed snapshot on this machine holds unchanged, and moves none of them, whatever plan it came from.
+- `mehen adopt submit` refuses, and sends nothing, until a passed snapshot on this machine holds every file the plan names, with none changed since. There is no flag to skip it. Each machine needs its own snapshot, `--join` included, and a new one whenever you plan again or a planned file changes.
+- The one exception is a plan [`mehen adopt file`](adopt.md#quick-path-one-env-file) made that names exactly one file. Submit goes ahead without a snapshot and says that retire will need one, with the `mehen backup snapshot` command. Submit only reads that file, and nothing in adopt changes it before retire, so the snapshot still comes before the file can leave its place. A plan that names more than one file never gets the exception, whatever it says it came from. When `--snapshot` names a snapshot, submit checks it as for any plan.

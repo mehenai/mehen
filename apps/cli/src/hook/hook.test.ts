@@ -67,6 +67,7 @@ describe("the verdict", () => {
     const blocked = judge(call, "block", env)
     expect(blocked.decision).toBe("deny")
     expect(blocked.reason).toContain("mehen fetch")
+    expect(blocked.reason).toContain("mehen adopt file <path>")
     expect(blocked.reason).toContain("mehen adopt scan")
     expect(judge(call, "warn", env)).toMatchObject({ decision: "warn", card: expect.stringContaining("mehen guard block") })
     expect(judge(call, "off", env)).toEqual({ decision: "allow", findings: [], reason: null, card: null })

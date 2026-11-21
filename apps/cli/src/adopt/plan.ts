@@ -184,8 +184,24 @@ export const AdoptPlanSchema = z.strictObject({
   // Logins and OAuth tokens made into connections, never uploaded. Absent
   // in older plans.
   connectors: z.array(PlanConnector).optional(),
+  // "file" when `mehen adopt file` wrote the plan. Absent in older plans
+  // and in every plan `mehen adopt plan` writes, which submit treats as
+  // bulk. Never trusted alone: see singleSourceFile.
+  origin: z.literal("file").optional(),
 })
 export type AdoptPlan = z.infer<typeof AdoptPlanSchema>
+
+// The one file a plan `mehen adopt file` wrote names, or null. Decided by
+// every path the plan names (each source, repo file, service unit and env
+// file), so a plan edited to claim that origin while naming more than one
+// file gets no shortcut.
+export function singleSourceFile(plan: AdoptPlan): string | null {
+  if (plan.origin !== "file") return null
+  const files = new Set(Object.values(plan.sources).map((s) => s.path))
+  for (const repo of plan.repos) for (const f of repo.files) files.add(join(repo.root, f.path))
+  for (const service of plan.services) for (const path of [service.unit, service.envFile]) if (path !== null) files.add(path)
+  return files.size === 1 ? ([...files][0] as string) : null
+}
 
 function schemaIssues(error: z.ZodError): string {
   return error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "(top)"}: ${i.message}`).join("; ")
