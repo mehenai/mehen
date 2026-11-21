@@ -1,5 +1,9 @@
 # Self-hosted Mehen vault on a server you own.
 #
+# `docker compose up` pulls the published image, ghcr.io/mehenai/mehen:latest,
+# and builds it from this checkout only when it cannot be pulled. To run what
+# this checkout holds instead, add --build.
+#
 # With an existing reverse proxy (Tailscale serve, host Caddy, Nginx):
 #   MEHEN_SERVE_ORIGIN=https://vault.example.com docker compose up -d
 #
@@ -11,6 +15,7 @@
 
 services:
   mehen:
+    image: ghcr.io/mehenai/mehen:latest
     build:
       context: .
       dockerfile: Dockerfile
