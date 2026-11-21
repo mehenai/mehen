@@ -36,7 +36,7 @@ Run the checks for what you changed, not the whole suite; CI runs everything on 
 
 | You changed | Run |
 | --- | --- |
-| Anything | `bun run typecheck` |
+| Anything | `bun run typecheck` and `bun run check:dashes` |
 | `packages/protocol` | `bun test packages/protocol` |
 | `apps/cli` | `bun test apps/cli/src/<the folder or file>` |
 | `apps/local` | `bun run --cwd apps/local test` |
@@ -51,7 +51,8 @@ The CLI refuses a home under a folder other users can write, which Linux's `/tmp
 ## How the code is written
 
 - TypeScript in strict mode, no `any`, `type` aliases rather than interfaces, kebab-case file names.
-- British English in code, comments, messages and docs. No em or en dashes anywhere; CI checks.
+- British English in code, comments, messages and docs ("colour", "behaviour", "organise"). If it is not your English, write it as you would and a reviewer will fix the spelling; it never blocks a pull request.
+- No em or en dashes anywhere, in code, docs or strings: use a comma, a full stop or a hyphen. Editors and AI tools put them in by themselves, so run `bun run check:dashes` before you push; CI runs the same check and it does block.
 - A comment says why, never what the next line does.
 - Every error says what to do next. Errors are `VaultError` in the vault and `CliError` in the CLI, with a `next` the person or agent can act on.
 - No new dependency without a reason in the pull request. Mehen compiles everything it uses into one binary, and each package is code that handles keys.

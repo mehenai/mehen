@@ -29,7 +29,7 @@ export type Verdict = { decision: "deny" | "warn" | "allow"; findings: Finding[]
 type Env = Record<string, string | undefined>
 
 const FIX = {
-  "secret-file": "Use the keys through Mehen instead: `mehen ls` lists them, `mehen fetch <item> <METHOD> <url>` (or the vault_fetch tool) makes the call, and `mehen run -- <command>` gives a program its variables without them reaching you. To move this file's keys into the vault, ask the person to run `mehen adopt scan`.",
+  "secret-file": "Use the keys through Mehen instead: `mehen ls` lists them, `mehen fetch <item> <METHOD> <url>` (or the vault_fetch tool) makes the call, and `mehen run -- <command>` gives a program its variables without them reaching you. To move this file's keys into the vault, ask the person to run `mehen adopt file <path>` (or `mehen adopt scan` for the whole machine).",
   "secret-in-command": "Put the key in the vault (`mehen request api-key --provider <id>`, a person fills it in) and make the call through `mehen fetch` or `mehen run`, so the value never appears in a command.",
   "secret-in-write": "Store the key in the vault (`mehen request api-key --provider <id>`) and write a reference to it instead (`mehen://<item>#key`).",
 } as const

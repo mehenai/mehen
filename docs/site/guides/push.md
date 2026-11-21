@@ -2,7 +2,7 @@
 title: Put a credential into another service
 question: How does an agent get a secret into GitHub Actions, Vercel or a Cloudflare Worker without seeing the value?
 section: guides
-covers: cloud
+covers: both
 order: 88
 ---
 
@@ -12,7 +12,7 @@ A deploy often needs a secret in another service's own store: an Actions secret 
 
 Use it instead of leasing the value with `mehen run` or typing it into the provider's dashboard with `mehen fill`.
 
-Push is switched on workspace by workspace. Where it is off, `mehen push` is refused with `forbidden`, "Pushing is not available yet.", and a credential page shows no Other services' secret stores card. A managed workspace has no pushing: it is refused with `forbidden`, "Pushing is not available in a managed workspace."
+Push is on in a vault you run yourself (`mehen up` or `mehen serve`, from `mehen` 0.5.0), and on Mehen Cloud it is switched on workspace by workspace. In a local vault the vault's own process makes the provider calls, from the machine it runs on. Where it is off, `mehen push` is refused with `forbidden`, "Pushing is not available yet.", and a credential page shows no Other services' secret stores card. A managed workspace has no pushing: it is refused with `forbidden`, "Pushing is not available in a managed workspace."
 
 ## What the human allows
 

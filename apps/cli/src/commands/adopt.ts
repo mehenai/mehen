@@ -13,7 +13,7 @@ import { lstat, realpath } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { EXIT } from "@mehen/protocol/api"
 import type { ParsedArgs } from "../args.ts"
-import { type AdoptPlan, AdoptPlanSchema, type FolderHome, type PlanContext, activeRepos, activeServices, buildPlan, checkPlan, liveKeyListing, parseFolderHome, parsePlan, sharedIfAllowed, unmatchedHomes, vaultFacts } from "../adopt/plan.ts"
+import { type AdoptPlan, AdoptPlanSchema, type FolderHome, type PlanContext, activeRepos, activeServices, buildPlan, checkPlan, liveKeyListing, parseFolderHome, parsePlan, sharedIfAllowed, singleSourceFile, unmatchedHomes, vaultFacts } from "../adopt/plan.ts"
 import { OutputGuard } from "../adopt/output-guard.ts"
 import { type OpenBatch, SubmitStopped, storedSlugsFor, submitPlan, workspaceMatches } from "../adopt/submit.ts"
 import { ADOPTION_ID, ADOPTION_LIMITS, type AdoptionStatus } from "@mehen/protocol/adopt"
@@ -29,7 +29,7 @@ import { type VerifyReport, verifyPlan } from "../adopt/verify.ts"
 import { type AdoptInventory, type InventoryBatch, batchRows, inventoryItems, inventoryLines } from "../adopt/inventory.ts"
 import { type AppliedBatch, ComparedSchema, LEFT_ASIDE, NOT_INDEXED, QUARANTINE_DIR, type RetireInputs, type RetireReport, assessRetire, planFiles, quarantine, retireFailed, retireReport, unfinishedMoves, unretire } from "../adopt/retire.ts"
 import { readRegularFile } from "../backup/files.ts"
-import { requireSnapshot, snapshotCommand } from "../backup/guard.ts"
+import { snapshotCommand, snapshotForSubmit } from "../backup/guard.ts"
 import { readSnapshotRecords } from "../backup/state.ts"
 import { resolveHome } from "../home.ts"
 import { readRunLog, runLogPath } from "../run/run-log.ts"
@@ -122,8 +122,9 @@ async function outFlag(args: ParsedArgs): Promise<string | null> {
 // ---------------------------------------------------------------- file
 
 // Scan and plan a single credential file (such as .env) in one step without
-// walking the rest of the machine. Keeps the same OutputGuard, sealing and
-// snapshot requirements as the full adopt workflow.
+// walking the rest of the machine. Keeps the same OutputGuard and sealing as
+// the full adopt workflow; the snapshot it needs before retire may wait
+// until after submit, as nothing changes the file before retire.
 async function runFile(fileArg: string, args: ParsedArgs, env: Env, out: AdoptOutput): Promise<number> {
   const candidate = resolve(fileArg)
   let info: import("node:fs").Stats
@@ -142,8 +143,11 @@ async function runFile(fileArg: string, args: ParsedArgs, env: Env, out: AdoptOu
   const outPath = await outFlag(args)
   const homes = await parseHomes(args)
   const { result: scan, path: scanPath } = await scanToFile(env, { roots: [resolved], defaults: false, depth: 0, include: [], exclude: [], out: null }, out.guard)
-  const planned = await planFromScan(scan, homes, args.bool("per-project"), outPath ?? join(dir, PLAN_FILE), env, out)
+  const planned = await planFromScan(scan, homes, args.bool("per-project"), outPath ?? join(dir, PLAN_FILE), env, out, "file")
   const snapCmd = snapshotCommand(planned.path)
+  // A file in which adopt found no name plans no source, so submit still
+  // needs the snapshot first.
+  const snapshotFirst = singleSourceFile(planned.plan) === null
   const submitCmd = `mehen adopt submit --plan ${planned.path} --wait`
   const applyCmd = `mehen adopt apply --plan ${planned.path}`
   if (out.json) {
@@ -158,7 +162,8 @@ async function runFile(fileArg: string, args: ParsedArgs, env: Env, out: AdoptOu
       check: planned.check,
       connectors: planned.plan.connectors ?? [],
       sharedValues: planned.sharedValues,
-      next: { snapshot: snapCmd, submit: submitCmd, apply: applyCmd },
+      next: snapshotFirst ? { snapshot: snapCmd, submit: submitCmd, apply: applyCmd } : { submit: submitCmd, apply: applyCmd, snapshot: snapCmd },
+      snapshotBefore: snapshotFirst ? "submit" : "retire",
     })
     return EXIT.ok
   }
@@ -174,9 +179,8 @@ async function runFile(fileArg: string, args: ParsedArgs, env: Env, out: AdoptOu
   printCheck(planned.check, out)
   for (const line of connectorLines(planned.plan)) out.line(line)
   if (planned.sharedValues.why) out.line(planned.sharedValues.why)
-  out.line(`next 1:  ${snapCmd}`)
-  out.line(`next 2:  ${submitCmd}`)
-  out.line(`next 3:  ${applyCmd}`)
+  const steps = snapshotFirst ? [snapCmd, submitCmd, applyCmd] : [submitCmd, applyCmd, `${snapCmd} (before mehen adopt retire, which refuses without it)`]
+  steps.forEach((step, i) => out.line(`next ${i + 1}:  ${step}`))
   return EXIT.ok
 }
 
@@ -192,7 +196,7 @@ async function parseHomes(args: ParsedArgs): Promise<Map<string, FolderHome>> {
   return homes
 }
 
-async function planFromScan(scan: Awaited<ReturnType<typeof readScan>>, homes: Map<string, FolderHome>, perProject: boolean, path: string, env: Env, out: AdoptOutput) {
+async function planFromScan(scan: Awaited<ReturnType<typeof readScan>>, homes: Map<string, FolderHome>, perProject: boolean, path: string, env: Env, out: AdoptOutput, origin?: "file") {
   const dir = adoptDir(env)
   const unmatched = unmatchedHomes(scan, homes)
   if (unmatched.length) throw usageError(`--home ${unmatched.join(", ")}: no folder the scan found is there or below it, so it would change nothing.`, HELP)
@@ -204,7 +208,7 @@ async function planFromScan(scan: Awaited<ReturnType<typeof readScan>>, homes: M
   const mayShare = facts.ownerRole === "owner" || facts.ownerRole === "admin"
   const { storedSlugs, unappliedSlugs } = await storedSlugsFor(session.api, dir, workspace)
   const context: PlanContext = { workspace, vault: session.vaultUrl, machine: machineName(), home: homeDir(env), visibleItems: facts.visibleItems, homes, existing: facts.existing, projectMismatch: facts.projectMismatch, storedSlugs, unappliedSlugs, sharedValues: mayShare && !perProject ? "workspace" : "per-project" }
-  const plan = buildPlan(scan, context)
+  const plan: AdoptPlan = { ...buildPlan(scan, context), ...(origin ? { origin } : {}) }
   const check = checkPlan(plan, { protectedEnvs: facts.protectedEnvs, canCreateProjects: facts.canCreateProjects, boundVars: facts.boundVars, unappliedSlugs, projectMismatch: [...facts.projectMismatch.values()] })
   const keptPerProject = !mayShare && !perProject && sharedIfAllowed(scan, context) > 0
   await writePrivateFile(path, `${JSON.stringify(plan, null, 2)}\n`, out.guard)
@@ -327,9 +331,10 @@ async function runSubmit(args: ParsedArgs, env: Env, out: AdoptOutput): Promise<
   const planPath = pathFlag(args, "plan", join(dir, PLAN_FILE))
   const plan = parsePlan(await readPrivateJson(planPath, "plan"), planPath)
   // Each machine, joining or not, needs its own snapshot before anything
-  // reaches the vault.
+  // reaches the vault, unless `adopt file` planned a single file: then
+  // retire, which still refuses without one, is the step that needs it.
   const snapshotFlag = args.string("snapshot")
-  const snapshot = await requireSnapshot({ planPath, env, ...(snapshotFlag !== null ? { snapshot: snapshotFlag } : {}) })
+  const snapshot = await snapshotForSubmit({ planPath, plan, env, ...(snapshotFlag !== null ? { snapshot: snapshotFlag } : {}) })
   const session = await openSession(env)
   const now = new Date()
   const by = requestedBy(env)
@@ -365,7 +370,7 @@ async function runSubmit(args: ParsedArgs, env: Env, out: AdoptOutput): Promise<
   const separately = `${ids.length} batches (${ids.join(", ")}): each is approved on its own, at its own link`
   if (out.json) {
     // The first batch's fields at the top, as for one batch; every batch in `batches`.
-    out.result({ adoption: first.adoption, url: first.url, expiresAt: first.expiresAt, snapshot: snapshot.id, joined: first.joined, uploaded, skipped: result.skipped, refused: result.refused, shared: result.shared, compared: result.compared, unchecked: result.unchecked, index: result.index, projects: result.projects, ask: first.ask, next: askNext(first.ask, { now }), batches: batches.map((b) => ({ ...b, next: askNext(b.ask, { now }) })) })
+    out.result({ adoption: first.adoption, url: first.url, expiresAt: first.expiresAt, snapshot: snapshot.id, ...(snapshot.id === null ? { snapshotBeforeRetire: snapshot.command } : {}), joined: first.joined, uploaded, skipped: result.skipped, refused: result.refused, shared: result.shared, compared: result.compared, unchecked: result.unchecked, index: result.index, projects: result.projects, ask: first.ask, next: askNext(first.ask, { now }), batches: batches.map((b) => ({ ...b, next: askNext(b.ask, { now }) })) })
   } else {
     for (const p of result.projects.filter((x) => x.created)) out.line(`created project ${p.slug} (${p.id})`)
     for (const r of result.refused) out.line(segments(`not uploaded: ${r.ref}: ${r.reason}`))
@@ -376,8 +381,9 @@ async function runSubmit(args: ParsedArgs, env: Env, out: AdoptOutput): Promise<
     if (result.index.state === "refused") out.line(`the plan's index was not sent (${result.index.error ?? "the vault could not be reached"}); the rows above are in, and the inventory page does not list this machine's items`)
     if (result.unchecked.length) out.line(`${result.unchecked.join(", ")} ${result.unchecked.length === 1 ? "does" : "do"} not list the names already in it (an older vault): a name another machine put there may be refused`)
     const left = Object.entries(result.skipped).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`)
-    const tail = `${left.length ? `; skipped ${left.join(", ")}` : ""}; snapshot ${snapshot.id} holds every file the plan names`
+    const tail = `${left.length ? `; skipped ${left.join(", ")}` : ""}${snapshot.id === null ? "" : `; snapshot ${snapshot.id} holds every file the plan names`}`
     batches.forEach((b, i) => out.line(`uploaded ${b.uploaded.items} item${b.uploaded.items === 1 ? "" : "s"} from ${by.device} to ${b.adoption}${i === batches.length - 1 ? tail : ""}`))
+    if (snapshot.id === null) out.line(`no snapshot holds ${snapshot.file} as it is now; mehen adopt retire refuses until one does: ${snapshot.command}`)
     if (batches.length > 1) out.line(`this machine's items are in ${separately}`)
     const then = args.bool("wait") ? null : `${ids.map((id) => `mehen wait ${id}`).join(", ")}, then mehen adopt apply`
     batches.forEach((b, i) => printAsk(b.ask, { env, noQr: args.bool("no-qr"), now, then: i === batches.length - 1 ? then : null }))

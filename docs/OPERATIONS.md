@@ -333,6 +333,19 @@ Every release is signed with a release key ([Release keys](#release-keys)); `--r
 
 8. In the next change after the release, add the release's skill hash to `RELEASED_SKILL_SHA256` in `apps/cli/src/setup/skills.ts` (`git show <release commit>:skills/mehen/SKILL.md | shasum -a 256`) and its commit to `RELEASE_COMMITS` in `apps/cli/src/setup/setup.test.ts`. Without it, `mehen setup` and `mehen update` call a copy of that release's skill saved from docs.mehen.dev external and leave it stale.
 
+### The container image
+
+`.github/workflows/image.yml` builds the `Dockerfile` for linux/amd64 and linux/arm64 and pushes `ghcr.io/mehenai/mehen:<version>` when a GitHub Release is published or a `v*` tag is pushed, with OCI labels, BuildKit provenance and SBOM attestations and a GitHub build provenance attestation on the digest. It checks out the tag and refuses one whose `apps/cli/package.json` names another version. It adds `:latest` only when `https://mehen.dev/dl/latest.json` already names that version, so upload the release before the tag or the GitHub Release exists, or `:latest` stays on the previous one. A second trigger for the same version finds the image already pushed and stops.
+
+To build an existing tag again (a failed run, or `:latest` left behind), run it by hand: `gh workflow run image.yml -R mehenai/mehen -f version=v<version>`. A run by hand always rebuilds and pushes the version tag; never start one for an older tag expecting `:latest` to move back, since it moves only to the version `latest.json` names.
+
+The first push creates the package private. Once, after it, make it public in the organisation's Packages, `mehen`, Package settings, and check it is linked to `mehenai/mehen`. Then check a release's image:
+
+```sh
+docker buildx imagetools inspect ghcr.io/mehenai/mehen:<version>
+gh attestation verify oci://ghcr.io/mehenai/mehen:<version> --repo mehenai/mehen
+```
+
 ### A security release
 
 1. Release as usual. The vault then recommends the fixed version, usually within 5 minutes, on a machine's next vault calls, so every active machine updates at the end of its next vault call, and idle ones (an idle `mehen mcp`, or a machine that runs a command now and then) within the hour, at their next scheduled check. A machine that runs no `mehen` command at all never checks.

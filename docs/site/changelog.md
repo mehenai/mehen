@@ -13,6 +13,12 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
+### Unreleased
+
+`mehen adopt submit` no longer needs a snapshot first for a single `.env` planned with `mehen adopt file`; `mehen adopt retire` still holds the file until a snapshot holds it ([Back up a machine before adopting](guides/backup.md#when-submit-and-retire-need-the-snapshot)). The guard's advice on a blocked `.env` read now names `mehen adopt file <path>`.
+
+From the next release on, each release publishes `ghcr.io/mehenai/mehen` for linux/amd64 and linux/arm64, tagged with its version and `latest`, with provenance and an SBOM attached, and `compose.yaml` pulls it instead of building from the checkout. See [Run it on another machine](start/another-machine.md#or-run-it-in-docker).
+
 ### 20 November 2026: an approved request is sent again without rebuilding it
 
 The next `mehen` release saves a request the vault holds for approval on the machine that sent it, for an hour, and sends it again once a person approves: `mehen fetch --resume <apr_id>`, `mehen wait <apr_id> --execute`, or through MCP `vault_fetch` with `approval` alone and `vault_wait` with `execute`. Each approval is replayed once, through the same checks as a fresh request; a push is never replayed. The vault is unchanged. See [Approvals](guides/approvals.md) and the CLI's release notes below.
