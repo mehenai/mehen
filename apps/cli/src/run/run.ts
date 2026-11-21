@@ -1,4 +1,4 @@
-// mehen run [--env E] [--approval A] [--stop-grace S] [--service] [--stream-writes] [--] command args...
+// mehen run [--env E] [--approval A] [--stop-grace S] [--service] [--stream-writes] [--item SLUG[=VAR]]... [--] command args...
 //
 // Creates a run in the vault, builds the child's environment from mehen.toml and
 // the vault's answer, starts the local relay when there are placeholders or
@@ -6,7 +6,10 @@
 // run's maximum life the child gets SIGTERM --stop-grace seconds before the end.
 // --service asks for a service run, which has none. --stream-writes (or
 // MEHEN_RUN_STREAM_WRITES=1) has the local relay pass every write's answer
-// on as it comes instead of reading it in full first.
+// on as it comes instead of reading it in full first. --item gives the
+// command one credential with no project, each request relayed as
+// vault_fetch relays it (ad-hoc.ts); in a checkout with mehen.toml the
+// project's run goes on beside it.
 
 import { constants } from "node:os"
 import { dirname } from "node:path"
@@ -18,16 +21,18 @@ import { usageError } from "../errors.ts"
 import { CommandError, type Deps, askVault, cwdOf, envOf, mehenLine, nextLines, reportFailure, stylerFor, wantsHelp, warningLine, writeLine, writeNext } from "./deps.ts"
 import { inheritedEnv, resolveEnv, writeBanner } from "./environment.ts"
 import { locateProjectManifest } from "./bound-project.ts"
+import { type AdHocSpec, checkAdHocConflicts, checkItemSpecs, parseItemSpec, resolveAdHocItems } from "./ad-hoc.ts"
+import { type Located, findManifest, gitFacts, locateManifest } from "./manifest.ts"
 import { pipeRedacted } from "./output.ts"
 import { type RunWarning, bypassWarning, childNodeVersion, dotenvFiles, dotenvWarning, nodeWarning } from "./run-warnings.ts"
 import { type RunLogEntry, appendRunLog } from "./run-log.ts"
 import { MAX_STOP_GRACE_MS, signalProcessGroup, watchRunAuthority } from "./renewal.ts"
 
-export const RUN_USAGE = "mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--stream-writes] [--] <command> [args...]"
+export const RUN_USAGE = "mehen run [--env <env>] [--approval <id>] [--stop-grace <seconds>] [--service] [--stream-writes] [--item <slug>[=<VAR>]]... [--] <command> [args...]"
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM"] as const
-const VALUE_FLAGS = ["--env", "--approval", "--stop-grace"] as const
+const VALUE_FLAGS = ["--env", "--approval", "--stop-grace", "--item"] as const
 
-type RunArgs = { env?: string; approval?: string; stopGraceMs?: number; service?: boolean; streamWrites?: boolean; command: string[] }
+type RunArgs = { env?: string; approval?: string; stopGraceMs?: number; service?: boolean; streamWrites?: boolean; items?: AdHocSpec[]; command: string[] }
 
 // The usage when `mehen run` is asked for help, else null.
 export function runHelp(argv: string[]): string | null {
@@ -51,6 +56,7 @@ function stopGraceMs(value: string): number {
 function setFlag(args: RunArgs, flag: string, value: string): void {
   if (flag === "--env") args.env = value
   else if (flag === "--approval") args.approval = value
+  else if (flag === "--item") args.items = [...(args.items ?? []), parseItemSpec(value)]
   else args.stopGraceMs = stopGraceMs(value)
 }
 
@@ -87,7 +93,15 @@ export function parseRunArgs(argv: string[]): RunArgs {
     }
   }
   if (args.command.length === 0) throw usageError(`Name the command to run. Usage: ${RUN_USAGE}`, RUN_HELP)
+  if (args.items !== undefined) checkItemSpecs(args.items)
   return args
+}
+
+// The checkout's manifest when there is one, for a run with --item, which
+// needs none. A manifest that is there but cannot be read is still refused.
+function optionalManifest(cwd: string): Located | null {
+  const facts = gitFacts(cwd)
+  return findManifest(cwd, facts.root) === null ? null : locateManifest(cwd, facts)
 }
 
 function missingVars(created: RunCreated, requested: string[]): { name: string; next: NextStep }[] {
@@ -149,62 +163,78 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
   try {
     const args = parseRunArgs(argv)
     const parentEnv = envOf(deps)
-    const located = await locateProjectManifest(deps.api, cwdOf(deps))
-    const { manifest } = located
-    const resolved = resolveEnv(args.env, parentEnv, manifest)
-    writeBanner(deps.stderr, located, resolved.env, args.service === true)
+    const specs = args.items ?? []
+    // With --item a checkout needs no mehen.toml; with one, the project's run goes on beside the items.
+    const located = specs.length > 0 ? optionalManifest(cwdOf(deps)) : await locateProjectManifest(deps.api, cwdOf(deps))
+    const manifest = located?.manifest ?? null
+    if (located === null) {
+      const flag = args.env !== undefined ? "--env" : args.approval !== undefined ? "--approval" : args.service ? "--service" : null
+      if (flag !== null) throw usageError(`${flag} needs a project, and there is no mehen.toml here: --item alone runs with no project or environment.`, RUN_HELP)
+    }
+    const items = specs.length > 0 ? await resolveAdHocItems(deps.api, specs) : []
+    checkAdHocConflicts(items, manifest?.vars.map((v) => v.name) ?? [], [])
+    const resolved = manifest === null ? null : resolveEnv(args.env, parentEnv, manifest)
+    if (located !== null && resolved !== null) writeBanner(deps.stderr, located, resolved.env, args.service === true)
+    if (items.length > 0) writeLine(deps.stderr, mehenLine(s, `ad hoc ${items.map((i) => `${i.item}=${i.variable}`).join(" ")} (each request is a fetch)`))
 
-    const requested = manifest.vars.filter((v) => v.source === "vault").map((v) => v.name)
-    created = await deps.api.request<RunWithOverrides>("POST", "/v1/runs", {
-      project: manifest.project,
-      env: resolved.env,
-      envSource: resolved.source,
-      remote: located.git.remote,
-      worktree: located.worktree,
-      head: located.git.head,
-      vars: requested,
-      command: args.command.slice(0, 2).join(" ").slice(0, 200),
-      argv: args.command,
-      ...(args.approval !== undefined ? { approval: args.approval } : {}),
-      ...(args.service ? { service: true } : {}),
-    })
+    const requested = manifest?.vars.filter((v) => v.source === "vault").map((v) => v.name) ?? []
+    if (located !== null && manifest !== null && resolved !== null) {
+      created = await deps.api.request<RunWithOverrides>("POST", "/v1/runs", {
+        project: manifest.project,
+        env: resolved.env,
+        envSource: resolved.source,
+        remote: located.git.remote,
+        worktree: located.worktree,
+        head: located.git.head,
+        vars: requested,
+        command: args.command.slice(0, 2).join(" ").slice(0, 200),
+        argv: args.command,
+        ...(args.approval !== undefined ? { approval: args.approval } : {}),
+        ...(args.service ? { service: true } : {}),
+      })
+      finished.start = { at: new Date().toISOString(), root: dirname(manifest.path), project: manifest.project, env: resolved.env, service: args.service === true }
+    }
     const run = created
-    finished.start = { at: new Date().toISOString(), root: dirname(manifest.path), project: manifest.project, env: resolved.env, service: args.service === true }
-    // Only null means a service run; a vault from before endsAt sends none.
-    if (args.service && run.endsAt !== null) {
-      writeLine(deps.stderr, warningLine(s, `run ${run.run} is not a service run: this vault does not offer them, so it ends at ${run.endsAt ?? "its maximum life"}`))
-    }
-    for (const name of new Set(run.overrides ?? [])) {
-      if (!requested.includes(name)) continue
-      const variable = run.vars.find(v => v.name === name)
-      const source = variable && "item" in variable ? `your ${variable.item}` : variable?.delivery === "plain" ? "your plain value" : "your source"
-      writeLine(deps.stderr, mehenLine(s, `${name}: override (${source})`))
-    }
-
-    const missing = missingVars(run, requested)
-    if (missing.length > 0) {
-      // run.env and each next step came from the vault: every line crosses the boundary.
-      writeLine(deps.stderr, mehenLine(s, `not starting ${args.command[0]}: ${missing.map((m) => m.name).join(", ")} ${missing.length === 1 ? "has" : "have"} no value for env=${run.env}`))
-      for (const m of missing) {
-        writeLine(deps.stderr, `${m.name}:`)
-        writeNext(deps.stderr, m.next, askVault(deps), s)
+    if (run !== null) {
+      // Only null means a service run; a vault from before endsAt sends none.
+      if (args.service && run.endsAt !== null) {
+        writeLine(deps.stderr, warningLine(s, `run ${run.run} is not a service run: this vault does not offer them, so it ends at ${run.endsAt ?? "its maximum life"}`))
       }
-      return EXIT.human
+      for (const name of new Set(run.overrides ?? [])) {
+        if (!requested.includes(name)) continue
+        const variable = run.vars.find(v => v.name === name)
+        const source = variable && "item" in variable ? `your ${variable.item}` : variable?.delivery === "plain" ? "your plain value" : "your source"
+        writeLine(deps.stderr, mehenLine(s, `${name}: override (${source})`))
+      }
+
+      const missing = missingVars(run, requested)
+      if (missing.length > 0) {
+        // run.env and each next step came from the vault: every line crosses the boundary.
+        writeLine(deps.stderr, mehenLine(s, `not starting ${args.command[0]}: ${missing.map((m) => m.name).join(", ")} ${missing.length === 1 ? "has" : "have"} no value for env=${run.env}`))
+        for (const m of missing) {
+          writeLine(deps.stderr, `${m.name}:`)
+          writeNext(deps.stderr, m.next, askVault(deps), s)
+        }
+        return EXIT.human
+      }
     }
 
     const wanted = new Set(requested)
-    const delivered = run.vars.filter((v) => wanted.has(v.name))
+    const delivered = run?.vars.filter((v) => wanted.has(v.name)) ?? []
     const placeholders = delivered.some((v) => v.delivery === "placeholder")
+    if (run !== null) checkAdHocConflicts(items, [], placeholders ? run.interceptHosts : [])
     const baseUrls = delivered.flatMap((v) => (v.delivery === "base-url" ? [{ item: v.item, upstream: v.value }] : []))
-    if (placeholders || baseUrls.length > 0) {
+    const standIns = placeholders || items.length > 0
+    if (standIns || baseUrls.length > 0) {
       relay = await startRunRelay({
         api: deps.api,
-        run: run.run,
-        env: run.env,
-        interceptHosts: run.interceptHosts,
-        fencedHosts: run.fencedHosts,
+        run: run?.run ?? null,
+        env: run?.env ?? "",
+        interceptHosts: run?.interceptHosts ?? [],
+        fencedHosts: run?.fencedHosts ?? [],
         baseUrls,
-        proxy: placeholders,
+        ...(items.length > 0 ? { itemRoutes: items } : {}),
+        proxy: standIns,
         parentEnv,
         streamWrites: streamsWrites(args, parentEnv),
       }).catch((error: unknown) => {
@@ -214,8 +244,8 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
       })
     }
 
-    const childEnv = inheritedEnv(parentEnv, manifest, deps.stderr)
-    for (const v of manifest.vars) if (v.source === "plain") childEnv[v.name] = v.value
+    const childEnv = inheritedEnv(parentEnv, manifest?.vars.map((v) => v.name) ?? [], items, deps.stderr)
+    for (const v of manifest?.vars ?? []) if (v.source === "plain") childEnv[v.name] = v.value
     const leased: RedactionSecret[] = []
     for (const v of delivered) {
       if (v.delivery === "missing") continue
@@ -227,11 +257,12 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
       childEnv[v.name] = v.value
       if (v.delivery === "lease") leased.push({ label: v.name, value: v.value })
     }
+    for (const item of items) childEnv[item.variable] = item.standIn
     if (relay !== null) Object.assign(childEnv, relay.env)
 
     const commandName = args.command[0] ?? "the command"
-    writeWarning(deps, dotenvWarning(dotenvFiles([dirname(manifest.path), cwdOf(deps)]), cwdOf(deps), commandName))
-    if (placeholders) {
+    writeWarning(deps, dotenvWarning(dotenvFiles([...(manifest !== null ? [dirname(manifest.path)] : []), cwdOf(deps)]), cwdOf(deps), commandName))
+    if (standIns) {
       // The version check is a second process: it gets no leased value.
       const leasedNames = new Set(leased.map((l) => l.label))
       const probeEnv = Object.fromEntries(Object.entries(childEnv).filter(([name]) => !leasedNames.has(name)))
@@ -239,7 +270,7 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
       if (version !== null) writeWarning(deps, nodeWarning(version))
     }
 
-    if (!Number.isFinite(Date.parse(run.expiresAt)) || Date.parse(run.expiresAt) <= Date.now()) {
+    if (run !== null && (!Number.isFinite(Date.parse(run.expiresAt)) || Date.parse(run.expiresAt) <= Date.now())) {
       throw new CommandError(EXIT.error, `run ${run.run} expired before the child could start.`, { say: "Start a new run with mehen run." })
     }
     const redact = leased.length > 0
@@ -281,7 +312,8 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
       handlers.push([signal, forward])
       process.on(signal, forward)
     }
-    authority = watchRunAuthority({
+    // An ad hoc run has no vault run to renew: each request is decided on its own.
+    authority = run === null ? undefined : watchRunAuthority({
       api: deps.api,
       run,
       child,
@@ -298,8 +330,8 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
     const pipes: Promise<void>[] = []
     if (redact && child.stdout instanceof ReadableStream) pipes.push(pipeRedacted(child.stdout, deps.stdout, leased))
     if (redact && child.stderr instanceof ReadableStream) pipes.push(pipeRedacted(child.stderr, deps.stderr, leased))
-    await Promise.race([child.exited, authority.failure])
-    if (authority.stopping) {
+    await Promise.race(authority === undefined ? [child.exited] : [child.exited, authority.failure])
+    if (authority?.stopping) {
       const failure = await authority.failure
       await Promise.all(pipes)
       throw failure
@@ -309,7 +341,7 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
     // Not after a Ctrl-C or a stop mehen passed on: a dev server stopped
     // before anything called it is no sign of a bypass. A quick non-zero exit
     // still warns, since a client that skipped the proxy fails fast on the 401.
-    if (placeholders && finished.signal === null && relay !== null && relay.seen().interceptHosts === 0) writeWarning(deps, bypassWarning(run.interceptHosts, commandName))
+    if (standIns && finished.signal === null && relay !== null && relay.seen().interceptHosts === 0) writeWarning(deps, bypassWarning([...(placeholders ? run?.interceptHosts ?? [] : []), ...items.flatMap((i) => i.hosts)], commandName))
     return exitCodeOf(child.exitCode, child.signalCode)
   } catch (error) {
     return reportFailure(deps, error)

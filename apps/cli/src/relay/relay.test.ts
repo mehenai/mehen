@@ -605,3 +605,91 @@ describe("what the relay saw", () => {
     }
   })
 })
+
+describe("ad hoc item routes", () => {
+  const standIn = newPlaceholder("sk-proj-x")
+  let adHoc: LocalRelay
+
+  beforeAll(async () => {
+    adHoc = await startLocalRelay({ api, run: null, env: "", interceptHosts: [], fencedHosts: [], baseUrls: [], ca, itemRoutes: [{ item: "openai-ad", variable: "OPENAI_API_KEY", hosts: [INTERCEPT], standIn }] })
+  })
+
+  afterAll(async () => {
+    await adHoc?.close()
+  })
+
+  async function curlVia(args: string[]) {
+    return spawnText(["curl", "-sS", "--suppress-connect-headers", "--max-time", "10", "-x", adHoc.proxyUrl, "--cacert", caFile, ...args])
+  }
+
+  test("a request carrying the stand-in becomes an item-mode relay call, the body vault_fetch sends, with no run", async () => {
+    api.relayCalls.length = 0
+    const result = await curlVia(["-H", `Authorization: Bearer ${standIn}`, "--data-binary", "hi", `https://${INTERCEPT}/v1/things?x=1`])
+    expect(result.code).toBe(0)
+    expect(api.relayCalls).toHaveLength(1)
+    const call = api.relayCalls[0]
+    expect(call?.item).toBe("openai-ad")
+    expect(call?.run).toBeUndefined()
+    expect(call?.context).toBeUndefined()
+    expect(call?.method).toBe("POST")
+    expect(call?.url).toBe(`https://${INTERCEPT}/v1/things?x=1`)
+    expect(header(call?.headers, "authorization")).toBe(`Bearer ${standIn}`)
+    expect(Buffer.from(call?.body ?? "", "base64url").toString()).toBe("hi")
+    expect(adHoc.seen().interceptHosts).toBeGreaterThan(0)
+  })
+
+  test("the stand-in in the query string or as a Basic password counts; a request without it is refused and nothing is sent", async () => {
+    api.relayCalls.length = 0
+    expect((await curlVia([`https://${INTERCEPT}/v1/x?api_key=${standIn}`])).code).toBe(0)
+    expect((await curlVia(["-u", `user:${standIn}`, `https://${INTERCEPT}/v1/x`])).code).toBe(0)
+    expect(api.relayCalls.map((c) => c.item)).toEqual(["openai-ad", "openai-ad"])
+    api.relayCalls.length = 0
+    const bare = await curlVia(["-i", "-H", `Authorization: Bearer ${newPlaceholder("sk-proj-x")}`, `https://${INTERCEPT}/v1/x`])
+    expect(bare.stdout).toStartWith("HTTP/1.1 403")
+    expect(bare.stdout).toContain("it does not carry the stand-in mehen run put in OPENAI_API_KEY, so it was not sent with openai-ad. Nothing was sent.")
+    expect(api.relayCalls).toHaveLength(0)
+  })
+
+  test("over plain HTTP through the proxy, the same rule", async () => {
+    api.relayCalls.length = 0
+    const auth = proxyAuth(adHoc.proxyUrl)
+    expect(await firstReply(adHoc.port, `GET http://${INTERCEPT}/v1/x HTTP/1.1\r\nHost: ${INTERCEPT}\r\nAuthorization: Bearer ${standIn}\r\nProxy-Authorization: ${auth}\r\n\r\n`)).toStartWith("HTTP/1.1 200")
+    expect(api.relayCalls[0]).toMatchObject({ item: "openai-ad", url: `http://${INTERCEPT}/v1/x` })
+    expect(await firstReply(adHoc.port, `GET http://${INTERCEPT}/v1/x HTTP/1.1\r\nHost: ${INTERCEPT}\r\nProxy-Authorization: ${auth}\r\n\r\n`)).toStartWith("HTTP/1.1 403")
+    expect(api.relayCalls).toHaveLength(1)
+  })
+
+  test("the vault's refusal and approval_required reach the program as they would from a run, marked Mehen-Error", async () => {
+    api.relayHandler = () => {
+      throw new VaultApiError(409, { error: "approval_required", message: "This request needs approval.", approval: "apr_1", next: { say: "Send this link to Alex.", url: "https://vault.test/w/x/a/apr_1" } })
+    }
+    try {
+      const held = await curlVia(["-i", "-H", `Authorization: Bearer ${standIn}`, `https://${INTERCEPT}/v1/x`])
+      expect(held.stdout).toStartWith("HTTP/1.1 409")
+      expect(held.stdout.toLowerCase()).toContain("mehen-error: 1")
+      expect(held.stdout).toContain('"approval":"apr_1"')
+    } finally {
+      api.relayHandler = (request) => Response.json({ echoed: request }, { headers: { "Mehen-Upstream": "1" } })
+    }
+  })
+
+  test("a write whose answer the vault never finished is the same 424 a run gives", async () => {
+    api.relayHandler = () => {
+      throw new RelayOutcomeUnknownError("the connection to the vault broke")
+    }
+    try {
+      const write = await curlVia(["-i", "-X", "POST", "-H", `Authorization: Bearer ${standIn}`, `https://${INTERCEPT}/v1/x`])
+      expect(write.stdout).toStartWith("HTTP/1.1 424")
+      expect(write.stdout.toLowerCase()).toContain("x-should-retry: false")
+    } finally {
+      api.relayHandler = (request) => Response.json({ echoed: request }, { headers: { "Mehen-Upstream": "1" } })
+    }
+  })
+
+  test("other hosts are tunnelled as before, an address that could be a bound host is refused, and there is no base URL", async () => {
+    const auth = proxyAuth(adHoc.proxyUrl)
+    expect(await firstReply(adHoc.port, `CONNECT 127.0.0.1:${echoPort} HTTP/1.1\r\nProxy-Authorization: ${auth}\r\n\r\n`)).toStartWith("HTTP/1.1 200")
+    expect(await firstReply(adHoc.port, `CONNECT 10.9.9.9:443 HTTP/1.1\r\nProxy-Authorization: ${auth}\r\n\r\n`)).toStartWith("HTTP/1.1 403")
+    expect(await firstReply(adHoc.port, "GET /r/x/openai-ad/v1 HTTP/1.1\r\nHost: x\r\n\r\n")).toStartWith("HTTP/1.1 403")
+  })
+})

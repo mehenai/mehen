@@ -62,6 +62,28 @@ Placeholders need the program to use `HTTPS_PROXY` and trust the run's CA, which
 
 **Do not** print the environment (`env`, `printenv`, environment dumps) inside `mehen run` to "debug". Placeholders are useless to you and real values are exactly what must not reach your context. Use `mehen env check` and `mehen show`.
 
+## One credential, no project
+
+To give one command a credential without setting up a project, name it with `--item`:
+
+```sh
+mehen run --item openai -- python app.py               # OPENAI_API_KEY, from the template
+mehen run --item work-gh=GH_TOKEN -- ./release.sh       # name the variable yourself
+mehen run --item openai --item anthropic -- bun dev     # several, each its own variable
+```
+
+The variable is the one the credential's template names (`OPENAI_API_KEY` for OpenAI, `GITHUB_TOKEN` for a GitHub token), or the name after `=`. A credential whose template names none needs `=<VAR>`, and a name that is not a valid environment variable name is a usage error.
+
+How it works:
+
+- **The program gets a stand-in, never the key.** The stand-in has the key's well-known prefix (`sk-proj-`, `ghp_`) so SDKs that check a key's shape accept it, then random characters. It is new for each run and worthless anywhere else.
+- **Each request is a fetch.** `mehen run` points the program at its local relay, which intercepts only the hosts the vault returned for the credential. A request to one of them that carries the stand-in goes to the vault exactly as `mehen fetch` and `vault_fetch` send it, and the vault puts the key in. A request to that host without the stand-in is refused with a 403 and nothing is sent.
+- **Every request is decided as a fetch is.** The credential's binding, policy, fences, standing rules and mandates apply to each request, and a write the policy holds asks for approval request by request: the program gets the vault's `approval_required` answer (HTTP 409 with the link), and must send the request again once a person approves. There is no run to approve as a whole.
+- **The audit shows fetches.** Each request is recorded as this machine's use of the credential, as `vault_fetch` records it, not as a run.
+- **No real values.** There are no leases: a lease-only credential (a database URL, an Other secret) is refused with the steps to use it through a project. A credential the vault does not show this machine outside a project is refused before anything starts, and one behind a protected environment is refused by the vault on the first request, as `mehen fetch` without a context is.
+
+`--item` needs no `mehen.toml`. In a checkout that has one, the project's run goes on beside the items: `--item` may not set a variable the manifest declares, or use a host the project's run already intercepts. Without a manifest, `--env`, `--approval` and `--service` are usage errors. Some credentials cannot be used this way and are refused with a next step: one bound to no host, to a wildcard over a whole top-level domain (the run's CA could not be held to it), or sent as a stored map of headers.
+
 ## Environments and production
 
 `mehen env set` works only in unprotected environments, and never points a variable at a credential that backs a protected environment. Only a human, with a passkey, sets protected variables, protection and fences.

@@ -45,10 +45,16 @@ describe("resolveEnv", () => {
 describe("inheritedEnv", () => {
   test("drops MEHEN_* and declared ambient variables, warning for each override", () => {
     const err = capture()
-    const env = inheritedEnv({ PATH: "/bin", MEHEN_ENV: "dev", MEHEN_TOKEN: "x", DATABASE_URL: "postgres://prod", LOG_LEVEL: "debug", HOME: "/home/a" }, manifest, err)
+    const env = inheritedEnv({ PATH: "/bin", MEHEN_ENV: "dev", MEHEN_TOKEN: "x", DATABASE_URL: "postgres://prod", LOG_LEVEL: "debug", HOME: "/home/a" }, manifest.vars.map((v) => v.name), [], err)
     expect(env).toEqual({ PATH: "/bin", HOME: "/home/a" })
     expect(err.text()).toContain("ignoring DATABASE_URL from your shell")
     expect(err.text()).toContain("ignoring LOG_LEVEL from your shell")
     expect(err.text()).not.toContain("postgres://prod")
+  })
+
+  test("drops a variable an --item sets, naming the item", () => {
+    const err = capture()
+    expect(inheritedEnv({ PATH: "/bin", OPENAI_API_KEY: "sk-from-shell" }, [], [{ item: "openai", variable: "OPENAI_API_KEY" }], err)).toEqual({ PATH: "/bin" })
+    expect(err.text()).toBe("mehen: warning: ignoring OPENAI_API_KEY from your shell; --item openai sets it\n")
   })
 })
