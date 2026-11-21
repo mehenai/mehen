@@ -39,6 +39,9 @@ jobs:
             if p=$(command -v "$c"); then nohup bun tools/ci/warm-chrome.ts "$p" > /dev/null 2>&1 & fi
           done
       - run: bun install --frozen-lockfile
+      # First, so a stray dash fails in seconds rather than after the suites.
+      - name: No dashes in the em or en family
+        run: bun run check:dashes
       - run: bun run typecheck
       # Many CLI tests start the real mehen several times over; on a two-core
       # hosted runner some take longer than bun's 5 s default.
@@ -59,8 +62,6 @@ jobs:
       - run: bun run --cwd apps/web check
       # The docs site: generate, build, typecheck, the docs lint, its tests and a dry-run deploy.
       - run: bun run --cwd apps/docs check
-      - name: No dashes in the em or en family
-        run: "! grep -rnP '[\\x{2013}\\x{2014}\\x{2015}\\x{2E3A}]' --include='*.ts' --include='*.md' --include='*.json' --include='*.jsonc' --include='*.toml' --include='*.html' --include='*.css' --include='*.js' --include='*.svg' --exclude-dir=node_modules . "
   # The UI gallery's layout check, on the runner CI_RUNS_ON names (or
   # ubuntu-latest): every page state at
   # 360, 390, 768, 1024 and 1280 px in light and dark, measured without
