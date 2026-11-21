@@ -26,6 +26,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      # The launcher's tests refuse a world-writable TMPDIR, as ci.yml's do.
+      - run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: bun test ./deploy
       - name: Publish @mehenai/cli
         working-directory: deploy/npm/cli
