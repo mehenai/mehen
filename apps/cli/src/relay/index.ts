@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { VaultApi } from "../vault-api.ts"
 import { createRunCa } from "./ca.ts"
-import { type BaseUrlRoute, startLocalRelay } from "./relay.ts"
+import { type BaseUrlRoute, type RelaySeen, startLocalRelay } from "./relay.ts"
 import { loadSystemRoots } from "./system-roots.ts"
 
 export type RunRelayOptions = {
@@ -29,6 +29,9 @@ export type RunRelay = {
   env: Record<string, string>
   // The local base URL that replaces each base-url item's upstream.
   baseUrls: Map<string, string>
+  // What reached the relay so far: mehen run warns when a run with
+  // placeholders ends with no connection to any intercept host.
+  seen(): RelaySeen
   close(): Promise<void>
 }
 
@@ -76,10 +79,13 @@ export async function startRunRelay(options: RunRelayOptions): Promise<RunRelay>
         REQUESTS_CA_BUNDLE: bundleFile,
         CURL_CA_BUNDLE: bundleFile,
         GIT_SSL_CAINFO: bundleFile,
+        // The AWS CLI and SDKs and Deno each read only their own variable.
+        AWS_CA_BUNDLE: bundleFile,
+        DENO_CERT: bundleFile,
       })
     }
     const baseUrls = new Map(options.baseUrls.map((route) => [route.item, relay.baseUrl(route.item)]))
-    return { port: relay.port, env, baseUrls, close }
+    return { port: relay.port, env, baseUrls, seen: () => relay.seen(), close }
   } catch (error) {
     await close()
     throw error
