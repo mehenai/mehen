@@ -41,7 +41,7 @@ import {
 import { printJson, printLine } from "./output.ts"
 import { compareVersions, downloadBase, releaseBytes, releaseTrust, sha256, verifiedBinary, verifiedRelease, type ReleaseFetch } from "./release-client.ts"
 import type { SkillReport } from "./setup/skills.ts"
-import { BUILD_COMMIT, type BuildKind, VERSION } from "./version.ts"
+import { BUILD_COMMIT, BUILD_LIBC, type BuildKind, type Libc, VERSION } from "./version.ts"
 
 export type UpdateReport = { current: string; latest: string | null; available: boolean; updated: boolean; path: string; result: "updated" | "current" | "locked" | "held" | "rolled_back"; holder?: LockHolder; from?: string; to?: string; skills?: SkillReport[] }
 export type UpdateCheck = { current: string; latest: string | null; available: boolean; path: string; installed: InstalledRecord | null; pending: PendingJournal | null }
@@ -66,6 +66,8 @@ export type UpdateOptions = {
   wait?: boolean
   platform?: NodeJS.Platform
   arch?: string
+  // The libc of the binary to fetch on Linux: this build's own by default.
+  libc?: Libc
   fetch?: ReleaseFetch
   now?: () => number
   smoke?: (path: string) => Promise<unknown>
@@ -137,14 +139,15 @@ async function exists(path: string): Promise<boolean> {
   return lstat(path).then(() => true, () => false)
 }
 
-function platformArch(options: UpdateOptions): { platform: "darwin" | "linux"; arch: "arm64" | "x64" } {
+function platformBinary(options: UpdateOptions): { platform: "darwin" | "linux"; binary: string } {
   const platform = options.platform ?? process.platform
   const requested = options.arch ?? process.arch
   // Rosetta: an x64 process on Apple silicon installs the arm64 binary.
   const arch = options.arch === undefined && platform === "darwin" && requested === "x64" && spawnSync("/usr/sbin/sysctl", ["-n", "hw.optional.arm64"], { encoding: "utf8" }).stdout?.trim() === "1" ? "arm64" : requested
   if (platform !== "darwin" && platform !== "linux") throw usageError("Updates support macOS and Linux only.")
   if (arch !== "arm64" && arch !== "x64") throw usageError("Updates support arm64 and x64 only.")
-  return { platform, arch }
+  const musl = platform === "linux" && (options.libc ?? BUILD_LIBC) === "musl"
+  return { platform, binary: `mehen-${platform}-${arch}${musl ? "-musl" : ""}` }
 }
 
 // `<staged> version --json` under MEHEN_UPDATE_CHILD=1 with a 10 s budget.
@@ -391,7 +394,7 @@ async function currentRecord(options: UpdateOptions, state: InstallState): Promi
   return { version: options.current ?? VERSION, commit: options.commit ?? BUILD_COMMIT, sha256: disk.sha256, size: disk.size, at: new Date((options.now ?? Date.now)()).toISOString(), by: "install", keyId: null, manifestSha256: null, manifest: null }
 }
 
-async function rollback(options: UpdateOptions, state: InstallState, step: (s: UpdateStep) => Promise<void>, platform: "darwin" | "linux", arch: string): Promise<UpdateReport> {
+async function rollback(options: UpdateOptions, state: InstallState, step: (s: UpdateStep) => Promise<void>, platform: "darwin" | "linux", binary: string): Promise<UpdateReport> {
   const { install } = options
   const refuse = () => new CliError("failed", "The previous binary cannot be verified, so it is not rolled back to; `mehen update --force --version <v> --json` installs a signed release, and anything else is the human's to repair.", { command: "mehen update --force --version <v> --json", say: `The previous binary has no signed record. A signed release may be installed with that command; otherwise ${HUMAN_REPAIR.charAt(0).toLowerCase()}${HUMAN_REPAIR.slice(1)}` })
   let record: unknown
@@ -411,7 +414,7 @@ async function rollback(options: UpdateOptions, state: InstallState, step: (s: U
   } catch {
     throw refuse()
   }
-  const file = manifest.files.find((f) => f.name === `mehen-${platform}-${arch}`)
+  const file = manifest.files.find((f) => f.name === binary)
   if (manifest.version !== r.version || !file || file.sha256 !== r.sha256 || file.size !== r.size) throw refuse()
   const current = await currentRecord(options, state)
   const stage = await mkdtemp(join(install.dir, STAGING_PREFIX))
@@ -432,7 +435,7 @@ async function rollback(options: UpdateOptions, state: InstallState, step: (s: U
   }
 }
 
-async function underLock(options: UpdateOptions, platform: "darwin" | "linux", arch: "arm64" | "x64"): Promise<UpdateReport> {
+async function underLock(options: UpdateOptions, platform: "darwin" | "linux", binary: string): Promise<UpdateReport> {
   const { install } = options
   const now = options.now ?? Date.now
   const step = async (s: UpdateStep) => {
@@ -449,7 +452,7 @@ async function underLock(options: UpdateOptions, platform: "darwin" | "linux", a
   const staged = await holdsStaging(install)
   const recovered = recoveryNote(await recoverOrReconcile(options, state), interrupted, staged, state, options.current ?? VERSION)
   await step("recovered")
-  if (options.rollback) return rollback(options, state, step, platform, arch)
+  if (options.rollback) return rollback(options, state, step, platform, binary)
 
   const base = downloadBase(options.env)
   let manifest: SignedManifest
@@ -482,7 +485,7 @@ async function underLock(options: UpdateOptions, platform: "darwin" | "linux", a
     from = current.version
     const comparison = compareVersions(manifest.version, current.version)
     const report = { current: current.version, latest: manifest.version, available: comparison > 0, updated: false, path: install.binary }
-    const file = manifest.files.find((f) => f.name === `mehen-${platform}-${arch}`)
+    const file = manifest.files.find((f) => f.name === binary)
     // The running version is a floor of its own, never inferred from the
     // record of the bytes on disk: an older matching record must
     // not let an ordinary update go below the process doing it.
@@ -509,7 +512,7 @@ async function underLock(options: UpdateOptions, platform: "darwin" | "linux", a
 
     stage = await mkdtemp(join(install.dir, STAGING_PREFIX))
     phase = "download"
-    const bytes = await verifiedBinary(base, manifest, `mehen-${platform}-${arch}`, boundFetch(options))
+    const bytes = await verifiedBinary(base, manifest, binary, boundFetch(options))
     const staged = join(stage, "mehen")
     await writeFile(staged, bytes, { mode: 0o755 })
     stripQuarantine(staged)
@@ -563,9 +566,9 @@ export async function update(options: UpdateOptions): Promise<UpdateReport>
 export async function update(options: UpdateOptions): Promise<UpdateReport | UpdateCheck> {
   if (options.version !== undefined && options.version !== null && !VERSION_PATTERN.test(options.version)) throw usageError("--version needs a release version such as 0.3.0.")
   if (options.check) return checkOnly(options)
-  const { platform, arch } = platformArch(options)
+  const { platform, binary } = platformBinary(options)
   if (!(await installDirWritable(options.install))) throw new CliError("failed", `${options.install.dir} is not writable, so mehen cannot update itself there. ${notChanged}`, { say: "Update with the account that owns the install directory; mehen never uses sudo." })
-  const locked = await withInstallLock(options.install, options.rollback ? "rollback" : options.by, () => underLock(options, platform, arch), options.wait === false ? { wait: false } : options.signal ? { signal: options.signal } : undefined)
+  const locked = await withInstallLock(options.install, options.rollback ? "rollback" : options.by, () => underLock(options, platform, binary), options.wait === false ? { wait: false } : options.signal ? { signal: options.signal } : undefined)
   if (!locked.ok) return { current: options.current ?? VERSION, latest: null, available: false, updated: false, path: options.install.binary, result: "locked", holder: locked.holder }
   return locked.value
 }

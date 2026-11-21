@@ -9,7 +9,9 @@
 //
 // Every binary carries the short commit as MEHEN_BUILD_COMMIT and the build
 // kind as MEHEN_BUILD_KIND ("release" with --release, else "dev"), which
-// `mehen version --json` prints next to the package version.
+// `mehen version --json` prints next to the package version, and the target
+// it was built for as MEHEN_BUILD_TARGET, so the updater on a musl system
+// fetches the musl binary again rather than the glibc one beside it.
 //
 // Order: (1) the helper is built once, first, when any darwin target is
 // asked for (macOS only; a darwin target without it is a dev build, and
@@ -25,7 +27,8 @@
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
-export const TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const
+// The -musl targets link musl's libc and libstdc++ (Alpine: apk add libstdc++).
+export const TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "linux-x64-musl", "linux-arm64-musl"] as const
 export type Target = (typeof TARGETS)[number]
 
 export const CLI_DIR = join(import.meta.dir, "..")
@@ -97,7 +100,7 @@ export async function buildTargets(input: BuildTargetsInput): Promise<string[]> 
     for (const target of input.targets) {
       const outfile = join(input.dist, `mehen-${target}`)
       await writeFile(GENERATED_HELPER_MODULE, embeddedHelperModule(target, input.helper))
-      await input.run([process.execPath, "build", "--compile", "--minify", `--define=MEHEN_BUILD_COMMIT=${JSON.stringify(input.commit)}`, `--define=MEHEN_BUILD_KIND=${JSON.stringify(input.release ? "release" : "dev")}`, `--target=bun-${target}`, "src/main.ts", "--outfile", outfile], CLI_DIR)
+      await input.run([process.execPath, "build", "--compile", "--minify", `--define=MEHEN_BUILD_COMMIT=${JSON.stringify(input.commit)}`, `--define=MEHEN_BUILD_KIND=${JSON.stringify(input.release ? "release" : "dev")}`, `--define=MEHEN_BUILD_TARGET=${JSON.stringify(target)}`, `--target=bun-${target}`, "src/main.ts", "--outfile", outfile], CLI_DIR)
       if (isDarwin(target) && platform === "darwin") await input.run(["codesign", "--force", "--sign", "-", "--identifier", CLI_IDENTIFIER, outfile], CLI_DIR)
       built.push(outfile)
     }

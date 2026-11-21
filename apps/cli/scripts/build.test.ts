@@ -10,7 +10,9 @@ describe("parseBuildArgs", () => {
   test("every target by default; repeatable targets, --no-mehen-se, --release and --commit", () => {
     expect(parseBuildArgs([])).toEqual({ targets: [...TARGETS], mehenSe: true, release: false, commit: null })
     expect(parseBuildArgs(["--target", "linux-x64", "--target", "linux-x64", "--target", "darwin-arm64", "--no-mehen-se", "--release", "--commit", "a53a3de"])).toEqual({ targets: ["linux-x64", "darwin-arm64"], mehenSe: false, release: true, commit: "a53a3de" })
-    for (const argv of [["--target", "windows-x64"], ["--target"], ["--commit", "HEAD"], ["--sign"]]) expect(() => parseBuildArgs(argv)).toThrow(BuildError)
+    expect(TARGETS).toEqual(["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "linux-x64-musl", "linux-arm64-musl"])
+    expect(parseBuildArgs(["--target", "linux-x64-musl"]).targets).toEqual(["linux-x64-musl"])
+    for (const argv of [["--target", "windows-x64"], ["--target", "darwin-arm64-musl"], ["--target"], ["--commit", "HEAD"], ["--sign"]]) expect(() => parseBuildArgs(argv)).toThrow(BuildError)
   })
 })
 
@@ -57,19 +59,23 @@ describe("buildTargets", () => {
       expect(cwd).toBe(CLI_DIR)
       seen.push({ cmd, module: cmd[1] === "build" ? await readFile(GENERATED_HELPER_MODULE, "utf8") : null })
     }
-    const targets: Target[] = ["darwin-arm64", "linux-x64", "darwin-x64"]
+    const targets: Target[] = ["darwin-arm64", "linux-x64", "darwin-x64", "linux-arm64-musl"]
     const built = await buildTargets({ targets, release: true, commit: "a53a3de", helper: "/abs/mehen-se", dist, platform: "darwin", run })
     expect(built).toEqual(targets.map((t) => join(dist, `mehen-${t}`)))
     expect(seen.map((s) => s.cmd[0] === "codesign" ? `sign ${s.cmd.at(-1)}` : `build ${s.cmd.find((a) => a.startsWith("--target="))}`)).toEqual([
       "build --target=bun-darwin-arm64", `sign ${join(dist, "mehen-darwin-arm64")}`,
       "build --target=bun-linux-x64",
       "build --target=bun-darwin-x64", `sign ${join(dist, "mehen-darwin-x64")}`,
+      "build --target=bun-linux-arm64-musl",
     ])
     const builds = seen.filter((s) => s.cmd[1] === "build")
     expect(builds[0]!.module).toBe(embeddedHelperModule("darwin-arm64", "/abs/mehen-se"))
     expect(builds[1]!.module).toBe(embeddedHelperModule("linux-x64", "/abs/mehen-se"))
     expect(builds[1]!.module).toContain("= null")
     for (const b of builds) expect(b.cmd).toEqual(expect.arrayContaining(['--define=MEHEN_BUILD_COMMIT="a53a3de"', '--define=MEHEN_BUILD_KIND="release"']))
+    // Each binary knows the target it is, so a musl one updates to musl.
+    expect(builds.map((b) => b.cmd.find((a) => a.startsWith("--define=MEHEN_BUILD_TARGET=")))).toEqual(targets.map((t) => `--define=MEHEN_BUILD_TARGET="${t}"`))
+    expect(builds[3]!.module).toContain("= null")
     expect(seen.find((s) => s.cmd[0] === "codesign")!.cmd).toEqual(["codesign", "--force", "--sign", "-", "--identifier", CLI_IDENTIFIER, join(dist, "mehen-darwin-arm64")])
     expect(await generatedExists()).toBe(false)
     await rm(dist, { recursive: true, force: true })

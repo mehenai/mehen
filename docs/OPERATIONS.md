@@ -241,11 +241,11 @@ The CLI is a standalone binary built from `apps/cli` with the protocol compiled 
 
 ```sh
 cd apps/cli
-bun scripts/build.ts --target darwin-arm64      # one target; repeat --target for more, or leave it out for all four
+bun scripts/build.ts --target darwin-arm64      # one target; repeat --target for more, or leave it out for all six
 bun scripts/build.ts --no-mehen-se                 # skip the Secure Enclave helper (it builds on macOS only)
 ```
 
-Targets are `darwin-arm64`, `darwin-x64`, `linux-x64` and `linux-arm64`; the binaries land in `apps/cli/dist/` as `mehen-<target>`, with the Secure Enclave helper embedded in each darwin binary. `bun run --cwd apps/cli build` builds every target. To install one, move it into place with `mv` on the same filesystem (usually `~/.local/bin/mehen`); never `cp` over a running binary. A hand-placed binary is recorded by the next update as installed by hand: it is not signed, the background updater replaces it with the next signed release, and a running `mehen mcp` never switches to it. Enrolments live under `MEHEN_HOME` (default `~/.config/mehen`, one slot per workspace), not in the binary, so a rebuild keeps them. `mehen status` prints the fingerprint `mehen enrol` recorded; a machine enrolled before `mehen` recorded it shows the one the vault holds for its key (from `GET /v1/me`), marked as such, and needs no re-enrolment.
+Targets are `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `linux-x64-musl` and `linux-arm64-musl`; the binaries land in `apps/cli/dist/` as `mehen-<target>`, with the Secure Enclave helper embedded in each darwin binary. `bun run --cwd apps/cli build` builds every target. To install one, move it into place with `mv` on the same filesystem (usually `~/.local/bin/mehen`); never `cp` over a running binary. A hand-placed binary is recorded by the next update as installed by hand: it is not signed, the background updater replaces it with the next signed release, and a running `mehen mcp` never switches to it. Enrolments live under `MEHEN_HOME` (default `~/.config/mehen`, one slot per workspace), not in the binary, so a rebuild keeps them. `mehen status` prints the fingerprint `mehen enrol` recorded; a machine enrolled before `mehen` recorded it shows the one the vault holds for its key (from `GET /v1/me`), marked as such, and needs no re-enrolment.
 
 ## Releasing the CLI
 
@@ -262,7 +262,7 @@ Every release is signed with a release key ([Release keys](#release-keys)); `--r
    bun tools/release/release.ts --out "$RELEASE_DIR" --release --upload-script "$RELEASE_DIR-upload.sh"
    ```
 
-   This writes `v<version>/mehen-<os>-<arch>.gz`, `v<version>/mehen-se.gz`, `v<version>/manifest.json` and `latest.json` under `RELEASE_DIR`. The manifest is signed through the freshly built helper with the only key in `RELEASE_KEYS` (or `--key <id>`), and the signature is verified against `RELEASE_KEYS` before anything is written; a key whose sidecar disagrees with its compiled entry, `presence` included, signs nothing. A presence key asks for Touch ID or the password, so run the release in a desktop session on the release Mac, not over SSH. Before assembling, the tool checks the host binary's `version --json`, `codesign --verify --strict` on every darwin binary, and that the host's darwin binary extracts its helper (`version --extract-helper`) as a signed file that runs. `mehen-se.gz` is still published so that an old 0.2.0 `mehen update` completes. An existing version directory or a dirty tree is refused. `--allow-dirty` is for local trials only, never a public release. `--upload` and `--upload-script` are refused without `--release`, which stamps the binaries as a release build. The tool runs the host binary's `version --json` and checks its version and commit before publishing the local manifest.
+   This writes `v<version>/mehen-<os>-<arch>.gz`, `v<version>/mehen-se.gz`, `v<version>/manifest.json` and `latest.json` under `RELEASE_DIR`, and beside them, never uploaded to the bucket, `github/v<version>/SHA256SUMS` (the sha256 of each `.gz` and of `manifest.json`) and `github/v<version>/mehen.rb`, the Homebrew formula written from the signed manifest. Each binary is stamped with the target it was built for (`MEHEN_BUILD_TARGET`). The manifest is signed through the freshly built helper with the only key in `RELEASE_KEYS` (or `--key <id>`), and the signature is verified against `RELEASE_KEYS` before anything is written; a key whose sidecar disagrees with its compiled entry, `presence` included, signs nothing. A presence key asks for Touch ID or the password, so run the release in a desktop session on the release Mac, not over SSH. Before assembling, the tool checks the host binary's `version --json`, `codesign --verify --strict` on every darwin binary, and that the host's darwin binary extracts its helper (`version --extract-helper`) as a signed file that runs. `mehen-se.gz` is still published so that an old 0.2.0 `mehen update` completes. An existing version directory or a dirty tree is refused. `--allow-dirty` is for local trials only, never a public release. `--upload` and `--upload-script` are refused without `--release`, which stamps the binaries as a release build. The tool runs the host binary's `version --json` and checks its version and commit before publishing the local manifest.
 
    For a local single-platform build, pass `--target darwin-arm64` (repeatable). Partial target sets refuse `--upload` and `--upload-script` unless `--partial` is explicit. Cross-target Bun builds download the target runtime on their first build unless it is cached; prepare that cache before an offline build. A partial upload script says so in its first comment; never run one for a public release.
 
@@ -303,6 +303,8 @@ Every release is signed with a release key ([Release keys](#release-keys)); `--r
    ```
 
    The printed script uses `bunx wrangler r2 object put ... --remote`. The required order is all five versioned `.gz` files, then that version's `manifest.json`, then `latest.json` last. Never upload latest first, or overwrite a versioned file. Keep the local release tree for rollback. The web routes stream allowed keys only; they do not list the bucket.
+
+   After `latest.json`, from the repository root, the script mirrors the release to GitHub ("The GitHub Release" below), which also starts the container image build, and then publishes the Homebrew formula only when `MEHEN_PUBLISH_BREW=1` is set, which it is not yet ("The Homebrew tap" below). `gh` must be signed in on the release Mac as someone who can push tags and create releases on `mehenai/mehen` (`gh auth status`). If the GitHub step fails after `latest.json` is up, fix the cause and run only the script's lines after `cd ../..` again, from the repository root: they skip what exists, and the bucket's versioned files are never written twice.
 
 6. Deploy the web routes and static guides only after the signed artefacts are uploaded, then run the following checks from the repository root.
 
@@ -345,6 +347,30 @@ The first push creates the package private. Once, after it, make it public in th
 docker buildx imagetools inspect ghcr.io/mehenai/mehen:<version>
 gh attestation verify oci://ghcr.io/mehenai/mehen:<version> --repo mehenai/mehen
 ```
+
+### The GitHub Release
+
+The upload script's last step makes `v<version>` on `mehenai/mehen`: the tag on the release commit, created on GitHub through the API when it does not exist, then `gh release create v<version> --verify-tag` with the five `.gz` files and `manifest.json` as uploaded to the bucket, byte for byte, and `SHA256SUMS`. A release that exists already is left alone, and a tag that exists on another commit stops the script before anything is created. The tag push and the published release both start the container image workflow (`.github/workflows/image.yml`); its second run finds the image pushed and stops. To mirror a release by hand, run those same lines. Nothing installs from GitHub Releases: the installer and the updater read `https://mehen.dev/dl/`, and anyone downloading from GitHub can check a file against the signed `manifest.json` or `SHA256SUMS`.
+
+### The Homebrew tap
+
+`mehenai/homebrew-tap` exists, with a README and no formula. Every release writes `github/v<version>/mehen.rb`, which `brew install` and `brew test` accept (checked against 0.4.1's manifest on Linuxbrew), and the upload script publishes it to the tap's `Formula/mehen.rb` only with `MEHEN_PUBLISH_BREW=1`:
+
+```sh
+MEHEN_PUBLISH_BREW=1 sh "$RELEASE_DIR-upload.sh"
+```
+
+Leave it unset until `mehen` handles a Homebrew install. Today a binary brew installs runs from `<prefix>/Cellar/mehen/<version>/bin/mehen`, which is what `mehen setup`, `mehen guard install` and `mehen up` write into the agents' MCP entries, the guard hooks and the service units, and which `brew upgrade` and `brew cleanup` delete. The self-updater also treats the keg as its own installation and replaces the binary in it. Before turning it on, `mehen` needs to recognise a Cellar install, leave updating to `brew upgrade mehen`, and write `<prefix>/opt/mehen/bin/mehen` (which survives upgrades) wherever it records its own path. With the step on, it clones the tap, writes the formula, and commits and pushes only when it changed.
+
+### The musl builds
+
+`scripts/build.ts` builds `linux-x64-musl` and `linux-arm64-musl`, which run on Alpine and other musl-based Linux with libstdc++ installed (checked on Alpine 3.22, x64 and arm64: `version`, `serve` with `dumpable` off, and a signed `update --check`). A release does not publish them yet, because a `mehen` from before `apps/cli/src/release-client.ts` accepted their names refuses a whole manifest that lists them, and with it every update: adding them to a release now would stop every such machine updating. Until then the installer, on a musl system, stops before fetching a binary and says the release has no build for it.
+
+To add them, once a release that accepts the names is out:
+
+1. Check that no active machine runs an older CLI: `bun scripts/fleet-versions.ts --remote --below <that release>` from `apps/vault`, and raise `CLI_MINIMUM_VERSION` to it if some do and should move first.
+2. In one reviewed change, add `linux-x64-musl` and `linux-arm64-musl` to `TARGETS` in `tools/release/release.ts` and `mehen-linux-x64-musl` and `mehen-linux-arm64-musl` (os `linux`, arch `x64` and `arm64`) to `tools/release/binaries.ts`, update the tests that pin those lists, and change the docs that say musl is not supported (`README.md`, `docs/site/start.md`, `docs/site/setup.md`, `docs/site/guides/connect-one-workspace.md`, `docs/site/start/another-machine.md`, `deploy/npm/cli/README.md`), naming libstdc++.
+3. Release as usual; the upload script then uploads seven `.gz` files. `apps/web` serves the `-musl` names from the release that carries this change.
 
 ### A security release
 

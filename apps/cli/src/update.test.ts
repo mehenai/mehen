@@ -183,6 +183,23 @@ describe("checking and installing", () => {
     expect(await readdir(root)).not.toContain("mehen-se")
     expect(await readdir(root)).not.toContain(".mehen-se.sha256")
   })
+
+  test("a musl build fetches the musl binary, refuses a release without one, and the glibc build never takes it", async () => {
+    for (const name of ["mehen-linux-x64-musl", "mehen-linux-arm64-musl"]) manifest.files.push({ ...manifest.files[0]!, name, url: `https://mehen.dev/dl/v1.2.3/${name}.gz` })
+    expect(await run({ libc: "musl" })).toMatchObject({ result: "updated", to: "1.2.3" })
+    expect(requests.filter((p) => p.endsWith(".gz"))).toEqual(["/dl/v1.2.3/mehen-linux-x64-musl.gz"])
+    setRelease(release("1.2.4"), "1.2.4")
+    await expect(run({ current: "1.2.3", libc: "musl", arch: "arm64" })).rejects.toThrow("no mehen-linux-arm64-musl")
+    requests = []
+    expect(await run({ current: "1.2.3", libc: "glibc" })).toMatchObject({ result: "updated", to: "1.2.4" })
+    expect(requests.filter((p) => p.endsWith(".gz"))).toEqual(["/dl/v1.2.4/mehen-linux-x64.gz"])
+  })
+
+  test("musl applies to Linux only: a darwin update with libc musl still fetches the darwin binary", async () => {
+    setRelease(release("1.2.3", { helper: "embedded" }))
+    expect(await run({ platform: "darwin", arch: "arm64", libc: "musl" })).toMatchObject({ result: "updated" })
+    expect(requests.filter((p) => p.endsWith(".gz"))).toEqual(["/dl/v1.2.3/mehen-darwin-arm64.gz"])
+  })
 })
 
 describe("trust and anti-rollback", () => {

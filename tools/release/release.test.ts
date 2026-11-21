@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type Manifest, RELEASE_BINARIES, ReleaseError, assembleRelease, cliVersion, notarise, parseReleaseArgs, uploadCommands } from "./release.ts"
+import { type Manifest, RELEASE_BINARIES, ReleaseError, TARGETS, assembleRelease, checksums, cliVersion, githubAssets, githubCommands, homebrewFormula, notarise, parseReleaseArgs, uploadCommands, writeGithubFiles } from "./release.ts"
 import { RELEASE_KEYS } from "../../apps/cli/src/release-keys.ts"
 
 let root: string
@@ -72,6 +72,146 @@ describe("uploadCommands", () => {
     expect(commands[0]).toBe(`wrangler r2 object put mehen-releases/v0.2.0/mehen-darwin-arm64.gz --file ${join(out, "v0.2.0", "mehen-darwin-arm64.gz")} --content-type application/gzip --remote`)
     expect(commands.at(-2)).toContain("mehen-releases/v0.2.0/manifest.json")
     expect(commands.at(-1)).toBe(`wrangler r2 object put mehen-releases/latest.json --file ${join(out, "latest.json")} --content-type application/json --remote`)
+  })
+})
+
+describe("the musl builds", () => {
+  // apps/cli/src/release-client.test.ts holds RELEASE_BINARIES to the names
+  // an installed mehen accepts.
+  test("are not in the release yet", async () => {
+    expect(TARGETS).toEqual(["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"])
+    const manifest = await assembleRelease(input())
+    expect(manifest.files.some((f) => f.name.endsWith("-musl"))).toBe(false)
+  })
+})
+
+const COMMIT = "a53a3de0123456789abcdef0123456789abcdef0"
+
+describe("the Homebrew formula", () => {
+  test("names each platform's .gz on mehen.dev with its compressed sha256, installs it as mehen and tests --version", async () => {
+    const manifest = await assembleRelease(input())
+    const formula = homebrewFormula(manifest)
+    const gz = (name: string) => manifest.files.find((f) => f.name === name)!.gzSha256
+    expect(formula).toContain('class Mehen < Formula\n')
+    expect(formula).toContain('  version "0.2.0"\n  license "Apache-2.0"\n')
+    expect(formula).toContain(`  on_macos do\n    on_arm do\n      url "https://mehen.dev/dl/v0.2.0/mehen-darwin-arm64.gz"\n      sha256 "${gz("mehen-darwin-arm64")}"\n    end\n    on_intel do\n      url "https://mehen.dev/dl/v0.2.0/mehen-darwin-x64.gz"\n      sha256 "${gz("mehen-darwin-x64")}"\n    end\n  end\n`)
+    expect(formula).toContain(`  on_linux do\n    on_arm do\n      url "https://mehen.dev/dl/v0.2.0/mehen-linux-arm64.gz"\n      sha256 "${gz("mehen-linux-arm64")}"\n    end\n    on_intel do\n      url "https://mehen.dev/dl/v0.2.0/mehen-linux-x64.gz"\n      sha256 "${gz("mehen-linux-x64")}"\n    end\n  end\n`)
+    expect(formula).toContain('    bin.install Dir["mehen-*"].first => "mehen"\n')
+    expect(formula).toContain('  test do\n    assert_match "mehen #{version}", shell_output("#{bin}/mehen --version")\n  end\n')
+    expect(formula).not.toContain("musl")
+    expect(formula).not.toContain("mehen-se")
+  })
+
+  test("refuses a manifest missing a platform, or with a url or hash a formula cannot carry", async () => {
+    const manifest = await assembleRelease(input())
+    expect(() => homebrewFormula({ ...manifest, files: manifest.files.filter((f) => f.name !== "mehen-linux-x64") })).toThrow("no mehen-linux-x64")
+    expect(() => homebrewFormula({ ...manifest, files: manifest.files.map((f) => ({ ...f, url: `${f.url}"; system "id` })) })).toThrow("is not one a formula can carry")
+    expect(() => homebrewFormula({ ...manifest, files: manifest.files.map((f) => ({ ...f, url: f.url.replace("https:", "http:") })) })).toThrow("is not one a formula can carry")
+    expect(() => homebrewFormula({ ...manifest, files: manifest.files.map((f) => ({ ...f, gzSha256: "x" })) })).toThrow("is not one a formula can carry")
+  })
+})
+
+describe("the GitHub Release mirror", () => {
+  test("SHA256SUMS lists every .gz by its compressed hash and the manifest, and the formula sits beside it", async () => {
+    const manifest = await assembleRelease(input())
+    await writeGithubFiles(out, manifest)
+    const sums = await readFile(join(out, "github", "v0.2.0", "SHA256SUMS"), "utf8")
+    const lines = sums.trimEnd().split("\n")
+    expect(lines).toHaveLength(RELEASE_BINARIES.length + 1)
+    for (const f of manifest.files) expect(lines).toContain(`${hex(new Uint8Array(await readFile(join(out, "v0.2.0", `${f.name}.gz`))))}  ${f.name}.gz`)
+    expect(lines.at(-1)).toBe(`${hex(new Uint8Array(await readFile(join(out, "v0.2.0", "manifest.json"))))}  manifest.json`)
+    expect(sums).toBe(await checksums(out, manifest))
+    expect(await readFile(join(out, "github", "v0.2.0", "mehen.rb"), "utf8")).toBe(homebrewFormula(manifest))
+    // The bucket's tree is unchanged: nothing extra to upload by mistake.
+    expect((await readdir(join(out, "v0.2.0"))).sort()).toEqual([...RELEASE_BINARIES.map((b) => `${b.name}.gz`), "manifest.json"].sort())
+  })
+
+  test("the release carries the bucket's files, the manifest and SHA256SUMS", async () => {
+    const manifest = await assembleRelease(input())
+    expect(githubAssets(out, manifest)).toEqual([...RELEASE_BINARIES.map((b) => join(out, "v0.2.0", `${b.name}.gz`)), join(out, "v0.2.0", "manifest.json"), join(out, "github", "v0.2.0", "SHA256SUMS")])
+  })
+
+  test("the commands tag the release commit on GitHub, refuse a tag elsewhere, skip a release that exists, and publish brew only when asked", async () => {
+    const manifest = await assembleRelease(input())
+    const lines = githubCommands(out, manifest, COMMIT)
+    const text = lines.join("\n")
+    expect(lines[1]).toBe("if gh release view v0.2.0 -R mehenai/mehen > /dev/null 2>&1; then")
+    expect(text).toContain(`gh api repos/mehenai/mehen/git/refs -f ref=refs/tags/v0.2.0 -f sha=${COMMIT}`)
+    expect(text).toContain(`[ "$tagged" = ${COMMIT} ] ||`)
+    expect(text).toContain(`gh release create v0.2.0 -R mehenai/mehen --verify-tag --title 'mehen 0.2.0' --notes '`)
+    expect(text).toContain(githubAssets(out, manifest).join(" "))
+    expect(text).toContain('if [ "${MEHEN_PUBLISH_BREW:-0}" = 1 ]; then')
+    expect(text).toContain(`cp ${join(out, "github", "v0.2.0", "mehen.rb")} "$tap/Formula/mehen.rb"`)
+    expect(() => githubCommands(out, manifest, "a53a3de")).toThrow("full commit")
+  })
+})
+
+// The mirror step run for real against a stand-in gh and git on PATH, so
+// its ordering, idempotency and refusals are what the shell does, not what
+// the strings say.
+describe("the GitHub Release mirror, run", () => {
+  const stub = async (bin: string, log: string, state: { release: boolean; tag: string | null }) => {
+    await mkdir(bin, { recursive: true })
+    const gh = `#!/bin/sh
+echo "gh $*" >> ${log}
+case "$1 $2" in
+  "release view") ${state.release ? "exit 0" : "exit 1"} ;;
+  "api repos/mehenai/mehen/commits/v0.2.0") ${state.tag ? `echo ${state.tag}; exit 0` : "exit 1"} ;;
+  "repo clone") mkdir -p "$4"; git -C "$4" init --quiet; git -C "$4" -c user.email=t@t -c user.name=t commit --quiet --allow-empty -m init; exit 0 ;;
+esac
+exit 0
+`
+    await writeFile(join(bin, "gh"), gh, { mode: 0o755 })
+  }
+  const runScript = async (lines: string[], bin: string, env: Record<string, string> = {}) => {
+    const script = ["set -eu", ...lines].join("\n")
+    const proc = Bun.spawn(["sh", "-c", script], { env: { PATH: `${bin}:${process.env.PATH}`, HOME: root, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", ...env }, stdout: "pipe", stderr: "pipe" })
+    return { code: await proc.exited, stdout: await new Response(proc.stdout).text(), stderr: await new Response(proc.stderr).text() }
+  }
+
+  test("a new release: tag made on the release commit, then the release; brew skipped by default", async () => {
+    const manifest = await assembleRelease(input())
+    await writeGithubFiles(out, manifest)
+    const bin = join(root, "bin")
+    const log = join(root, "gh.log")
+    await stub(bin, log, { release: false, tag: null })
+    const result = await runScript(githubCommands(out, manifest, COMMIT), bin)
+    expect(result.code).toBe(0)
+    const calls = (await readFile(log, "utf8")).trim().split("\n")
+    expect(calls.map((c) => c.split(" ").slice(0, 3).join(" "))).toEqual(["gh release view", "gh api repos/mehenai/mehen/commits/v0.2.0", "gh api repos/mehenai/mehen/git/refs", "gh release create"])
+    expect(result.stdout).toContain("Homebrew: not published")
+  })
+
+  test("an existing release is left alone; a tag on another commit stops before any release", async () => {
+    const manifest = await assembleRelease(input())
+    await writeGithubFiles(out, manifest)
+    const bin = join(root, "bin")
+    const log = join(root, "gh.log")
+    await stub(bin, log, { release: true, tag: COMMIT })
+    expect((await runScript(githubCommands(out, manifest, COMMIT), bin)).stdout).toContain("already exists")
+    expect((await readFile(log, "utf8")).trim().split("\n")).toEqual(["gh release view v0.2.0 -R mehenai/mehen"])
+    await rm(log)
+    await stub(bin, log, { release: false, tag: "f".repeat(40) })
+    const refused = await runScript(githubCommands(out, manifest, COMMIT), bin)
+    expect(refused.code).toBe(1)
+    expect(refused.stderr).toContain("not the release commit")
+    expect(await readFile(log, "utf8")).not.toContain("release create")
+  })
+
+  test("with MEHEN_PUBLISH_BREW=1 the formula is committed and pushed to the tap once", async () => {
+    const manifest = await assembleRelease(input())
+    await writeGithubFiles(out, manifest)
+    const bin = join(root, "bin")
+    const log = join(root, "gh.log")
+    await stub(bin, log, { release: true, tag: COMMIT })
+    const pushes = join(root, "pushes.log")
+    // git push is the one git call that would leave the machine.
+    await writeFile(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do [ "$a" = push ] && { echo "$*" >> ${pushes}; exit 0; }; done\nexec ${Bun.which("git")} "$@"\n`, { mode: 0o755 })
+    const result = await runScript(githubCommands(out, manifest, COMMIT), bin, { MEHEN_PUBLISH_BREW: "1" })
+    expect(result.stderr).toBe("")
+    expect(result.code).toBe(0)
+    expect(await readFile(log, "utf8")).toContain("gh repo clone mehenai/homebrew-tap")
+    expect((await readFile(pushes, "utf8")).trim().split("\n")).toHaveLength(1)
   })
 })
 

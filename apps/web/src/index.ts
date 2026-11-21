@@ -128,7 +128,7 @@ export default {
     if (path.startsWith("/dl/")) {
       const notFound = () => new Response("Not found", { status: 404, headers: { ...SECURITY_HEADERS, "Cache-Control": "no-store" } })
       const key = path.slice(4)
-      if (!/^(latest\.json|v\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?\/(?:manifest\.json|mehen-(?:(?:darwin|linux)-(?:arm64|x64)|se)\.gz))$/.test(key)) return notFound()
+      if (!/^(latest\.json|v\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?\/(?:manifest\.json|mehen-(?:darwin-(?:arm64|x64)|linux-(?:arm64|x64)(?:-musl)?|se)\.gz))$/.test(key)) return notFound()
       const object: (R2Object & { body?: ReadableStream }) | null = request.method === "HEAD" ? await env.RELEASES.head(key) : await env.RELEASES.get(key)
       if (!object) return notFound()
       return new Response(object.body ?? null, { headers: {

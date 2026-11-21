@@ -109,7 +109,7 @@ The [threat model](https://docs.mehen.dev/security/threat-model) goes attacker b
 
 ## Platforms
 
-The `mehen` command line runs on macOS, and on Linux with glibc (WSL included), on arm64 and x64. Windows and musl-based Linux are not supported yet. Install with the script above or through npm (`npx @mehenai/cli up` or `npm create mehen`), both of which run the same signed installer and check the binary's SHA-256. Mehen is not on Homebrew, and the unscoped npm package called `mehen` is an unrelated tool.
+The `mehen` command line runs on macOS, and on Linux with glibc (WSL included), on arm64 and x64. Windows and musl-based Linux are not supported yet. Install with the script above or through npm (`npx @mehenai/cli up` or `npm create mehen`), both of which run the same signed installer and check the binary's SHA-256. Each release from the next one on is also on [GitHub Releases](https://github.com/mehenai/mehen/releases) with its signed manifest and a `SHA256SUMS`, and the self-hosted vault as an image, `ghcr.io/mehenai/mehen`. Mehen is not on Homebrew yet, and the unscoped npm package called `mehen` is an unrelated tool.
 
 ## Repository layout
 
