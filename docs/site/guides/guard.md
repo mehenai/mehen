@@ -80,7 +80,7 @@ Within the grammar:
 
 **Putting a key into a command or a file:** a command, or a write or edit, that carries a PEM private key, a URL with a password in it, or a token that starts like a provider key (`sk-`, `ghp_` and the others Mehen knows) followed by a random-looking tail. Mehen's own placeholders are not keys and pass.
 
-A blocked agent reads a reason that says what to use instead: `mehen ls` to list keys, `mehen fetch` or `vault_fetch` to make the call, `mehen run` to give a program its variables, `mehen request` to ask you for a key it does not have. You see a short card saying what was blocked.
+A blocked agent reads a reason that says what to use instead: `mehen ls` to list keys, `mehen fetch` or `vault_fetch` to make the call, `mehen run` to give a program its variables, `mehen request` to ask you for a key it does not have, and for a key file such as `.env`, `mehen adopt file <path>` for you to move its keys into the vault. You see a short card saying what was blocked.
 
 ## Choose what it does
 

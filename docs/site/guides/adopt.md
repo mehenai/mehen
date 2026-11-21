@@ -15,7 +15,7 @@ You have enrolled your first machine, and it has `.env` files in a dozen repos, 
 - **It never rewrites or deletes an original.** Every `.env`, settings file, login file and service unit stays byte for byte as it was. You decide later when to remove them: `mehen adopt retire --yes`, run by you, moves the proven ones to a quarantine folder and nothing else ([8. Retire](#8-retire-when-you-are-sure)).
 - **Values are sealed on the machine.** `mehen adopt submit` reads each value in its own process and seals it to the vault before it leaves. No value, part of one, its length or a hash of it is printed, written to a file or shown to an agent.
 - **A human approves the whole batch.** You review every row on one page in the vault and confirm with one passkey. Nothing is stored until then.
-- **You keep your own copy.** Submit is refused until a snapshot of every file the plan names exists, encrypted to a key that is on no enrolled machine ([Back up a machine before adopting](backup.md)).
+- **You keep your own copy.** Retire is refused until a snapshot holds the file, encrypted to a key that is on no enrolled machine ([Back up a machine before adopting](backup.md)). Submit is refused without one too, except for a plan `mehen adopt file` made for a single file, which only needs it by retire.
 
 The steps, in order: scan, plan, snapshot, submit, approve, apply, verify, and, once you are sure, retire. Run them in a terminal on the machine that holds the files. An agent may run scan and plan for you; the snapshot and the approval are yours.
 
@@ -27,7 +27,9 @@ Want to move a single `.env` file from one repo without scanning the whole machi
 mehen adopt file .env
 ```
 
-It classifies every variable without showing a value, writes the plan, and prints the exact `mehen backup snapshot`, `mehen adopt submit --wait`, and `mehen adopt apply` commands for that plan. Pass `--home <folder>=private|workspace|project:<slug>` or `--per-project` as with `mehen adopt plan`.
+It classifies every variable without showing a value, writes the plan, and prints the exact `mehen adopt submit --wait`, `mehen adopt apply` and `mehen backup snapshot` commands for that plan, in that order. Pass `--home <folder>=private|workspace|project:<slug>` or `--per-project` as with `mehen adopt plan`.
+
+A plan from `mehen adopt file` that names exactly one file may be submitted before you take a snapshot: submit only reads the file, and nothing changes it until you run `mehen adopt retire --yes`. Submit then ends with one line, `no snapshot holds <file> as it is now; mehen adopt retire refuses until one does: mehen backup snapshot --plan <plan> ...`. Take the snapshot before you retire the file ([3. Take the snapshot](#3-take-the-snapshot)); retire holds it until you do. Submit decides by what the plan names, not by how it was made: a plan edited to name a second file, or one `mehen adopt plan` wrote, needs the snapshot before submit.
 
 ## 1. Scan
 
@@ -115,7 +117,7 @@ mehen adopt plan --check
 
 ## 3. Take the snapshot
 
-Before you submit, take an encrypted snapshot of every file the plan names:
+Before you submit, take an encrypted snapshot of every file the plan names. For a single file planned with `mehen adopt file` this can wait until before retire:
 
 ```sh
 mehen backup snapshot --plan ~/.config/mehen/adopt/<machine>/plan.json --to ~/Backups/mehen --recipient age1...
@@ -129,7 +131,7 @@ mehen backup snapshot --plan ~/.config/mehen/adopt/<machine>/plan.json --to ~/Ba
 mehen adopt submit --reason "bring this laptop's keys into the vault"
 ```
 
-Submit refuses, with nothing sent, until a passed snapshot on this machine holds every file the plan names, none changed since. It uses the newest such snapshot; `--snapshot <snp_id>` names another, for example one you have since copied off the machine. Then it checks the plan again, creates the projects the plan needs, reads each value, checks it still matches the scan (a value that changed is skipped and listed as `changed since scan`), seals it and uploads the batch. It prints what it uploaded and the snapshot it relied on:
+Submit refuses, with nothing sent, until a passed snapshot on this machine holds every file the plan names, none changed since; only a plan `mehen adopt file` made for a single file goes ahead without one ([Quick path](#quick-path-one-env-file)). It uses the newest such snapshot; `--snapshot <snp_id>` names another, for example one you have since copied off the machine. Then it checks the plan again, creates the projects the plan needs, reads each value, checks it still matches the scan (a value that changed is skipped and listed as `changed since scan`), seals it and uploads the batch. It prints what it uploaded and the snapshot it relied on:
 
 ```
 uploaded 58 items from sam-laptop to adp_7Hq2xK; snapshot snp_4fQ9cR2mT7 holds every file the plan names

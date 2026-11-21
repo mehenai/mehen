@@ -1,5 +1,6 @@
 // mehen backup keygen | snapshot | check | restore | export | status | open
-// | compare: Mehen is never the only copy. Before `adopt submit`, `snapshot`
+// | compare: Mehen is never the only copy. Before `adopt submit` (before
+// `adopt retire` for a single file `adopt file` planned), `snapshot`
 // encrypts every file the adopt plan names to a backup key whose private
 // half is on no enrolled machine; `export` has the vault encrypt what an
 // owner may export to a backup key they registered with a passkey. Stock
@@ -160,7 +161,7 @@ export const backupCommand: Command = {
   ],
   notes: [
     "keygen writes a new age identity (mode 0600, never over a file) and prints only its recipient. Run it on a machine no agent uses; keep the identity in a password manager no agent can read and on paper, never on an enrolled machine.",
-    `snapshot reads every file the adopt plan names, encrypts them to each --recipient (or ${RECIPIENTS_ENV}, comma-separated) and writes <snp_id>.age and a <snp_id>.json sidecar, after proving the archive opens to exactly what it read. Stock \`age -d\` opens it. adopt submit is refused until a snapshot holds every file the plan names.`,
+    `snapshot reads every file the adopt plan names, encrypts them to each --recipient (or ${RECIPIENTS_ENV}, comma-separated) and writes <snp_id>.age and a <snp_id>.json sidecar, after proving the archive opens to exactly what it read. Stock \`age -d\` opens it. adopt submit is refused until a snapshot holds every file the plan names, except for a single file planned with adopt file; adopt retire holds every file no snapshot holds.`,
     "check needs no key: it compares the archive with its sidecar and checks its age header.",
     "restore reads the identity from a file or stdin (--identity -), never an argument, and runs offline. --to takes a new or empty directory, never /, that is this user's and private to it (0700), below directories only this user or root can write, so never under /tmp; the same goes for restore --env. --in-place restores only a snapshot this machine took, and only the paths its record lists: it writes missing files; with --force it replaces those that differ and keeps each old one as <path>.mehen-restore-<time>. Restored files keep their permission bits, never setuid or setgid.",
     `snapshot with no --recipient and no ${RECIPIENTS_ENV} encrypts to your own active backup keys, asked of the vault as this machine; never to another person's key. With none of your own, name one with --recipient.`,
