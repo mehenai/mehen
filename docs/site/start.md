@@ -20,9 +20,17 @@ With Node.js, the same in one command:
 npx @mehenai/cli up
 ```
 
-or `npm create mehen`. Both run the same installer the first time, then `mehen up`; from then on `mehen` updates itself from signed releases, however it was installed.
+or `npm create mehen`. Both run the same installer the first time, then `mehen up`; from then on `mehen` updates itself from signed releases.
 
-You need macOS, or Linux with glibc (WSL included), on arm64 or x64. Windows and musl-based Linux, such as Alpine, are not supported yet. The installer checks the binary's SHA-256 and puts `mehen` in `~/.local/bin`. Mehen is not on Homebrew yet, and the npm package called `mehen` is an unrelated tool: Mehen's are `@mehenai/cli` and `create-mehen`.
+From 0.5.0, with Homebrew on macOS or Linux:
+
+```sh
+brew install mehenai/tap/mehen && mehen up
+```
+
+Homebrew then keeps it up to date: `brew upgrade mehen` installs each release, and `mehen` does not update itself. `mehen setup`, the guard hooks and the vault's service name `$(brew --prefix)/opt/mehen/bin/mehen`, which stays put when brew upgrades it.
+
+You need macOS, or Linux with glibc (WSL included), on arm64 or x64. Windows and musl-based Linux, such as Alpine, are not supported yet. The installer checks the binary's SHA-256 and puts `mehen` in `~/.local/bin`. The npm package called `mehen` is an unrelated tool: Mehen's are `@mehenai/cli` and `create-mehen`.
 
 Would you rather your agent ran it? [Let your agent do it](#let-your-agent-do-it).
 

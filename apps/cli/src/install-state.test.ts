@@ -3,7 +3,8 @@ import { realpathSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { FRESH_INSTALL_STATE, HUMAN_REPAIR, OWNERLESS_GRACE_MS, RECLAIM_GUARD, updateDoctorCheck, autoUpdateMode, bootId, cliState, freshInstallState, installation, mcpHandoverDecision, lockHolder, observeLock, onPathCheck, reclaimStale, readInstallState, readSettings, recordVaultAdvice, withInstallLock, writeInstallState } from "./install-state.ts"
+import { FRESH_INSTALL_STATE, HUMAN_REPAIR, OWNERLESS_GRACE_MS, RECLAIM_GUARD, updateDoctorCheck, autoUpdateMode, bootId, cliState, selfInstallKind, selfLaunchPath, freshInstallState, installation, mcpHandoverDecision, lockHolder, observeLock, onPathCheck, reclaimStale, readInstallState, readSettings, recordVaultAdvice, withInstallLock, writeInstallState } from "./install-state.ts"
+import { brewPrefix } from "./testing/brew-prefix.ts"
 import { BUILD_COMMIT, BUILD_KIND, VERSION } from "./version.ts"
 
 let root: string
@@ -21,6 +22,7 @@ describe("cliState, the fresh state", () => {
       commit: BUILD_COMMIT,
       build: BUILD_KIND,
       path: realpathSync(process.execPath),
+      install: "source",
       autoUpdate: BUILD_KIND === "release" ? "on" : "dev",
       mcpHandover: BUILD_KIND === "release" ? { handover: "on" } : { handover: "off", reason: "a development build" },
       installed: null,
@@ -454,5 +456,52 @@ describe("the on_path row", () => {
     const off = onPathCheck(install, { PATH: "/usr/bin" })
     expect(off).toMatchObject({ check: "on_path", status: "warn" })
     expect(off.detail).toContain(install.binary)
+  })
+})
+
+describe("a mehen Homebrew installed", () => {
+  test("is told from where the binary really is: its kind, the link to record, and its auto-update mode", async () => {
+    const brew = await brewPrefix(root)
+    const env = { ...home(), MEHEN_SELF_EXECUTABLE: brew.bin }
+    expect(selfInstallKind(env)).toBe("homebrew")
+    expect(selfLaunchPath(env)).toBe(brew.opt)
+    expect(selfInstallKind(home())).toBe("source")
+    expect(selfLaunchPath(home())).toBeNull()
+    const plain = join(root, "plain", "mehen")
+    await mkdir(join(root, "plain"))
+    await writeFile(plain, "#!/bin/sh\n", { mode: 0o755 })
+    expect(selfInstallKind({ ...home(), MEHEN_SELF_EXECUTABLE: plain, HOMEBREW_PREFIX: brew.prefix })).toBe("standalone")
+    expect(selfLaunchPath({ ...home(), MEHEN_SELF_EXECUTABLE: plain })).toBe(plain)
+    const cli = await cliState(env)
+    expect(cli).toMatchObject({ path: brew.keg, install: "homebrew", autoUpdate: "homebrew", mcpHandover: { handover: "off", reason: "Homebrew installed mehen; brew upgrade mehen updates it" } })
+  })
+
+  test("auto-update is homebrew before every other reason, and the MCP handover is off", () => {
+    for (const env of [{}, { MEHEN_NO_AUTO_UPDATE: "1" }, { CI: "1" }]) expect(autoUpdateMode(env, true, { autoUpdate: true }, "release", true)).toBe("homebrew")
+    expect(autoUpdateMode({}, false, { autoUpdate: false }, "dev", true)).toBe("homebrew")
+    expect(mcpHandoverDecision({}, "homebrew", { autoUpdate: true, mcpHandover: true }, true)).toEqual({ handover: "off", reason: "Homebrew installed mehen; brew upgrade mehen updates it" })
+  })
+
+  test("the update row sends every update to brew upgrade mehen, below a vault's minimum too", async () => {
+    const brew = await brewPrefix(root)
+    const cli = await cliState({ ...home(), MEHEN_SELF_EXECUTABLE: brew.bin })
+    const lock = join(root, ".mehen.update.lock")
+    const next = { command: "brew upgrade mehen", say: "Run brew upgrade mehen: Homebrew installed this mehen and updates it." }
+    expect(updateDoctorCheck(cli, null, lock)).toEqual({ check: "update", status: "ok", detail: `mehen ${VERSION}, installed by Homebrew; brew upgrade mehen updates it.` })
+    cli.vault = { "https://app.mehen.dev": { minimum: "0.0.1", recommended: "99.0.0", seenAt: "2026-10-28T00:00:00Z" } }
+    expect(updateDoctorCheck(cli, null, lock)).toEqual({ check: "update", status: "warn", detail: `Update available: https://app.mehen.dev recommends mehen 99.0.0 or later; this is ${VERSION}, installed by Homebrew.`, next })
+    cli.vault["https://app.mehen.dev"]!.minimum = "98.0.0"
+    expect(updateDoctorCheck(cli, null, lock)).toEqual({ check: "update", status: "fail", detail: `https://app.mehen.dev refuses mehen ${VERSION}: its minimum is 98.0.0. Homebrew installed this mehen.`, error: "cli_outdated", next })
+  })
+
+  test("the on_path row is ok with brew's bin on PATH, and names the link, not the keg, when it is not", async () => {
+    const brew = await brewPrefix(root)
+    const install = installation(brew.bin)
+    expect(install.binary).toBe(brew.keg)
+    expect(onPathCheck(install, { PATH: `/usr/bin:${join(brew.prefix, "bin")}` }, brew.opt)).toMatchObject({ status: "ok", detail: `${join(brew.prefix, "bin")} is on PATH.` })
+    const off = onPathCheck(install, { PATH: "/usr/bin" }, brew.opt)
+    expect(off).toMatchObject({ status: "warn" })
+    expect(off.detail).toContain(brew.opt)
+    expect(off.detail).not.toContain("Cellar")
   })
 })

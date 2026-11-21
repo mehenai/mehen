@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { realpathSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { dirname, join, relative } from "node:path"
 import { parseArgs } from "../args.ts"
@@ -12,7 +13,8 @@ import { activeSlotPath, pendingSlotPath } from "../home.ts"
 import { pendingLockPath, withSlotLocks } from "../slot-lock.ts"
 import { runJv } from "../testing/run-mehen.ts"
 import { VERSION } from "../version.ts"
-import { AGENT_TOOLSETS, printSetup, setup, setupCommand, setupExitCode, setupLines, setupRequest } from "./index.ts"
+import { AGENT_TOOLSETS, printSetup, setup, setupBinary, setupCommand, setupExitCode, setupLines, setupRequest } from "./index.ts"
+import { brewPrefix } from "../testing/brew-prefix.ts"
 import { type Agent, agents, serverEntry } from "./agents.ts"
 import { editJson, editToml, jsonEntry, tomlEntry, tomlRange } from "./formats.ts"
 import { RELEASED_SKILL_SHA256, skillSha256, stampedSkill } from "./skills.ts"
@@ -1537,5 +1539,27 @@ describe("--toolsets", () => {
     expect(request("--print", "--toolsets", "writes")).toMatchObject({ toolsets: ["core", "writes"], print: { format: "json" } })
     const printed = printSetup({ home, binary: join(home, "bin/mehen"), env: {}, workspaces: null, format: "toml", toolsets: ["core", "writes"], files: { ownerRoot: owner } })
     expect(printed.text).toBe(`[mcp_servers.mehen]\ncommand = ${JSON.stringify(join(home, "bin/mehen"))}\nargs = ["mcp"]\nenv = { "MEHEN_MCP_TOOLSETS" = "writes" }\n`)
+  })
+})
+
+// Brew deletes a keg on the next upgrade, so an agent's entry names the
+// opt/mehen link instead, and setup reads an entry it wrote that way as
+// its own on the next run.
+describe("a mehen Homebrew installed", () => {
+  test("the entry names opt/mehen, through whichever link ran it; another mehen keeps its own path", async () => {
+    const brew = await brewPrefix(realpathSync(home))
+    for (const path of [brew.keg, brew.bin, brew.opt]) expect(setupBinary({}, path)).toBe(brew.opt)
+    expect(setupBinary({}, "/Users/a/.local/bin/mehen")).toBe("/Users/a/.local/bin/mehen")
+    const printed = printSetup({ home, binary: setupBinary({}, brew.keg), env: { HOME: home }, workspaces: null, format: "json" })
+    expect(printed.text).toContain(JSON.stringify(brew.opt))
+    expect(printed.text).not.toContain("Cellar")
+  })
+
+  test("setup writes the opt/mehen entry once, and a run from the keg's other link leaves it unchanged", async () => {
+    const brew = await brewPrefix(realpathSync(home))
+    const mcpFile = join(home, ".config/client/mcp.json")
+    expect((await run([], { binary: setupBinary({}, brew.keg), mcpFile })).agents[0]?.mcp).toBe("added")
+    expect(jsonEntry(await readFile(mcpFile, "utf8"), "mcpServers")).toMatchObject({ command: brew.opt })
+    expect((await run([], { binary: setupBinary({}, brew.bin), mcpFile })).agents[0]?.mcp).toBe("unchanged")
   })
 })

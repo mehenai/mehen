@@ -19,7 +19,7 @@ import { readEnrolmentRecord } from "../enrolment-record.ts"
 import { CliError, usageError } from "../errors.ts"
 import { ensureSafeDirectory, ensureSafeRoot, resolveHome } from "../home.ts"
 import { GUARD_LEVELS, type GuardLevel } from "../hook/index.ts"
-import { selfExecutable } from "../install-state.ts"
+import { selfExecutable, selfLaunchPath } from "../install-state.ts"
 import { LOCAL_VAULT_RECORD, keyringAdvice, keyringHost } from "../local-vault.ts"
 import { printJson, printLine } from "../output.ts"
 import { type Segment, type Text, colourEnabled, styler } from "../tty.ts"
@@ -55,10 +55,11 @@ export function custodyLine(custody: Custody | null, advice: string | null = nul
   return custody === "file" && advice !== null ? ` ${CUSTODY_WORDS.file} ${advice}` : ` ${CUSTODY_WORDS[custody]}`
 }
 
-// How this process runs itself again: the installed binary, or bun and the
-// entry script for a run from source.
+// How this process runs itself again: the installed binary (Homebrew's
+// link for a keg, which the vault's service keeps after an upgrade), or bun
+// and the entry script for a run from source.
 export function selfCommand(env: Env): string[] {
-  const installed = selfExecutable(env)
+  const installed = selfLaunchPath(env)
   if (installed) return [installed]
   return [process.execPath, Bun.main]
 }

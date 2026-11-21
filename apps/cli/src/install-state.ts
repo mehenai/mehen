@@ -18,6 +18,7 @@ import { compareVersions } from "@mehen/protocol/version"
 import type { DoctorCheck } from "./commands/doctor.ts"
 import type { Env } from "./config.ts"
 import { CliError } from "./errors.ts"
+import { BREW_UPGRADE, homebrewInstall, launchPath } from "./homebrew.ts"
 import { resolveHome } from "./home.ts"
 // The skills report, as the updater stores it in `lastUpdate`.
 import type { SkillReport } from "./setup/skills.ts"
@@ -50,7 +51,13 @@ export type InstallState = {
   lastUpdate: { at: string; from: string; to: string; result: "ok" | "ok_skills_failed" | "failed"; reason: string | null; skills: SkillReport[] } | null
 }
 
-export type AutoUpdateMode = "on" | "off" | "ci" | "dev" | "read-only"
+// "homebrew": brew installed this mehen and `brew upgrade mehen` updates it,
+// so the self-updater never runs for it.
+export type AutoUpdateMode = "on" | "off" | "ci" | "dev" | "read-only" | "homebrew"
+
+// How this mehen was installed: by Homebrew, by the installer (or a hand
+// placed binary), or not at all, for a run from source.
+export type InstallKind = "homebrew" | "standalone" | "source"
 
 // Whether `mehen mcp` switches to a verified update in place; when off,
 // `reason` names the setting or variable that keeps it off, never a path
@@ -65,16 +72,16 @@ export type CliMcp = { running: string; installed: string; action: "switch" } | 
 // started now would decide, or inside a server its own decision at start;
 // `mcp` appears only inside a server with a verified newer binary on disk.
 //
-export type CliState = { version: string; commit: string | null; build: "release" | "dev" | null; path: string; autoUpdate: AutoUpdateMode; mcpHandover: McpHandover } & Omit<InstallState, "v"> & { mcp?: CliMcp }
+export type CliState = { version: string; commit: string | null; build: "release" | "dev" | null; path: string; install: InstallKind; autoUpdate: AutoUpdateMode; mcpHandover: McpHandover } & Omit<InstallState, "v"> & { mcp?: CliMcp }
 
 // What `mehen status` embeds: this mehen, whether it updates itself and an
 // update in progress (`pending`, null unless one is). The install records,
 // release check, vault advice and last update are doctor's.
-export type StatusCli = Pick<CliState, "version" | "commit" | "build" | "path" | "autoUpdate" | "mcpHandover" | "mcp" | "pending">
+export type StatusCli = Pick<CliState, "version" | "commit" | "build" | "path" | "install" | "autoUpdate" | "mcpHandover" | "mcp" | "pending">
 
 export function statusCli(cli: CliState): StatusCli {
-  const { version, commit, build, path, autoUpdate, mcpHandover, mcp, pending } = cli
-  return { version, commit, build, path, autoUpdate, mcpHandover, ...(mcp ? { mcp } : {}), pending }
+  const { version, commit, build, path, install, autoUpdate, mcpHandover, mcp, pending } = cli
+  return { version, commit, build, path, install, autoUpdate, mcpHandover, ...(mcp ? { mcp } : {}), pending }
 }
 
 // What cliState embeds when no state file exists; `vault` is `{}`, never
@@ -120,6 +127,21 @@ export function installation(binary: string = process.execPath): Installation {
 export function selfExecutable(env: Env): string | null {
   if (isCompiledBinary()) return process.execPath
   return env.MEHEN_SELF_EXECUTABLE ? resolve(env.MEHEN_SELF_EXECUTABLE) : null
+}
+
+// The path that runs this mehen later, for whatever records it (agents' MCP
+// entries, guard hooks, the vault's service): Homebrew's link for a keg,
+// which survives `brew upgrade`, else the executable itself; null for a run
+// from source.
+export function selfLaunchPath(env: Env): string | null {
+  const self = selfExecutable(env)
+  return self === null ? null : launchPath(self, env)
+}
+
+export function selfInstallKind(env: Env): InstallKind {
+  const self = selfExecutable(env)
+  if (self === null) return "source"
+  return homebrewInstall(self, env) === null ? "standalone" : "homebrew"
 }
 
 // The build this process acts as for updating: a compiled binary's own
@@ -536,7 +558,8 @@ export async function readSettings(env: Env): Promise<Settings> {
   }
 }
 
-export function autoUpdateMode(env: Env, writable: boolean, settings: { autoUpdate: boolean }, build: BuildKind = BUILD_KIND): AutoUpdateMode {
+export function autoUpdateMode(env: Env, writable: boolean, settings: { autoUpdate: boolean }, build: BuildKind = BUILD_KIND, homebrew = false): AutoUpdateMode {
+  if (homebrew) return "homebrew"
   if (env.MEHEN_NO_AUTO_UPDATE === "1" || !settings.autoUpdate) return "off"
   if (env.CI) return "ci"
   if (build !== "release") return "dev"
@@ -548,6 +571,7 @@ export function autoUpdateMode(env: Env, writable: boolean, settings: { autoUpda
 // runtime with execve: anything else, or `"mcpHandover": false`, keeps it
 // off, with the first reason that does.
 export function mcpHandoverDecision(env: Env, mode: AutoUpdateMode, settings: Settings, canExec: boolean = typeof process.execve === "function"): McpHandover {
+  if (mode === "homebrew") return { handover: "off", reason: `Homebrew installed mehen; ${BREW_UPGRADE} updates it` }
   if (mode === "off") return { handover: "off", reason: env.MEHEN_NO_AUTO_UPDATE === "1" ? "MEHEN_NO_AUTO_UPDATE is set" : "autoUpdate is false in settings.json" }
   if (mode === "ci") return { handover: "off", reason: "CI is set" }
   if (mode === "dev") return { handover: "off", reason: "a development build" }
@@ -565,25 +589,30 @@ export async function mcpHandoverNow(env: Env, options: { installDir?: boolean }
   const install = installation(selfExecutable(env) ?? process.execPath)
   const settings = await readSettings(env)
   const writable = options.installDir === false || (await installDirWritable(install))
-  return mcpHandoverDecision(env, autoUpdateMode(env, writable, settings, selfBuild(env)), settings)
+  return mcpHandoverDecision(env, autoUpdateMode(env, writable, settings, selfBuild(env), selfInstallKind(env) === "homebrew"), settings)
 }
 
-export function onPathCheck(install: Installation, env: Env): DoctorCheck {
+// `launch`: the path that runs this mehen later, when it is not the binary
+// itself (Homebrew's link). For a keg, brew's own bin folder counts too:
+// that is the one brew puts on PATH.
+export function onPathCheck(install: Installation, env: Env, launch: string = install.binary): DoctorCheck {
   const entries = (env.PATH ?? "").split(":").filter(Boolean)
-  const on = entries.some((entry) => {
-    if (resolve(entry) === install.dir) return true
+  const brew = homebrewInstall(install.binary, env)
+  const dirs = [...new Set([install.dir, dirname(launch), ...(brew ? [join(brew.prefix, "bin")] : [])])]
+  const found = dirs.find((dir) => entries.some((entry) => {
+    if (resolve(entry) === dir) return true
     try {
-      return realpathSync(entry) === install.dir
+      return realpathSync(entry) === dir
     } catch {
       return false
     }
-  })
-  if (on) return { check: "on_path", status: "ok", detail: `${install.dir} is on PATH.` }
+  }))
+  if (found) return { check: "on_path", status: "ok", detail: `${found} is on PATH.` }
   return {
     check: "on_path",
     status: "warn",
-    detail: `${install.dir} is not on this shell's PATH; ${install.binary} runs mehen by its absolute path.`,
-    next: { say: `Use ${install.binary} by its absolute path in this session, or open a new login shell after the installer's PATH line.` },
+    detail: `${dirname(launch)} is not on this shell's PATH; ${launch} runs mehen by its absolute path.`,
+    next: { say: `Use ${launch} by its absolute path in this session, or open a new login shell after the installer's PATH line.` },
   }
 }
 
@@ -600,9 +629,10 @@ export async function cliState(env: Env): Promise<CliState> {
   }
   const writable = await installDirWritable(install)
   const settings = await readSettings(env)
-  const mode = autoUpdateMode(env, writable, settings, selfBuild(env))
+  const kind = selfInstallKind(env)
+  const mode = autoUpdateMode(env, writable, settings, selfBuild(env), kind === "homebrew")
   const { v: _v, ...rest } = state ?? freshInstallState()
-  return { version: VERSION, commit: BUILD_COMMIT, build: BUILD_KIND, path: install.binary, autoUpdate: mode, mcpHandover: mcpHandoverDecision(env, mode, settings), ...rest }
+  return { version: VERSION, commit: BUILD_COMMIT, build: BUILD_KIND, path: install.binary, install: kind, autoUpdate: mode, mcpHandover: mcpHandoverDecision(env, mode, settings), ...rest }
 }
 
 const LONG_HOLD_MS = 3_600_000
@@ -624,6 +654,13 @@ export function updateDoctorCheck(cli: CliState, holder: LockHolder | null, lock
   const inspect = { say: `Ask the human to inspect ${lock}; mehen does not take it over or remove it.` }
   const graceMinutes = OWNERLESS_GRACE_MS / 60_000
   const minimum = vaultAdviceAbove(cli, cli.version, "minimum")
+  if (cli.install === "homebrew") {
+    const brew = { command: BREW_UPGRADE, say: `Run ${BREW_UPGRADE}: Homebrew installed this mehen and updates it.` }
+    if (minimum) return { check: "update", status: "fail", detail: `${minimum.origin} refuses mehen ${cli.version}: its minimum is ${minimum.version}. Homebrew installed this mehen.`, error: "cli_outdated", next: brew }
+    const recommended = vaultAdviceAbove(cli, cli.version, "recommended")
+    if (recommended) return { check: "update", status: "warn", detail: `Update available: ${recommended.origin} recommends mehen ${recommended.version} or later; this is ${cli.version}, installed by Homebrew.`, next: brew }
+    return { check: "update", status: "ok", detail: `mehen ${cli.version}, installed by Homebrew; ${BREW_UPGRADE} updates it.` }
+  }
   if (minimum) return { check: "update", status: "fail", detail: `${minimum.origin} refuses mehen ${cli.version}: its minimum is ${minimum.version}.`, error: "cli_outdated", next: { command: "mehen update --json", say: `Run mehen update --json to install the latest release; ${minimum.origin} refuses mehen below ${minimum.version}.` } }
   if (problems.lockError) return { check: "update", status: "warn", detail: problems.lockError, next: inspect }
   if (problems.stateError) return { check: "update", status: "warn", detail: `The installation state${problems.state ? ` ${problems.state}` : ""} cannot be read: ${problems.stateError}`, next: { say: HUMAN_REPAIR } }

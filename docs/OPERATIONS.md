@@ -304,7 +304,7 @@ Every release is signed with a release key ([Release keys](#release-keys)); `--r
 
    The printed script uses `bunx wrangler r2 object put ... --remote`. The required order is all five versioned `.gz` files, then that version's `manifest.json`, then `latest.json` last. Never upload latest first, or overwrite a versioned file. Keep the local release tree for rollback. The web routes stream allowed keys only; they do not list the bucket.
 
-   After `latest.json`, from the repository root, the script mirrors the release to GitHub ("The GitHub Release" below), which also starts the container image build, and then publishes the Homebrew formula only when `MEHEN_PUBLISH_BREW=1` is set, which it is not yet ("The Homebrew tap" below). `gh` must be signed in on the release Mac as someone who can push tags and create releases on `mehenai/mehen` (`gh auth status`). If the GitHub step fails after `latest.json` is up, fix the cause and run only the script's lines after `cd ../..` again, from the repository root: they skip what exists, and the bucket's versioned files are never written twice.
+   After `latest.json`, from the repository root, the script mirrors the release to GitHub ("The GitHub Release" below), which also starts the container image build, and then publishes the Homebrew formula when `MEHEN_PUBLISH_BREW=1` is set, which every release from 0.5.0 on does ("The Homebrew tap" below). `gh` must be signed in on the release Mac as someone who can push tags and create releases on `mehenai/mehen` (`gh auth status`). If the GitHub step fails after `latest.json` is up, fix the cause and run only the script's lines after `cd ../..` again, from the repository root: they skip what exists, and the bucket's versioned files are never written twice.
 
 6. Deploy the web routes and static guides only after the signed artefacts are uploaded, then run the following checks from the repository root.
 
@@ -354,13 +354,15 @@ The upload script's last step makes `v<version>` on `mehenai/mehen`: the tag on 
 
 ### The Homebrew tap
 
-`mehenai/homebrew-tap` exists, with a README and no formula. Every release writes `github/v<version>/mehen.rb`, which `brew install` and `brew test` accept (checked against 0.4.1's manifest on Linuxbrew), and the upload script publishes it to the tap's `Formula/mehen.rb` only with `MEHEN_PUBLISH_BREW=1`:
+`mehenai/homebrew-tap` holds `Formula/mehen.rb`, which users install with `brew install mehenai/tap/mehen`. Every release writes `github/v<version>/mehen.rb` from its signed manifest: each platform's `.gz` on `https://mehen.dev/dl/` with its compressed sha256, installed as `bin/mehen`, and a `test do` that runs `mehen --version`. From 0.5.0 on, run the upload script with the tap step on:
 
 ```sh
 MEHEN_PUBLISH_BREW=1 sh "$RELEASE_DIR-upload.sh"
 ```
 
-Leave it unset until `mehen` handles a Homebrew install. Today a binary brew installs runs from `<prefix>/Cellar/mehen/<version>/bin/mehen`, which is what `mehen setup`, `mehen guard install` and `mehen up` write into the agents' MCP entries, the guard hooks and the service units, and which `brew upgrade` and `brew cleanup` delete. The self-updater also treats the keg as its own installation and replaces the binary in it. Before turning it on, `mehen` needs to recognise a Cellar install, leave updating to `brew upgrade mehen`, and write `<prefix>/opt/mehen/bin/mehen` (which survives upgrades) wherever it records its own path. With the step on, it clones the tap, writes the formula, and commits and pushes only when it changed.
+After `latest.json` and the GitHub Release, it clones the tap, writes the formula, and commits and pushes only when it changed, so running it again is safe. Without the variable the script says it skipped the tap; publish later by running its lines after `cd ../..` again with `MEHEN_PUBLISH_BREW=1`.
+
+A `mehen` that Homebrew installed (its real path is `<prefix>/Cellar/mehen/<version>/bin/mehen`) knows it, from 0.5.0: `mehen setup`, `mehen guard install` and `mehen up` record `<prefix>/opt/mehen/bin/mehen` (or `<prefix>/bin/mehen` when opt is missing), which `brew upgrade` moves to the new keg; the self-updater never runs for it, in the background, in the foreground heal or by hand; `mehen update` and a `cli_outdated` refusal name `brew upgrade mehen`; and `mehen doctor` and `mehen status` show `install: "homebrew"` and `autoUpdate: "homebrew"`. A 0.4.x binary installed by brew has none of this, which is why the formula starts at 0.5.0. Raising `CLI_MINIMUM_VERSION` reaches brew users only when they run `brew upgrade`: the vault refuses them with that step until they do.
 
 ### The musl builds
 

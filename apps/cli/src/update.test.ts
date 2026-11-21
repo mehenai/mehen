@@ -8,7 +8,9 @@ import { base64UrlEncode } from "@mehen/protocol/bytes"
 import { type ReleaseKey, manifestSigningBytes } from "@mehen/protocol/release-manifest"
 import { type InstallState, OWNERLESS_GRACE_MS, freshInstallState, installation, readInstallState, recordVaultAdvice, withInstallLock, writeInstallState } from "./install-state.ts"
 import { sha256, type ReleaseManifest } from "./release-client.ts"
-import { type UpdateOptions, type UpdateStep, healInForeground, preDispatchHeal, scheduleBackgroundUpdate, update } from "./update.ts"
+import { type UpdateOptions, type UpdateStep, healInForeground, homebrewOutdated, preDispatchHeal, scheduleBackgroundUpdate, update } from "./update.ts"
+import { brewPrefix } from "./testing/brew-prefix.ts"
+import { runJv } from "./testing/run-mehen.ts"
 import { VERSION } from "./version.ts"
 import { CliError } from "./errors.ts"
 
@@ -1031,5 +1033,68 @@ describe("the foreground heal", () => {
     // Nothing newer: no heal to report.
     expect(await healInForeground(installedEnv)).toEqual({ from: VERSION, to: "9.9.9" })
     expect(await healInForeground({ ...installedEnv, MEHEN_NO_AUTO_UPDATE: "1" })).toBeNull()
+  })
+})
+
+// Homebrew owns a keg: mehen reports, and points at brew, but never
+// replaces the binary, by hand, in the background or to heal.
+describe("a mehen Homebrew installed", () => {
+  let brew: Awaited<ReturnType<typeof brewPrefix>>
+  const recorder = new TextEncoder().encode(`#!/bin/sh\nprintf '%s\\n' "$*" >> "$HOME/spawned"\n`)
+  const brewed = (extra: Record<string, string> = {}) => ({ ...env(), MEHEN_SELF_EXECUTABLE: brew.bin, CI: "", ...extra })
+  beforeEach(async () => {
+    brew = await brewPrefix(root)
+    await writeFile(brew.keg, recorder, { mode: 0o755 })
+  })
+
+  test("--check reports the release and names brew upgrade mehen as the next step", async () => {
+    const result = await run({ install: installation(brew.bin), check: true })
+    expect(result).toMatchObject({ current: "1.0.0", latest: "1.2.3", available: true, path: brew.keg, install: "homebrew", next: { command: "brew upgrade mehen" } })
+    expect(requests).toEqual(["/dl/latest.json"])
+  })
+
+  test("an update, a forced one or a rollback is refused with brew upgrade mehen, and the keg is left as it is", async () => {
+    for (const extra of [{}, { force: true }, { rollback: true }, { by: "heal" as const }, { by: "auto" as const }]) {
+      const refused = await run({ install: installation(brew.bin), ...extra }).catch((error: unknown) => error)
+      expect(refused).toBeInstanceOf(CliError)
+      expect(refused).toMatchObject({ code: "usage", next: { command: "brew upgrade mehen" } })
+    }
+    expect(new Uint8Array(await readFile(brew.keg))).toEqual(recorder)
+    expect(requests).toEqual([])
+    expect(await readdir(join(brew.prefix, "Cellar", "mehen", "0.5.0", "bin"))).toEqual(["mehen"])
+  })
+
+  test("the background updater is never scheduled and the foreground heal never runs, below a vault's minimum too", async () => {
+    const state = freshInstallState()
+    state.vault["https://app.mehen.dev"] = { minimum: "9.0.0", recommended: "9.0.0", seenAt: "2026-10-28T12:00:00.000Z" }
+    await writeInstallState(installation(brew.bin), state)
+    expect(await scheduleBackgroundUpdate(brewed(), "status", { outdated: true })).toBe("skipped")
+    expect(await healInForeground(brewed())).toBeNull()
+    await preDispatchHeal(brewed(), ["status"])
+    await Bun.sleep(100)
+    expect(await readFile(join(root, "spawned"), "utf8").catch(() => null)).toBeNull()
+    expect(requests).toEqual([])
+  })
+
+  test("a vault's cli_outdated becomes brew upgrade mehen; another refusal, or another install, is left as it is", () => {
+    const outdated = new CliError("cli_outdated", "Too old.", { command: "mehen update", say: "Update mehen." })
+    expect(homebrewOutdated(outdated, brewed())).toMatchObject({ code: "cli_outdated", message: "Too old.", next: { command: "brew upgrade mehen", say: expect.stringContaining("run brew upgrade mehen, then run the command again") } })
+    expect(homebrewOutdated(new CliError("denied", "No."), brewed())).toBeNull()
+    expect(homebrewOutdated(outdated, { ...env(), MEHEN_SELF_EXECUTABLE: binary })).toBeNull()
+    expect(homebrewOutdated(outdated, env())).toBeNull()
+  })
+
+  test("mehen update exits 2 pointing at brew; mehen update --check exits 0 with the same step", async () => {
+    const refused = await runJv(["update", "--json"], brewed())
+    expect(refused.code).toBe(2)
+    expect(JSON.parse(refused.stdout)).toMatchObject({ error: "usage", next: { command: "brew upgrade mehen" } })
+    const checked = await runJv(["update", "--check", "--json"], brewed())
+    expect(checked.code).toBe(0)
+    expect(JSON.parse(checked.stdout)).toMatchObject({ install: "homebrew", latest: "1.2.3", next: { command: "brew upgrade mehen" } })
+    const text = await runJv(["update", "--check"], brewed())
+    expect(text.stdout).toContain("Homebrew installed this mehen: brew upgrade mehen updates it.")
+    const background = await runJv(["update", "--background"], brewed({ MEHEN_UPDATE_CHILD: "1" }))
+    expect(background.code).toBe(0)
+    expect(new Uint8Array(await readFile(brew.keg))).toEqual(recorder)
   })
 })

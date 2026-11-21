@@ -18,6 +18,7 @@ import { manifestWorkspace } from "./run/manifest.ts"
 import { slotLockPath, withSlotLocks } from "./slot-lock.ts"
 import { type SelectedContext, type SelectionOptions, assertVaultUrlAgrees, selectSlot } from "./slots.ts"
 import { type VaultApi, VaultApiError } from "./vault-api.ts"
+import { launchPath } from "./homebrew.ts"
 import { isCompiledBinary } from "./version.ts"
 
 // `ledger` is the identity every ledger read and write of this session is
@@ -63,7 +64,8 @@ function shellWord(path: string): string {
 // The enrol step names this binary by its absolute path: the agent's shell
 // may not have it on PATH, and an MCP client with no shell hands the
 // command to a human. A run from source is Bun itself, so it names mehen.
-export function notEnrolled(vaultUrl?: string, self: string | null = isCompiledBinary() ? process.execPath : null): CliError {
+// Homebrew's keg is named by the link that outlives the next upgrade.
+export function notEnrolled(vaultUrl?: string, self: string | null = isCompiledBinary() ? launchPath(process.execPath, process.env) : null): CliError {
   const command = `${self ? shellWord(self) : "mehen"} enrol --workspace <slug> --json`
   return new CliError("unauthenticated", `This machine is not enrolled with the vault${vaultUrl ? ` at ${vaultUrl}` : ""} yet.`, {
     command,

@@ -36,7 +36,7 @@ import { printBlock, printJson, printLine, reportError } from "./output.ts"
 import { openSession } from "./session.ts"
 import { flushCliAdvice, setCliAdviceSink } from "./http-client.ts"
 import { installation, recordVaultAdvice, selfExecutable } from "./install-state.ts"
-import { healInForeground, preDispatchHeal, scheduleBackgroundUpdate, updateCommand } from "./update.ts"
+import { healInForeground, homebrewOutdated, preDispatchHeal, scheduleBackgroundUpdate, updateCommand } from "./update.ts"
 import { setupCommand } from "./setup/index.ts"
 import { upCommand } from "./up/index.ts"
 import { guardCommand, hookCommand } from "./hook/index.ts"
@@ -318,6 +318,7 @@ export async function main(argv: string[], parentEnv: Env): Promise<number> {
       await flushCliAdvice()
       const healed = await healInForeground(env)
       if (healed) failure = new CliError("cli_outdated", failure.message, { command: ["mehen", ...argv].map(shellWord).join(" "), say: `mehen updated itself from ${healed.from} to ${healed.to}; run the command again.` }, failure.extras)
+      else failure = homebrewOutdated(failure, env) ?? failure
     }
     // The renderer checks every link in the error against this vault URL.
     // `setup --print` reads nothing but the managed-host marker, refusals
