@@ -43,7 +43,7 @@ generate: cli
 | Put a secret into GitHub, Vercel or Cloudflare | `mehen push <slug>[#<field>] --to <destination> [--with <slug>] --reason <why>`, then `mehen wait apr_...` | `vault_push`, then `vault_wait` |
 | Bring the keys already on this machine in | `mehen adopt scan`, `plan`, `submit`, then `mehen wait adp_...` and `mehen adopt apply` | `vault_adopt_scan`, `vault_adopt_status` |
 | Keep your own encrypted copies | `mehen backup snapshot`, `export`, `status` | |
-| Run a project command | `mehen run [--env <name>] -- <cmd>` | |
+| Run a project command | `mehen run [--env <name>] -- <cmd>` ([which programs work](../guides/run-compatibility.md)) | |
 | Check a project's variables | `mehen env check` | `vault_env` with `check` |
 | Which workloads does this machine have, and end one | `mehen workload ls`, `mehen workload revoke <wl_id>` (a harness creates them with `@mehen/client`) | |
 | Pull the brake | `mehen freeze` | |

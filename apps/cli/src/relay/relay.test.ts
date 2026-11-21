@@ -583,3 +583,25 @@ describe("base-URL path", () => {
     }
   })
 })
+
+describe("what the relay saw", () => {
+  test("counts connections to intercept hosts and base-URL requests it routed, never tunnels, refusals or a wrong run secret", async () => {
+    const counted = await startLocalRelay({ api, run: "run_test4", env: "dev", interceptHosts: [INTERCEPT], fencedHosts: [FENCED], baseUrls: [{ item: "openai-personal", upstream: "https://api.openai.com/v1" }], ca })
+    try {
+      const auth = proxyAuth(counted.proxyUrl)
+      expect(counted.seen()).toEqual({ interceptHosts: 0, baseUrls: 0 })
+      expect(await firstReply(counted.port, `CONNECT 127.0.0.1:${echoPort} HTTP/1.1\r\nProxy-Authorization: ${auth}\r\n\r\n`)).toStartWith("HTTP/1.1 200")
+      expect(await firstReply(counted.port, `CONNECT ${FENCED}:443 HTTP/1.1\r\nProxy-Authorization: ${auth}\r\n\r\n`)).toStartWith("HTTP/1.1 403")
+      expect(await firstReply(counted.port, `CONNECT ${INTERCEPT}:443 HTTP/1.1\r\nProxy-Authorization: wrong\r\n\r\n`)).toStartWith("HTTP/1.1 407")
+      const path = new URL(counted.baseUrl("openai-personal")).pathname
+      expect(await firstReply(counted.port, `GET ${path.replace(/\/r\/[^/]+\//, "/r/wrong-secret/")}/models HTTP/1.1\r\nHost: x\r\n\r\n`)).toStartWith("HTTP/1.1 403")
+      expect(counted.seen()).toEqual({ interceptHosts: 0, baseUrls: 0 })
+      expect(await firstReply(counted.port, `CONNECT ${INTERCEPT}:443 HTTP/1.1\r\nProxy-Authorization: ${auth}\r\n\r\n`)).toStartWith("HTTP/1.1 200")
+      expect(await firstReply(counted.port, `GET http://${INTERCEPT}/v1/x HTTP/1.1\r\nHost: ${INTERCEPT}\r\nProxy-Authorization: ${auth}\r\n\r\n`)).toStartWith("HTTP/1.1 200")
+      expect(await firstReply(counted.port, `GET ${path}/models HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)).toStartWith("HTTP/1.1 200")
+      expect(counted.seen()).toEqual({ interceptHosts: 2, baseUrls: 1 })
+    } finally {
+      await counted.close()
+    }
+  })
+})

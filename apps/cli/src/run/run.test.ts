@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { existsSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { EXIT, type RunVar } from "@mehen/protocol/api"
 import { newPlaceholder } from "@mehen/protocol"
@@ -168,7 +168,7 @@ describe("mehen run", () => {
     expect(env.NODE_USE_ENV_PROXY).toBe("1")
     const port = new URL(env.HTTPS_PROXY ?? "").port
     expect(env.OPENAI_BASE_URL).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${port}/r/[A-Za-z0-9_-]+/openai-personal/v1$`))
-    for (const name of ["REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"]) expect(env[name]).toBe(env.SSL_CERT_FILE)
+    for (const name of ["REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "AWS_CA_BUNDLE", "DENO_CERT"]) expect(env[name]).toBe(env.SSL_CERT_FILE)
     expect(seen.caMode).toBe("600")
     expect(seen.bundleMode).toBe("600")
     expect(seen.bundle).toContain(seen.ca.trim())
@@ -184,8 +184,9 @@ describe("mehen run", () => {
       interceptHosts: ["api.openai.com"],
     })
     const out = join(repo, "curl-out.json")
+    const deps = fakeDeps(api, repo)
     const code = await withTimeout(
-      runCommand(["sh", "-c", `curl -sS --max-time 10 -H "Authorization: Bearer $OPENAI_API_KEY" https://api.openai.com/v1/models > ${out}`], fakeDeps(api, repo)),
+      runCommand(["sh", "-c", `curl -sS --max-time 10 -H "Authorization: Bearer $OPENAI_API_KEY" https://api.openai.com/v1/models > ${out}`], deps),
       20_000,
       "mehen run with curl",
     )
@@ -194,6 +195,7 @@ describe("mehen run", () => {
     expect(api.relayCalls[0]).toMatchObject({ run: "run_test1", method: "GET", url: "https://api.openai.com/v1/models" })
     expect(api.relayCalls[0]?.headers).toContainEqual(["Authorization", `Bearer ${placeholder}`])
     expect(JSON.parse(readFileSync(out, "utf8")).echoed.run).toBe("run_test1")
+    expect(deps.err.text()).not.toContain("came through mehen's local relay")
   })
 
   test("leased values are redacted from the child's stdout and stderr, across writes", async () => {
@@ -372,6 +374,80 @@ describe("mehen run", () => {
     expect(oldest.err.text()).toContain("run run_test1 is not a service run: this vault does not offer them, so it ends at its maximum life")
   })
 
+  test("a .env or .env.* next to the run is named once, with mehen adopt file as the next step; examples are not, and the run goes ahead", async () => {
+    const dir = tempDir("mehen-run-dotenv-")
+    try {
+      git(dir, "init", "-q")
+      writeManifest(dir, 'project = "prj_test"\ndefault_env = "dev"\n[vars]\nOPENAI_API_KEY = "vault"\n')
+      for (const name of [".env", ".env.local", ".env.example", ".env.sample", ".env.template"]) writeFileSync(join(dir, name), "OPENAI_API_KEY=old\n")
+      const deps = fakeDeps(apiWith([{ name: "OPENAI_API_KEY", delivery: "plain", value: "x" }]), dir)
+      expect(await runCommand(["--", "sh", "-c", "exit 3"], deps)).toBe(3)
+      const err = deps.err.text()
+      expect(err.match(/warning:/g)).toHaveLength(1)
+      expect(err).toContain("mehen: warning: .env, .env.local are next to this run: Bun, Next.js, Vite, dotenv and others load them by themselves, so sh can see their plaintext values instead of the vault's\n")
+      expect(err).toContain("  run:  mehen adopt file .env\n  run:  mehen adopt file .env.local\n")
+      expect(err).not.toContain(".env.example")
+      expect(err).not.toContain("OPENAI_API_KEY=old")
+      // From a subfolder, the manifest's folder and the working folder are both checked.
+      const sub = join(dir, "app")
+      mkdirSync(sub)
+      writeFileSync(join(sub, ".env.production"), "A=1\n")
+      const nested = fakeDeps(apiWith([{ name: "OPENAI_API_KEY", delivery: "plain", value: "x" }]), sub)
+      expect(await runCommand(["--", "true"], nested)).toBe(0)
+      expect(nested.err.text()).toContain(`mehen: warning: ${join(dir, ".env")}, ${join(dir, ".env.local")}, .env.production are next to this run`)
+    } finally {
+      removeDir(dir)
+    }
+  })
+
+  test("a run with placeholders whose child never reached an intercept host warns once that it may have bypassed the proxy; plain and leased runs do not", async () => {
+    const placed = vars({ OPENAI_API_KEY: { name: "OPENAI_API_KEY", delivery: "placeholder", value: placeholder, item: "openai-personal", hosts: ["api.openai.com"] } })
+    const deps = fakeDeps(apiWith(placed, { interceptHosts: ["api.openai.com"] }), repo)
+    expect(await withTimeout(runCommand(["--", "sh", "-c", "exit 1"], deps), 15_000, "mehen run")).toBe(1)
+    const err = deps.err.text()
+    expect(err.match(/warning:/g)).toHaveLength(1)
+    expect(err).toContain("mehen: warning: no connection to api.openai.com came through mehen's local relay. If sh called it, it bypassed the proxy (some HTTP clients ignore HTTPS_PROXY) and the API saw only the placeholder\n")
+    expect(err).toContain("  next: Check that the program's HTTP client uses HTTPS_PROXY and the run's CA: https://docs.mehen.dev/guides/run-compatibility\n")
+    const lease = fakeDeps(apiWith(vars({ DATABASE_URL: { name: "DATABASE_URL", delivery: "lease", value: "postgres://u:p@db/x", item: "dev-db" } })), repo)
+    expect(await runCommand(["--", "true"], lease)).toBe(0)
+    expect(lease.err.text()).not.toContain("warning:")
+    const baseUrl = fakeDeps(apiWith(vars({ OPENAI_BASE_URL: { name: "OPENAI_BASE_URL", delivery: "base-url", value: "https://api.openai.com/v1", item: "openai-personal" } })), repo)
+    expect(await withTimeout(runCommand(["--", "true"], baseUrl), 15_000, "mehen run")).toBe(0)
+    expect(baseUrl.err.text()).not.toContain("warning:")
+  })
+
+  test("with placeholders, a Node too old for NODE_USE_ENV_PROXY on the child's PATH is named with the minimum; a current one, or no placeholders, is not", async () => {
+    const placed = vars({ OPENAI_API_KEY: { name: "OPENAI_API_KEY", delivery: "placeholder", value: placeholder, item: "openai-personal", hosts: ["api.openai.com"] } })
+    const nodeAt = (version: string) => {
+      const bin = tempDir("mehen-run-node-")
+      writeFileSync(join(bin, "node"), `#!/bin/sh\nif [ "$1" = "--version" ]; then env > "${bin}/probe-env"; echo ${version}; fi\nexit 0\n`)
+      chmodSync(join(bin, "node"), 0o755)
+      return bin
+    }
+    const old = nodeAt("v20.11.0")
+    const current = nodeAt("v24.5.0")
+    try {
+      const withLease = [...placed.filter((v) => v.name !== "DATABASE_URL"), { name: "DATABASE_URL", delivery: "lease", value: "postgres://app:probe-lease-pw@db/x", item: "dev-db" } satisfies RunVar]
+      const deps = fakeDeps(apiWith(withLease, { interceptHosts: ["api.openai.com"] }), repo, { PATH: `${old}:/usr/bin:/bin` })
+      expect(await withTimeout(runCommand(["--", "node", "app.js"], deps), 15_000, "mehen run")).toBe(0)
+      // The version check is its own process: the placeholder and the proxy, never a leased value.
+      const probed = readFileSync(join(old, "probe-env"), "utf8")
+      expect(probed).toContain(`OPENAI_API_KEY=${placeholder}`)
+      expect(probed).not.toContain("probe-lease-pw")
+      expect(probed).not.toContain("DATABASE_URL=")
+      expect(deps.err.text()).toContain("mehen: warning: Node v20.11.0 ignores NODE_USE_ENV_PROXY, so its requests skip mehen's local relay: a placeholder they send goes straight to the API, which answers 401\n  next: Use Node 22.21.0 or later on 22, or 24.5.0 or later.")
+      const fine = fakeDeps(apiWith(placed, { interceptHosts: ["api.openai.com"] }), repo, { PATH: `${current}:/usr/bin:/bin` })
+      expect(await withTimeout(runCommand(["--", "node", "app.js"], fine), 15_000, "mehen run")).toBe(0)
+      expect(fine.err.text()).not.toContain("Node v")
+      const plain = fakeDeps(apiWith(vars()), repo, { PATH: `${old}:/usr/bin:/bin` })
+      expect(await runCommand(["--", "node", "app.js"], plain)).toBe(0)
+      expect(plain.err.text()).not.toContain("Node v")
+    } finally {
+      removeDir(old)
+      removeDir(current)
+    }
+  })
+
   test("a command that cannot start still ends the run", async () => {
     const api = apiWith(vars())
     const deps = fakeDeps(api, repo)
@@ -422,6 +498,8 @@ describe("mehen run", () => {
         expect(text).toContain("vault: run_test1 ended")
         expect(text).toContain("mehen exit 42")
         expect(harness.exitCode).toBe(42)
+        // Stopped before anything called the API: no bypass warning.
+        expect(await withTimeout(new Response(harness.stderr).text(), 5_000, "harness stderr")).not.toContain("came through mehen's local relay")
         expect(existsSync(caPath)).toBe(false)
       } finally {
         harness.kill("SIGKILL")

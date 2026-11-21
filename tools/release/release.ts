@@ -6,6 +6,12 @@
 //   <out>/v<version>/manifest.json          { version, commit, builtAt, files, signatures }
 //   <out>/latest.json                       a copy of that manifest
 //
+// and, beside the tree, what the GitHub Release and the Homebrew tap get
+// (never uploaded to the bucket):
+//
+//   <out>/github/v<version>/SHA256SUMS       sha256 of every .gz and of manifest.json
+//   <out>/github/v<version>/mehen.rb         the Homebrew formula, from the signed manifest
+//
 //   bun tools/release/release.ts --out <dir> --release [--key <id>]            build, sign and write the release tree
 //   bun tools/release/release.ts --out <dir> --release --upload-script <path>  also write the upload commands
 //   bun tools/release/release.ts --out <dir> --release --upload                also print them
@@ -16,9 +22,11 @@
 // every binary. It refuses a version already in <out>, a dirty tree (the
 // commit would not say what was built) unless --allow-dirty, and a build
 // without mehen-se. It never uploads: --upload prints the wrangler commands,
-// latest.json last, for whoever deploys. --upload and --upload-script need
-// --release: their commands publish to the release bucket, and only a
-// release-stamped binary ignores the MEHEN_RELEASE_KEYS test override.
+// latest.json last, then the GitHub Release mirror and (only with
+// MEHEN_PUBLISH_BREW=1) the tap update, for whoever deploys. --upload and
+// --upload-script need --release: their commands publish to the release
+// bucket, and only a release-stamped binary ignores the MEHEN_RELEASE_KEYS
+// test override.
 //
 // The manifest is signed with a release key (keys.ts; --key, or the only key
 // in RELEASE_KEYS) through the freshly built mehen-se (or MEHEN_SE_PATH) and
@@ -40,6 +48,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { ReleaseKey, ReleaseSignature } from "../../packages/protocol/src/release-manifest.ts"
 import { RELEASE_KEYS } from "../../apps/cli/src/release-keys.ts"
+import { RELEASE_BINARIES, type ReleaseBinary } from "./binaries.ts"
 import { readSigningKey, releaseKeyDir } from "./keys.ts"
 import { type ManifestSigner, SigningError, helperSigner, signManifest, trustedEntry } from "./sign.ts"
 
@@ -48,20 +57,10 @@ const CLI_DIR = join(REPO_ROOT, "apps", "cli")
 const DIST = join(CLI_DIR, "dist")
 export const DEFAULT_BASE_URL = "https://mehen.dev/dl"
 export const DEFAULT_BUCKET = "mehen-releases"
+export const GITHUB_REPO = "mehenai/mehen"
+export const TAP_REPO = "mehenai/homebrew-tap"
 
-export type ReleaseOs = "darwin" | "linux"
-export type ReleaseArch = "arm64" | "x64" | "universal"
-
-// One binary of a release: where it is built, and the platform it is for.
-export type ReleaseBinary = { name: string; os: ReleaseOs; arch: ReleaseArch }
-
-export const RELEASE_BINARIES: readonly ReleaseBinary[] = [
-  { name: "mehen-darwin-arm64", os: "darwin", arch: "arm64" },
-  { name: "mehen-darwin-x64", os: "darwin", arch: "x64" },
-  { name: "mehen-linux-x64", os: "linux", arch: "x64" },
-  { name: "mehen-linux-arm64", os: "linux", arch: "arm64" },
-  { name: "mehen-se", os: "darwin", arch: "universal" },
-]
+export { RELEASE_BINARIES, type ReleaseArch, type ReleaseBinary, type ReleaseOs } from "./binaries.ts"
 
 export type ManifestFile = ReleaseBinary & { url: string; sha256: string; size: number; gzSha256: string; gzSize: number }
 
@@ -155,6 +154,114 @@ export function uploadCommands(out: string, manifest: ReleaseManifestFile, bucke
   ]
 }
 
+// The files the GitHub Release carries: the bucket's versioned files, byte
+// for byte, so each is checked against the signed manifest like a download
+// from mehen.dev, and a SHA256SUMS over them for anyone without the manifest.
+export function githubAssets(out: string, manifest: ReleaseManifestFile): string[] {
+  const dir = join(resolve(out), `v${manifest.version}`)
+  return [...manifest.files.map((f) => join(dir, `${f.name}.gz`)), join(dir, "manifest.json"), join(githubDir(out, manifest.version), "SHA256SUMS")]
+}
+
+export function githubDir(out: string, version: string): string {
+  return join(resolve(out), "github", `v${version}`)
+}
+
+export async function checksums(out: string, manifest: ReleaseManifestFile): Promise<string> {
+  const dir = join(out, `v${manifest.version}`)
+  const lines = manifest.files.map((f) => `${f.gzSha256}  ${f.name}.gz`)
+  lines.push(`${sha256(new Uint8Array(await readFile(join(dir, "manifest.json"))))}  manifest.json`)
+  return `${lines.join("\n")}\n`
+}
+
+// The Homebrew formula for a release, from its manifest: each platform's
+// .gz on the download base and its compressed sha256, which is what brew
+// downloads and checks; brew unpacks it to mehen-<os>-<arch>. Homebrew runs
+// glibc on Linux, so the musl builds are not in it.
+export function homebrewFormula(manifest: Manifest): string {
+  const file = (name: string) => {
+    const found = manifest.files.find((f) => f.name === name)
+    if (!found) throw new ReleaseError(`The manifest has no ${name}, so the Homebrew formula cannot be written. Build every target.`)
+    if (!/^[0-9a-f]{64}$/.test(found.gzSha256) || !/^https:\/\/[^"\\#{}\s]+$/.test(found.url)) throw new ReleaseError(`${name}'s url or gzSha256 is not one a formula can carry.`)
+    return found
+  }
+  const block = (os: string, name: string) => {
+    const f = file(name)
+    return [`    on_${os} do`, `      url "${f.url}"`, `      sha256 "${f.gzSha256}"`, "    end"]
+  }
+  if (!VERSION_PATTERN.test(manifest.version)) throw new ReleaseError(`${manifest.version} is not a version like 1.2.3`)
+  return [
+    `# Written by tools/release/release.ts for mehen ${manifest.version} (${manifest.commit}) from its signed manifest. Do not edit by hand.`,
+    "class Mehen < Formula",
+    '  desc "Credential vault for AI agents: they use keys without ever seeing them"',
+    '  homepage "https://mehen.dev"',
+    `  version "${manifest.version}"`,
+    '  license "Apache-2.0"',
+    "",
+    "  on_macos do",
+    ...block("arm", "mehen-darwin-arm64"),
+    ...block("intel", "mehen-darwin-x64"),
+    "  end",
+    "",
+    "  on_linux do",
+    ...block("arm", "mehen-linux-arm64"),
+    ...block("intel", "mehen-linux-x64"),
+    "  end",
+    "",
+    "  def install",
+    '    bin.install Dir["mehen-*"].first => "mehen"',
+    "  end",
+    "",
+    "  test do",
+    '    assert_match "mehen #{version}", shell_output("#{bin}/mehen --version")',
+    "  end",
+    "end",
+    "",
+  ].join("\n")
+}
+
+// What the upload script runs after latest.json, from the repository root:
+// the GitHub Release v<version> on the release commit (the tag made on
+// GitHub when it is missing; a tag on another commit stops the script), and
+// then, only with MEHEN_PUBLISH_BREW=1, the tap's Formula/mehen.rb. Both are
+// skipped when already done, so the script can run again after a failure.
+export function githubCommands(out: string, manifest: ReleaseManifestFile, commit: string): string[] {
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new ReleaseError(`${commit} is not a full commit id`)
+  const tag = `v${manifest.version}`
+  const formula = join(githubDir(out, manifest.version), "mehen.rb")
+  const notes = `mehen ${manifest.version}, built from ${commit.slice(0, 7)}. Install with \`curl -fsSL https://mehen.dev/install | sh\` or \`npx @mehenai/cli\`. The binaries are the ones served from https://mehen.dev/dl/${tag}/ and manifest.json is their signed manifest. Release notes: https://docs.mehen.dev/changelog`
+  return [
+    `# Mirror ${tag} to GitHub Releases on ${GITHUB_REPO}, which also starts the container image build.`,
+    `if gh release view ${tag} -R ${GITHUB_REPO} > /dev/null 2>&1; then`,
+    `  echo "GitHub Release ${tag} already exists; left as it is."`,
+    "else",
+    `  if ! tagged=$(gh api repos/${GITHUB_REPO}/commits/${tag} --jq .sha 2> /dev/null); then`,
+    `    gh api repos/${GITHUB_REPO}/git/refs -f ref=refs/tags/${tag} -f sha=${commit} > /dev/null`,
+    `    tagged=${commit}`,
+    "  fi",
+    `  [ "$tagged" = ${commit} ] || { echo "Tag ${tag} on ${GITHUB_REPO} is $tagged, not the release commit ${commit}. Nothing was mirrored." >&2; exit 1; }`,
+    `  gh release create ${tag} -R ${GITHUB_REPO} --verify-tag --title ${shellQuote(`mehen ${manifest.version}`)} --notes ${shellQuote(notes)} ${githubAssets(out, manifest).map(shellQuote).join(" ")}`,
+    "fi",
+    "",
+    `# Homebrew: ${TAP_REPO}'s Formula/mehen.rb, only with MEHEN_PUBLISH_BREW=1 (docs/OPERATIONS.md, "The Homebrew tap").`,
+    `if [ "\${MEHEN_PUBLISH_BREW:-0}" = 1 ]; then`,
+    '  tap=$(mktemp -d)',
+    `  gh repo clone ${TAP_REPO} "$tap" -- --quiet --depth 1`,
+    '  mkdir -p "$tap/Formula"',
+    `  cp ${shellQuote(formula)} "$tap/Formula/mehen.rb"`,
+    '  if git -C "$tap" diff --quiet HEAD -- Formula/mehen.rb 2> /dev/null && git -C "$tap" ls-files --error-unmatch Formula/mehen.rb > /dev/null 2>&1; then',
+    `    echo "${TAP_REPO} already has mehen ${manifest.version}."`,
+    "  else",
+    '    git -C "$tap" add Formula/mehen.rb',
+    `    git -C "$tap" commit --quiet -m ${shellQuote(`mehen ${manifest.version}`)}`,
+    '    git -C "$tap" push --quiet origin HEAD',
+    "  fi",
+    '  rm -rf "$tap"',
+    "else",
+    `  echo ${shellQuote(`Homebrew: not published (MEHEN_PUBLISH_BREW is not 1); the formula is at ${formula}`)}`,
+    "fi",
+  ]
+}
+
 export type NotariseResult = { notarised: false; reason: string } | { notarised: true; files: string[] }
 
 // Apple notarisation of the macOS binaries. It needs a Developer ID
@@ -184,6 +291,10 @@ export async function spawnChecked(cmd: string[]): Promise<void> {
   if (code !== 0) throw new ReleaseError(`${cmd.join(" ")} exited ${code}`)
 }
 
+// Not yet linux-x64-musl and linux-arm64-musl, which build.ts makes: a mehen
+// from before release-client.ts accepted their names refuses a manifest that
+// lists them, so they join once no active machine runs one
+// (docs/OPERATIONS.md, "The musl builds").
 export const TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const
 export type ReleaseArgs = { out: string; upload: boolean; uploadScript?: string; targets: string[]; partial: boolean; allowDirty: boolean; baseUrl: string; bucket: string; key: string | null; unsigned: boolean; release: boolean }
 export function releaseBinaries(targets: string[]): readonly ReleaseBinary[] {
@@ -308,6 +419,15 @@ export async function releaseSigningKey(args: ReleaseArgs, trusted: readonly Rel
   return signing
 }
 
+// SHA256SUMS and mehen.rb for a release, beside its tree.
+export async function writeGithubFiles(out: string, manifest: ReleaseManifestFile): Promise<void> {
+  const dir = githubDir(out, manifest.version)
+  const formula = homebrewFormula(manifest)
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, "SHA256SUMS"), await checksums(out, manifest))
+  await writeFile(join(dir, "mehen.rb"), formula)
+}
+
 export type ReleaseOptions = { trusted?: readonly ReleaseKey[]; keyDir?: string; signer?: (key: { key: ReleaseKey; blob: string }) => ManifestSigner; inspect?: Inspector; treeClean?: () => boolean }
 
 export async function main(argv: string[], build: (cmd: string[]) => Promise<void> = spawnChecked, dist = DIST, options: ReleaseOptions = {}): Promise<void> {
@@ -320,6 +440,7 @@ export async function main(argv: string[], build: (cmd: string[]) => Promise<voi
   const clean = options.treeClean ? options.treeClean() : git(["status", "--porcelain"]).trim() === ""
   if (!clean && !args.allowDirty) throw new ReleaseError("The working tree has uncommitted changes, so the commit would not say what was built. Commit them, or pass --allow-dirty for a trial build.")
   const commit = git(["rev-parse", "--short=7", "HEAD"]).trim()
+  const fullCommit = git(["rev-parse", "HEAD"]).trim()
   const binaries = releaseBinaries(args.targets)
   await build([process.execPath, join(CLI_DIR, "scripts", "build.ts"), "--commit", commit, ...(args.release ? ["--release"] : []), ...args.targets.flatMap(t => ["--target", t]), ...(args.targets.some(t => t.startsWith("darwin-")) ? [] : ["--no-mehen-se"])])
   const inspect = options.inspect ?? inspectCommand
@@ -330,8 +451,11 @@ export async function main(argv: string[], build: (cmd: string[]) => Promise<voi
   const signer = signing ? (options.signer ?? ((key) => helperSigner(process.env.MEHEN_SE_PATH || join(dist, "mehen-se"), key)))(signing) : null
   const sign = signing && signer ? (manifest: Manifest) => signManifest(manifest, signing.key, signer, trusted) : undefined
   const manifest = await assembleRelease({ dist, binaries, out: args.out, version, commit, builtAt: new Date().toISOString(), baseUrl: args.baseUrl, sign })
+  // A partial release has no full set to mirror or a formula to write.
+  const mirror = !args.partial && args.baseUrl === DEFAULT_BASE_URL && args.bucket === DEFAULT_BUCKET
+  if (mirror) await writeGithubFiles(args.out, manifest)
   console.error(JSON.stringify({ released: version, commit, out: join(args.out, `v${version}`), files: manifest.files.length, signedBy: signing?.key.id ?? null }))
-  const script = ["set -eu", ...(args.partial ? [`# PARTIAL release: latest.json will list only ${args.targets.join(", ")}. Do not run this for a public release.`] : []), `# Upload v${version} to R2 from apps/web, in this order (latest.json last):`, "cd apps/web", ...uploadCommands(args.out, manifest, args.bucket).map(c => `bunx ${c}`), ""].join("\n")
+  const script = ["set -eu", ...(args.partial ? [`# PARTIAL release: latest.json will list only ${args.targets.join(", ")}. Do not run this for a public release.`] : []), `# Upload v${version} to R2 from apps/web, in this order (latest.json last):`, "cd apps/web", ...uploadCommands(args.out, manifest, args.bucket).map(c => `bunx ${c}`), ...(mirror ? ["cd ../..", "", ...githubCommands(args.out, manifest, fullCommit)] : []), ""].join("\n")
   if (args.upload) process.stdout.write(script)
   if (args.uploadScript) await writeFile(args.uploadScript, script, { mode: 0o600 })
 }
