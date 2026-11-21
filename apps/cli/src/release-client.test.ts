@@ -3,6 +3,7 @@ import { base64UrlEncode } from "@mehen/protocol/bytes"
 import { type ReleaseKey, manifestSigningBytes } from "@mehen/protocol/release-manifest"
 import { compareVersions as protocolCompareVersions } from "@mehen/protocol/version"
 import { RELEASE_KEYS } from "./release-keys.ts"
+import { RELEASE_BINARIES } from "../../../tools/release/binaries.ts"
 import { compareVersions, downloadBase, latestRelease, parseManifest, releaseBytes, releaseTrust, sha256, verifiedBinary, verifiedManifest, type ReleaseManifest } from "./release-client.ts"
 
 // Test release keys, generated here; never a real release key.
@@ -39,6 +40,19 @@ test("release URLs refuse insecure, credentialed or ambiguous origins", () => {
 test("manifest refuses malformed JSON, traversal, duplicate files and bad hashes", async () => {
   await expect(latestRelease("https://example.test", [trusted.key], async () => new Response("broken"))).rejects.toThrow("manifest JSON")
   for (const manifest of [{}, { version: "../path", commit: "1234567", builtAt: "today", files: [] }, { version: "1.2.3", commit: "1234567", builtAt: "today", files: [{ name: "../mehen" }] }]) expect(() => parseManifest(manifest)).toThrow("release")
+})
+// An installed mehen refuses a whole manifest over one file name it does
+// not know, and with it every update, so the release tool lists only names
+// this check accepts.
+test("every binary the release tool publishes is a name this check accepts", () => {
+  const file = { url: "https://example.test/mehen.gz", sha256: "0".repeat(64), size: 100, gzSha256: "1".repeat(64), gzSize: 50 }
+  expect(parseManifest({ version: "1.2.3", commit: "1234567", builtAt: "today", files: RELEASE_BINARIES.map((b) => ({ ...file, ...b })) }).files).toHaveLength(RELEASE_BINARIES.length)
+})
+test("the musl builds' names are accepted ahead of any release listing them; other names still are not", () => {
+  const file = { os: "linux", arch: "x64", url: "https://example.test/mehen.gz", sha256: "0".repeat(64), size: 100, gzSha256: "1".repeat(64), gzSize: 50 }
+  const names = ["mehen-darwin-arm64", "mehen-darwin-x64", "mehen-linux-x64", "mehen-linux-arm64", "mehen-linux-x64-musl", "mehen-linux-arm64-musl", "mehen-se"]
+  expect(parseManifest({ version: "1.2.3", commit: "1234567", builtAt: "today", files: names.map((name) => ({ ...file, name })) }).files).toHaveLength(7)
+  for (const name of ["mehen-darwin-arm64-musl", "mehen-linux-x64-glibc", "mehen-linux-riscv64", "mehen-se-musl", "mehen-linux-x64-musl.gz"]) expect(() => parseManifest({ version: "1.2.3", commit: "1234567", builtAt: "today", files: [{ ...file, name }] })).toThrow("release file")
 })
 test("download size and HTTP failures are refusals, redirects are disabled", async () => {
   await expect(releaseBytes("https://example.test", 1, async (_url, init) => { expect(init?.redirect).toBe("error"); return new Response("too much") })).rejects.toThrow("declared size")

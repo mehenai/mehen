@@ -121,7 +121,7 @@ test("the retired agent guides are not tracked under public/", () => {
   expect(listed.stdout.toString()).toBe("")
 })
 test("R2 routes stream only allowed release keys with length and caching", async () => {
-  for (const path of ["/dl/latest.json", "/dl/v1.2.3/manifest.json", "/dl/v1.2.3/mehen-darwin-arm64.gz", "/dl/v1.2.3/mehen-linux-x64.gz", "/dl/v1.2.3/mehen-se.gz"]) {
+  for (const path of ["/dl/latest.json", "/dl/v1.2.3/manifest.json", "/dl/v1.2.3/mehen-darwin-arm64.gz", "/dl/v1.2.3/mehen-linux-x64.gz", "/dl/v1.2.3/mehen-linux-x64-musl.gz", "/dl/v1.2.3/mehen-linux-arm64-musl.gz", "/dl/v1.2.3/mehen-se.gz"]) {
     const response = await request(path)
     expect(response.status).toBe(200)
     expect(response.headers.get("content-type")).toBe(path.endsWith("json") ? "application/json" : "application/gzip")
@@ -135,7 +135,7 @@ test("R2 routes stream only allowed release keys with length and caching", async
   expect(keys.length).toBe(before)
 })
 test("404s never list or fetch arbitrary R2 objects; mutation is refused", async () => {
-  for (const path of ["/dl/", "/dl/v1.2.3/", "/dl/secret.txt", "/dl/v1.2.3/other.gz", "/dl/v1.2.3/mehen-windows-x64.gz", "/dl/v1.2.3/manifest.json/extra", "/dl/v9.9.9/manifest.json", "/unknown", "/dl/../secret.txt", "/dl/%2e%2e/secret.txt", "/dl/v1.2.3%2Fmanifest.json", "/dl/%252e%252e/secret", "/DL/latest.json"]) expect((await request(path)).status).toBe(404)
+  for (const path of ["/dl/", "/dl/v1.2.3/", "/dl/secret.txt", "/dl/v1.2.3/other.gz", "/dl/v1.2.3/mehen-windows-x64.gz", "/dl/v1.2.3/mehen-darwin-arm64-musl.gz", "/dl/v1.2.3/mehen-linux-x64-glibc.gz", "/dl/v1.2.3/manifest.json/extra", "/dl/v9.9.9/manifest.json", "/unknown", "/dl/../secret.txt", "/dl/%2e%2e/secret.txt", "/dl/v1.2.3%2Fmanifest.json", "/dl/%252e%252e/secret", "/DL/latest.json"]) expect((await request(path)).status).toBe(404)
   expect(keys).not.toContain("secret.txt")
   for (const path of ["/install", "/setup", "/skill.md", "/setup.md", "/llms.txt", "/dl/latest.json"]) expect((await request(path, "POST")).status).toBe(405)
 })

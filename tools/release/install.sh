@@ -58,11 +58,13 @@ case "$(uname -m)" in
   *) fail 'Unsupported architecture. Use arm64 or x64.' ;;
 esac
 if [ "$os" = darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || :)" = 1 ]; then arch=arm64; fi
-# A glibc system may also carry the musl package, so glibc is checked first.
+# A glibc system may also carry the musl package, so glibc is checked first;
+# a Linux with neither answer is taken for glibc, as before musl builds.
+libc=
 if [ "$os" = linux ] && ! getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
-  if ldd --version 2>&1 | grep -q musl; then fail 'Linux musl is not supported. Use a glibc system.'; fi
+  if ldd --version 2>&1 | grep -qi musl; then libc=-musl; fi
   for loader in /lib/ld-musl-*; do
-    if [ -e "$loader" ]; then fail 'Linux musl is not supported. Use a glibc system.'; fi
+    if [ -e "$loader" ]; then libc=-musl; fi
   done
 fi
 if command -v shasum >/dev/null 2>&1; then
@@ -97,6 +99,18 @@ case "$base" in
   *) fail 'Download base must use https (or loopback http for tests).' ;;
 esac
 case "$version" in *[!A-Za-z0-9.-]*) fail 'Invalid MEHEN_VERSION.' ;; esac
+# The musl builds link libstdc++, which a minimal musl system such as Alpine
+# does not install; without it the binary cannot start, so say so first.
+# MEHEN_INSTALL_TEST_LIBDIRS stands in for the system's folders, loopback only.
+if [ "$libc" = -musl ]; then
+  libdirs='/lib /usr/lib /usr/local/lib'
+  if [ "$loopback" = 1 ] && [ -n "${MEHEN_INSTALL_TEST_LIBDIRS:-}" ]; then libdirs=$MEHEN_INSTALL_TEST_LIBDIRS; fi
+  found=0
+  for dir in $libdirs; do
+    if [ -e "$dir/libstdc++.so.6" ]; then found=1; fi
+  done
+  [ "$found" = 1 ] || fail 'This musl system has no libstdc++, which mehen needs. Install it (Alpine: apk add libstdc++), then run the installer again.'
+fi
 # A fault the tests inject after the move, honoured only for a loopback base.
 fault() { [ "$loopback" = 1 ] && [ "${MEHEN_INSTALL_TEST_FAULT:-}" = "$1" ]; }
 
@@ -444,7 +458,9 @@ function token(   t) {
   if (s == "") return ""
   if (match(s, /^"[^"\\\001-\037]*"/)) { t=substr(s,1,RLENGTH); s=substr(s,RLENGTH+1); return t }
   if (match(s, /^(0|[1-9][0-9]*)/)) { t=substr(s,1,RLENGTH); s=substr(s,RLENGTH+1); if (length(t) > 15) fail(); return t }
-  t=substr(s,1,1); s=substr(s,2); if (t !~ /^[{}\[\]:,]$/) fail(); return t
+  # index(), not a bracket expression: BusyBox awk (Alpine) reads \] in one
+  # as POSIX does, a backslash and the end of the set, and refused "{".
+  t=substr(s,1,1); s=substr(s,2); if (index("{}[]:,", t) == 0) fail(); return t
 }
 # One value, canonical, from the next token; `top` marks the manifest
 # itself, whose signatures go aside.
@@ -531,7 +547,7 @@ function token(   t) {
   if (s == "") return ""
   if (match(s, /^"[^"\\]*"/)) { t=substr(s,1,RLENGTH); s=substr(s,RLENGTH+1); return t }
   if (match(s, /^[0-9]+/)) { t=substr(s,1,RLENGTH); s=substr(s,RLENGTH+1); return t }
-  t=substr(s,1,1); s=substr(s,2); if (t !~ /^[{}\[\]:,]$/) exit 2; return t
+  t=substr(s,1,1); s=substr(s,2); if (index("{}[]:,", t) == 0) exit 2; return t
 }
 function plain(t) { if (t ~ /^"/) return substr(t,2,length(t)-2); return t }
 { s=s $0 "\n" }
@@ -561,7 +577,10 @@ version_found=$(sed -n '1p' "$stage/entries")
 [ -n "$version_found" ] || fail 'Invalid release version.'
 if [ -n "$version" ] && [ "$version" != "$version_found" ]; then fail 'Release version does not match MEHEN_VERSION.'; fi
 version=$version_found
-name="mehen-$os-$arch"
+name="mehen-$os-$arch$libc"
+if [ "$libc" = -musl ] && ! awk -F '|' -v name="$name" '$1 == name {found=1} END {exit !found}' "$stage/entries"; then
+  fail "Mehen $version has no build for musl-based Linux, so nothing was installed. Use a glibc system for now: a later release adds the musl builds."
+fi
 entry=$(awk -F '|' -v name="$name" '$1 == name {print; n++} END {if(n!=1) exit 2}' "$stage/entries") || fail "Release has no unique $name."
 IFS='|' read -r name raw gz size gzsize <<EOF
 $entry

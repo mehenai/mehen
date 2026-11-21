@@ -22,11 +22,17 @@ export function downloadBase(env: Env): string {
   if (url.username || url.password || url.search || url.hash || (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)))) throw usageError("MEHEN_DL_BASE must use https (or loopback http for tests), without credentials, query or fragment.")
   return raw
 }
+// The file names a manifest may list. An installed mehen refuses a manifest
+// with any other name, so a release can add a binary only once the machines
+// that update from it accept the name: the -musl builds are accepted here
+// before any release lists them (docs/OPERATIONS.md, "The musl builds").
+const RELEASE_FILE = /^mehen-(?:darwin-(?:arm64|x64)|linux-(?:arm64|x64)(?:-musl)?|se)$/
+
 export function parseManifest(value: unknown): ReleaseManifest {
   if (!object(value) || typeof value.version !== "string" || !VERSION_PATTERN.test(value.version) || typeof value.commit !== "string" || typeof value.builtAt !== "string" || !Array.isArray(value.files)) throw new CliError("failed", "Invalid release manifest.")
   const names = new Set<string>()
   for (const file of value.files as unknown[]) {
-    if (!object(file) || typeof file.name !== "string" || !/^mehen-(?:(darwin|linux)-(arm64|x64)|se)$/.test(file.name) || names.has(file.name) || typeof file.os !== "string" || typeof file.arch !== "string" || typeof file.url !== "string" || typeof file.sha256 !== "string" || !HASH.test(file.sha256) || typeof file.gzSha256 !== "string" || !HASH.test(file.gzSha256) || typeof file.size !== "number" || !Number.isSafeInteger(file.size) || file.size < 1 || file.size > MAX_BINARY || typeof file.gzSize !== "number" || !Number.isSafeInteger(file.gzSize) || file.gzSize < 1 || file.gzSize > MAX_BINARY) throw new CliError("failed", "Invalid or duplicate release file.")
+    if (!object(file) || typeof file.name !== "string" || !RELEASE_FILE.test(file.name) || names.has(file.name) || typeof file.os !== "string" || typeof file.arch !== "string" || typeof file.url !== "string" || typeof file.sha256 !== "string" || !HASH.test(file.sha256) || typeof file.gzSha256 !== "string" || !HASH.test(file.gzSha256) || typeof file.size !== "number" || !Number.isSafeInteger(file.size) || file.size < 1 || file.size > MAX_BINARY || typeof file.gzSize !== "number" || !Number.isSafeInteger(file.gzSize) || file.gzSize < 1 || file.gzSize > MAX_BINARY) throw new CliError("failed", "Invalid or duplicate release file.")
     names.add(file.name)
   }
   return value as ReleaseManifest
