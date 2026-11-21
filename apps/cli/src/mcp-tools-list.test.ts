@@ -79,15 +79,16 @@ test("every tool has a title and its annotations, and only the tools that change
   }
   const where = (hint: string) => tools.filter((t) => t.annotations?.[hint] === true).map((t) => t.name)
   expect(where("readOnlyHint")).toEqual(["vault_status", "vault_doctor", "vault_templates", "vault_list", "vault_show", "vault_check", "vault_env", "vault_pending", "vault_adopt_status"])
-  expect(where("openWorldHint")).toEqual(["vault_fetch", "vault_fill", "vault_push"])
-  expect(where("destructiveHint")).toEqual(["vault_fetch", "vault_fill", "vault_push", "vault_policy", "vault_mandate"])
+  expect(where("openWorldHint")).toEqual(["vault_fetch", "vault_fill", "vault_push", "vault_wait"])
+  // vault_wait with execute can send a write.
+  expect(where("destructiveHint")).toEqual(["vault_fetch", "vault_fill", "vault_push", "vault_wait", "vault_policy", "vault_mandate"])
   // vault_request and vault_connect with `new` make a new link on every call.
-  expect(where("idempotentHint")).toEqual(["vault_wait", "vault_adopt_scan"])
+  expect(where("idempotentHint")).toEqual(["vault_adopt_scan"])
 })
 
 // The keys an error's structuredContent may carry (errors.ts errorBody and
 // ErrorExtras): an outputSchema that typed one of them could refuse an error.
-const ERROR_BODY_KEYS = ["error", "message", "next", "ask", "mandateCover", "approval", "bindingCode", "choices", "retryAfter", "providerStatus", "mandate", "expiresAt", "request", "setup", "ruleRefused", "areaRefused", "bundle", "approvals", "cleared", "kind", "id", "status", "replacedBy", "summary", "item", "policyContext", "rememberOptions", "grant", "rule", "ruleProposal", "approvedAt", "push", "proposal", "outcome"]
+const ERROR_BODY_KEYS = ["error", "message", "next", "ask", "mandateCover", "approval", "bindingCode", "choices", "retryAfter", "providerStatus", "mandate", "expiresAt", "request", "setup", "ruleRefused", "areaRefused", "bundle", "approvals", "cleared", "kind", "id", "status", "replacedBy", "summary", "item", "policyContext", "rememberOptions", "grant", "rule", "ruleProposal", "approvedAt", "push", "proposal", "outcome", "replay"]
 
 test("an outputSchema requires nothing and names no field an error carries, so an error result meets it too", () => {
   const withOutput = (allToolsList.tools as ListedTool[]).filter((t) => t.outputSchema)

@@ -215,6 +215,16 @@ export function sessionContext(config: Config): SessionContext {
   return { origin: config.vault, workspace: configWorkspace(config), device: config.device }
 }
 
+// The same session, its proofs carrying `label` as their session label
+// (none for null): a saved request is sent again as it was held, so the
+// proof agrees with the body and with what the human saw. The label is a
+// display label, never authority.
+export async function sessionWithLabel(env: Env, session: VaultSession, label: string | null): Promise<VaultSession> {
+  if (sessionLabel(env) === label) return session
+  const { MEHEN_SESSION: _current, ...rest } = env
+  return openContext(label === null ? rest : { ...rest, MEHEN_SESSION: label }, session.selection)
+}
+
 // A session on one named context, already selected or listed: the origin
 // and key-scope checks still run before the key signs anything.
 export async function openContext(env: Env, selected: NamedContext, options: KeyLoadOptions = {}): Promise<VaultSession> {

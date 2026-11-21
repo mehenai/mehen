@@ -227,7 +227,8 @@ describe("mehen mcp protocol", () => {
     // client is optional now: the one matching client is picked.
     expect(required("vault_connect")).toEqual(["provider", "name", "reason"])
     expect(Object.keys(tools.find((t) => t.name === "vault_connect")?.inputSchema.properties ?? {})).toContain("requestClient")
-    expect(required("vault_fetch")).toEqual(["method", "url"])
+    // method and url, or approval alone for a saved request: checked by the tool.
+    expect(required("vault_fetch")).toEqual([])
     expect(required("vault_wait")).toEqual(["id"])
     expect(required("vault_pending")).toEqual([])
     // No tool approves, enrols, revokes or freezes, and none opens a link.
@@ -990,6 +991,7 @@ describe("mehen mcp tools", () => {
       next: { url: link, say: "Ask the human to approve.", tool: "vault_wait", arguments: { id: "apr_9" } },
       approval: "apr_9",
       bindingCode: "Q7",
+      replay: { saved: true, expiresAt: expect.any(String) },
       ask: {
         kind: "approval",
         id: "apr_9",

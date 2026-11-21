@@ -13,6 +13,10 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
+### 20 November 2026: an approved request is sent again without rebuilding it
+
+The next `mehen` release saves a request the vault holds for approval on the machine that sent it, for an hour, and sends it again once a person approves: `mehen fetch --resume <apr_id>`, `mehen wait <apr_id> --execute`, or through MCP `vault_fetch` with `approval` alone and `vault_wait` with `execute`. Each approval is replayed once, through the same checks as a fresh request; a push is never replayed. The vault is unchanged. See [Approvals](guides/approvals.md) and the CLI's release notes below.
+
 ### 20 November 2026: custom credentials in the web UI, `mehen.local.toml`, `mehen adopt file`, Docker self-hosting and `mehen` 0.4.2
 
 **Add a credential** in the web app now includes **Other API (custom host)** (with destination host and optional header name), **Database URL** and **Other secret** (lease-only for `mehen run`), so humans can add non-template keys and program secrets directly in the browser under the same binding, injection and passkey checks. The repository now ships a hardened `Dockerfile` and `compose.yaml` (with an optional Caddy TLS profile) for self-hosting `mehen serve`. In `mehen` 0.4.2, a fresh `mehen up` starts guard hooks in `warn` mode (`--guard block` blocks immediately), `mehen init --local` writes an uncommitted `mehen.local.toml` for solo adoption in shared repos, and `mehen adopt file <path>` scans and plans one `.env` file in a single step.
