@@ -22,7 +22,6 @@ The vault is the same engine in every case: the same bindings, policies, approva
 ## What only Cloud has
 
 - **Other people by email.** Members invited by email, with roles, teams and projects shared with them, and Google identity checks on members. A local vault sends no email and has no Google sign-in, so it cannot verify an email address and refuses an invitation bound to one. It invites by link instead, which is useful on a vault others can reach (`mehen serve --origin`): a guest invitation, with at least one project shared, that anyone with the link may use. An owner or admin confirms whoever joins, and can then change their role.
-- **Pushing a credential into another service.** `mehen push`, which puts a secret into GitHub Actions, Vercel or Cloudflare Workers from the vault ([Put a credential into another service](../guides/push.md)), is off on a local vault.
 - **Building a product on Mehen.** Platforms and managed workspaces ([Build on Mehen](../guides/build-on-mehen.md)).
 
 ## Using both

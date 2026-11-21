@@ -2,6 +2,12 @@
 
 The version is printed by `mehen version --json`, with the commit it was built from. Releases are served from `https://mehen.dev/dl/`; `mehen update` installs the latest one.
 
+## Unreleased
+
+### Added
+
+- **`mehen push` works against a vault you run yourself** (`mehen up`, `mehen serve`). Pushing a credential into GitHub Actions, Vercel or Cloudflare Workers was off in a local vault; it is now on, with the same rules as on Mehen Cloud: a person allows each credential on its page with a passkey, every push asks a person on its own page, and the vault's own process makes the provider calls, so the value never reaches the asking machine.
+
 ## 0.4.2
 
 Agents now see six core MCP tools by default (`vault_status`, `vault_list`, `vault_request`, `vault_fetch`, `vault_env` and `vault_wait`) with opt-in toolsets for the rest, and a short 6.5 KB skill backed by `mehen guide <topic>`. Guard hooks now cover Cursor and Codex alongside Claude Code and pi, and a fresh `mehen up` starts the guard in `warn` mode so existing `.env` repos keep working until you move their keys in (`mehen up --guard block` blocks immediately). Solo developers in shared or open-source repos can use an uncommitted `mehen.local.toml` via `mehen init --local`, and `mehen adopt file <path>` scans and plans a single `.env` file in one step. The web UI's Add a credential sheet now supports custom-host API keys and lease-only program secrets directly, eighteen new provider templates ship with default environment variables, and the repository includes a hardened `Dockerfile` and `compose.yaml` for self-hosting `mehen serve`. Installed machines update themselves on their next call to the vault once this release is published, or at their next hourly check.
