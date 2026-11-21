@@ -7,7 +7,10 @@
 # Put TLS in front (Tailscale serve, Caddy, or `docker compose --profile caddy`)
 # and pass MEHEN_SERVE_ORIGIN=https://<your-vault-host>.
 
-FROM oven/bun:1.4.2-debian AS builder
+# The builder runs on the build machine's own platform and cross-compiles for
+# the target, as a release does on a Mac, so a multi-platform build never
+# runs bun install or the UI build under emulation.
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.2-debian AS builder
 WORKDIR /src
 
 ARG TARGETARCH

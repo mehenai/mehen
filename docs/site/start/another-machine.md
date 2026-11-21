@@ -72,7 +72,7 @@ The second command starts your user's services when the machine boots, before an
 
 ### Or run it in Docker
 
-The repository includes a hardened `Dockerfile` (unprivileged `mehen` user, `0700` data volume) and `compose.yaml` for running `mehen serve` on a server or homelab.
+Each release from the next one on publishes an image, `ghcr.io/mehenai/mehen`, for linux/amd64 and linux/arm64, tagged with its version and `latest`, with build provenance and an SBOM attached. It runs `mehen serve` as an unprivileged `mehen` user against a `0700` data volume, and does not update itself: pull a newer tag to update. The repository's `compose.yaml` runs it with a read-only root filesystem, no capabilities and the port bound to `127.0.0.1`.
 
 With an existing reverse proxy on the host (Tailscale serve or your own Caddy):
 
@@ -85,6 +85,14 @@ Or with bundled automatic HTTPS from Caddy (ports 80 and 443 open to the host):
 
 ```sh
 MEHEN_SERVE_ORIGIN=https://vault.example.com docker compose --profile caddy up -d
+```
+
+`docker compose up` pulls `ghcr.io/mehenai/mehen:latest`, and builds the image from the checkout only when it cannot pull it. Add `--build` to run what the checkout holds instead. To update, `docker compose pull` and then `docker compose up -d` again; the vault's data stays in the `mehen-data` volume.
+
+Check an image was built by Mehen's release workflow before you run it:
+
+```sh
+gh attestation verify oci://ghcr.io/mehenai/mehen:latest --repo mehenai/mehen
 ```
 
 Then read the one-time sign-up code from the container's volume and continue at step 4:

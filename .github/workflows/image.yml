@@ -1,0 +1,140 @@
+name: image
+# Publishes the self-hosting image (Dockerfile) to ghcr.io/mehenai/mehen for
+# linux/amd64 and linux/arm64, tagged with the release's version, with
+# provenance and an SBOM attached by BuildKit and a GitHub build provenance
+# attestation on the pushed digest. It runs when a release is published or a
+# v* tag is pushed, and by hand for a tag that already exists. A release
+# usually fires both events; the second run finds the version already pushed
+# and stops, unless it was started by hand.
+#
+# :latest follows https://mehen.dev/dl/latest.json, the release the installer
+# and the updater hand out, so an image built for an older tag, or before
+# latest.json names its version, never moves it.
+on:
+  release:
+    types: [published]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The release tag to build, such as v0.4.2
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: image-${{ inputs.version || github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/mehenai/mehen
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    # The binaries are cross-compiled natively; only arm64's runtime stage
+    # (apt-get and useradd) runs under QEMU.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      # The tag reaches the shell through the environment, never spliced into
+      # the script, and must look like a release tag before anything uses it.
+      - name: Resolve the version
+        id: version
+        env:
+          REQUESTED: ${{ inputs.version || github.event.release.tag_name || github.ref_name }}
+        run: |
+          if ! printf '%s\n' "$REQUESTED" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'; then
+            echo "::error::$REQUESTED is not a release tag like v1.2.3"
+            exit 1
+          fi
+          echo "tag=$REQUESTED" >> "$GITHUB_OUTPUT"
+          echo "version=${REQUESTED#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.version.outputs.tag }}
+          persist-credentials: false
+      # The image says it is this version, so the tag must be the commit that
+      # set it, as `mehen version --json` would report it.
+      - name: Check the tag is the release commit
+        id: source
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          declared=$(jq -r .version apps/cli/package.json)
+          if [ "$declared" != "$VERSION" ]; then
+            echo "::error::The tag says $VERSION but apps/cli/package.json at that commit says $declared"
+            exit 1
+          fi
+          echo "commit=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # Signed in before the tags are decided, so the check for an image
+      # already pushed also sees one while the package is still private.
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Decide the tags
+        id: tags
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "$MANUAL" != "true" ] && docker manifest inspect "$IMAGE:$VERSION" > /dev/null 2>&1; then
+            echo "$IMAGE:$VERSION is already published; run this workflow by hand to rebuild it"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tags="$IMAGE:$VERSION"
+          published=$(curl -fsS --max-time 20 https://mehen.dev/dl/latest.json | jq -r .version) || published=""
+          if [ "$published" = "$VERSION" ]; then
+            tags="$tags,$IMAGE:latest"
+          else
+            echo "::notice::latest.json names ${published:-nothing readable}, not $VERSION, so :latest stays where it is"
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - if: steps.tags.outputs.skip != 'true'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - if: steps.tags.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: steps.tags.outputs.skip != 'true'
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            MEHEN_COMMIT=${{ steps.source.outputs.commit }}
+          labels: |
+            org.opencontainers.image.title=Mehen
+            org.opencontainers.image.description=Self-hosted Mehen vault (mehen serve)
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://mehen.dev
+            org.opencontainers.image.documentation=https://docs.mehen.dev/start/another-machine
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.revision }}
+          # GHCR reads the description and licence of a multi-platform image
+          # from its index, not from each platform's config.
+          annotations: |
+            index:org.opencontainers.image.description=Self-hosted Mehen vault (mehen serve)
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.licenses=Apache-2.0
+            index:org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            index:org.opencontainers.image.revision=${{ steps.source.outputs.revision }}
+          provenance: mode=max
+          sbom: true
+      - if: steps.tags.outputs.skip != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
