@@ -90,7 +90,15 @@ jobs:
             exit 0
           fi
           tags="$IMAGE:$VERSION"
-          published=$(curl -fsS --max-time 20 https://mehen.dev/dl/latest.json | jq -r .version) || published=""
+          # latest.json is cached for 60 seconds, and the release's upload
+          # script pushes the tag right after uploading it, so it is read again
+          # for up to three minutes before :latest is left where it is.
+          published=""
+          for attempt in 1 2 3 4 5 6 7; do
+            published=$(curl -fsS --max-time 20 https://mehen.dev/dl/latest.json | jq -r .version) || published=""
+            if [ "$published" = "$VERSION" ] || [ "$MANUAL" = "true" ]; then break; fi
+            if [ "$attempt" -lt 7 ]; then sleep 30; fi
+          done
           if [ "$published" = "$VERSION" ]; then
             tags="$tags,$IMAGE:latest"
           else
