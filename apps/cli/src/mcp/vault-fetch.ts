@@ -73,9 +73,10 @@ async function relayOutput(session: VaultSession, source: RelayRequestInput | ((
     }
     return await fetchOutput(head, response, request.method)
   } catch (error) {
+    const arrivedAt = new Date()
     if (claimed && !reached) await (neverSent(error, request, signal) ? claimed.unsent() : claimed.spent())
     if (timeout?.aborted && !call.signal.aborted && options.timeoutSeconds !== undefined) throw timedOut(options.timeoutSeconds, request.method)
-    const held = call.signal.aborted ? null : await heldRequestNote(deps.env, session, request, error)
+    const held = call.signal.aborted ? null : await heldRequestNote(deps.env, session, request, error, arrivedAt)
     throw withReplayNote(replacingRefused(ruleEnded(await mandateCapped(api, error, signal)), request, "mcp"), held)
   }
 }

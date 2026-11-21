@@ -37,6 +37,26 @@ const APPROVAL_ID = /^apr_[A-Za-z0-9_-]{1,60}$/
 // A marker holds one short token mehen wrote.
 const MARKER_MAX_BYTES = 512
 const TOKEN = /^[0-9]+\.[0-9]+\.[a-z0-9]+$/
+// How long the vault keeps an approval pending: an identical ask reuses
+// it only until then, so every held answer for an approval arrives within
+// this of its creation. Mirrors APPROVAL_TTL_MS in
+// apps/vault/src/vault/areas/approvals.ts (a test holds the two together).
+export const PENDING_APPROVAL_SECONDS = 3600
+// The most this machine's clock may run against the vault's.
+export const SKEW_SECONDS = 15 * 60
+// The sweep removes a file only once it is older than this: about 2 h 15 min.
+//
+// Why no coordination is needed. Every file of an approval X (its request,
+// its marker, a temp file) was written at or after X's creation c, and every
+// held answer for X arrives by c + PENDING + SKEW, so every request of X
+// has createdAt (its arrival) no later than that. A request is saved, or
+// claimed, only within REPLAY_TTL of its createdAt. So once a file of X is
+// older than TTL + PENDING + SKEW, every request X could ever have is past
+// its hour: nothing of X can be saved or claimed any more. Whatever the
+// sweep removes on a stale look (a file replaced since it looked), and
+// whatever a stale release removes (a newer claim's marker), can only
+// belong to a save or a claim that is refused as expired: never a live one.
+export const SWEEP_AGE_SECONDS = REPLAY_TTL_SECONDS + PENDING_APPROVAL_SECONDS + SKEW_SECONDS
 // The sweep is best effort: about once a minute (by the mtime of .swept;
 // two saves at once may both sweep, which is harmless) and at most this
 // many entries looked at, read one by one.
@@ -62,21 +82,54 @@ export type SavedRequest = z.infer<typeof SavedSchema>
 // not ("spent" when the approval's request was sent again already).
 export type ReplayNote = { saved: true; expiresAt: string } | { saved: false; reason: string }
 
-// An exclusive, never-followed create of a marker holding `token`. It
-// throws the system error, EEXIST when anything is already at the path.
-async function createMarker(path: string, token: string): Promise<void> {
-  const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-  try {
-    await handle.writeFile(token)
-    await handle.sync()
-  } finally {
-    await handle.close()
+// A marker this call created that it could not finish writing nor remove.
+class MarkerLeft extends Error {
+  constructor(readonly path: string, readonly failure: unknown, readonly removal: unknown) {
+    super(`${errorText(failure)}; removing it failed too (${errorText(removal)})`)
   }
 }
 
+// An exclusive, never-followed create of a marker holding `token`. It
+// throws the system error, EEXIST when anything is already at the path. A
+// write, sync or close that fails after the create removes the file again:
+// this call created it exclusively, so it is its own; MarkerLeft when that
+// removal fails too.
+async function createMarker(path: string, token: string): Promise<void> {
+  const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+  try {
+    await replayFs.markerWrite(handle, token)
+    await replayFs.markerSync(handle)
+    await replayFs.markerClose(handle)
+  } catch (error) {
+    await handle.close().catch(() => undefined)
+    try {
+      await replayFs.unlink(path)
+    } catch (removal) {
+      throw new MarkerLeft(path, error, removal)
+    }
+    throw error
+  }
+}
+
+type Handle = Awaited<ReturnType<typeof open>>
+
 // The file operations of the cache, so a test can make one fail as a full
 // disk or a failing device would.
-export const replayFs = { rename, unlink, writeNewFile, createMarker, readRequest: readRegularFile }
+export const replayFs = {
+  rename,
+  unlink,
+  writeNewFile,
+  createMarker,
+  readRequest: readRegularFile,
+  readMarker: readRegularFile,
+  markerWrite: (handle: Handle, token: string) => handle.writeFile(token),
+  markerSync: (handle: Handle) => handle.sync(),
+  markerClose: (handle: Handle) => handle.close(),
+}
+
+// Test seams: after the sweep's first look at a file it would remove, and
+// after a release has checked the marker's token and before it removes it.
+export const replaySeams: { afterSweepStat?: ((path: string) => Promise<void>) | undefined; afterMarkerCheck?: (() => Promise<void>) | undefined } = {}
 
 export function replayDir(env: Env): string {
   return join(resolveHome(env).root, REPLAY_DIR)
@@ -115,19 +168,21 @@ async function marked(env: Env, approval: string): Promise<boolean> {
   )
 }
 
-// The request as it was held, saved for an hour. A spent approval's is
+// The request as it was held, saved for an hour from `arrivedAt`, when its
+// held answer arrived: a save that comes later than that hour (a delayed
+// one) writes nothing and says expired. A spent approval's is
 // never saved again: the vault reuses one pending approval for identical
 // asks, so a duplicate request can be held after the first was sent.
 // Concurrent saves of one approval write the same request; the last rename
 // wins. A body over the approval limit is not saved; neither is anything
 // when the folder cannot be written: the held answer stays the vault's,
 // with the reason beside it.
-export async function saveHeldRequest(env: Env, owner: ReplayOwner, approval: string, request: RelayRequestInput, now = new Date()): Promise<ReplayNote> {
+export async function saveHeldRequest(env: Env, owner: ReplayOwner, approval: string, request: RelayRequestInput, now = new Date(), arrivedAt = now): Promise<ReplayNote> {
   if (!APPROVAL_ID.test(approval)) return { saved: false, reason: "the vault's approval id is not one mehen can save under" }
   const body = request.body === undefined ? 0 : base64UrlDecode(request.body).length
   if (body > MAX_REPLAY_BODY_BYTES) return { saved: false, reason: `its body is over ${MAX_REPLAY_BODY_BYTES / 1024} KiB` }
   const { approval: _approval, replaces: _replaces, ...held } = request
-  const saved: SavedRequest = { version: 1, approval, createdAt: now.toISOString(), ...owner, request: held }
+  const saved: SavedRequest = { version: 1, approval, createdAt: arrivedAt.toISOString(), ...owner, request: held }
   try {
     const { root } = resolveHome(env)
     ensureSafeRoot(root)
@@ -135,6 +190,7 @@ export async function saveHeldRequest(env: Env, owner: ReplayOwner, approval: st
     mkdirPrivate(root, dir)
     await sweep(dir, now).catch(() => undefined)
     if (await marked(env, approval)) return { saved: false, reason: "spent" }
+    if (now.getTime() - arrivedAt.getTime() > REPLAY_TTL_SECONDS * 1000) return { saved: false, reason: "expired" }
     const path = savedRequestPath(env, approval)
     const temp = `${path}.${newToken()}.tmp`
     await replayFs.writeNewFile(temp, utf8(`${JSON.stringify(saved)}\n`), { mode: 0o600 })
@@ -142,21 +198,20 @@ export async function saveHeldRequest(env: Env, owner: ReplayOwner, approval: st
   } catch (error) {
     return { saved: false, reason: `mehen could not save it (${errorText(error)})` }
   }
-  return { saved: true, expiresAt: new Date(now.getTime() + REPLAY_TTL_SECONDS * 1000).toISOString() }
+  return { saved: true, expiresAt: new Date(arrivedAt.getTime() + REPLAY_TTL_SECONDS * 1000).toISOString() }
 }
 
-// Requests, markers and temp files past their hour go when a request is
-// saved, and nothing else ever deletes them. A same-id save after an hour
-// does not happen in the normal flow, since the vault's approvals expire
-// at an hour too, so removing a marker then reopens nothing. Only this
-// user's regular files are removed.
+// Requests, markers and temp files older than SWEEP_AGE_SECONDS go when a
+// request is saved, and nothing else ever deletes them; see
+// SWEEP_AGE_SECONDS for why that needs no lock. Only this user's regular
+// files are removed.
 async function sweep(dir: string, now: Date): Promise<void> {
   const swept = join(dir, SWEPT_FILE)
   const last = await lstat(swept).catch(() => null)
   if (last !== null && (!last.isFile() || now.getTime() - last.mtimeMs < SWEEP_EVERY_MS)) return
   if (last === null) await writeFile(swept, "", { mode: 0o600, flag: "wx" }).catch(() => undefined)
   await utimes(swept, now, now).catch(() => undefined)
-  const cutoff = now.getTime() - REPLAY_TTL_SECONDS * 1000
+  const cutoff = now.getTime() - SWEEP_AGE_SECONDS * 1000
   const uid = process.getuid?.() ?? -1
   const entries = await opendir(dir)
   let examined = 0
@@ -166,7 +221,9 @@ async function sweep(dir: string, now: Date): Promise<void> {
       if (!entry.name.startsWith("apr_")) continue
       const path = join(dir, entry.name)
       const info = await lstat(path).catch(() => null)
-      if (info !== null && info.isFile() && info.uid === uid && info.mtimeMs < cutoff) await replayFs.unlink(path).catch(() => undefined)
+      if (info === null || !info.isFile() || info.uid !== uid || info.mtimeMs >= cutoff) continue
+      await replaySeams.afterSweepStat?.(path)
+      await replayFs.unlink(path).catch(() => undefined)
     }
   } finally {
     await entries.close().catch(() => undefined)
@@ -212,14 +269,19 @@ export function assertSavedBy(saved: SavedRequest, owner: ReplayOwner): void {
 // left this machine, so a corrected call can claim it again.
 export type ClaimedRequest = { request: RelayRequestInput; spent(): Promise<void>; unsent(): Promise<void> }
 
-// Removes the marker only while it holds `token`. A marker that cannot be
-// read as this token is left as it is.
+// Removes the marker only while it holds `token`; gone already is fine.
+// A marker that cannot be read, is open to others or holds another token
+// throws, so the caller names it.
 async function releaseMarker(path: string, token: string): Promise<void> {
-  const read = await readRegularFile(path, { maxBytes: MARKER_MAX_BYTES, ownOnly: true }).catch(() => null)
-  if (read === null || (read.info.mode & 0o077) !== 0) return
+  const read = await replayFs.readMarker(path, { maxBytes: MARKER_MAX_BYTES, ownOnly: true })
+  if (read === null) return
+  if ((read.info.mode & 0o077) !== 0) throw new Error("other users can read or write it")
   const text = fromUtf8(new Uint8Array(read.bytes)).trim()
-  if (!TOKEN.test(text) || text !== token) return
-  await replayFs.unlink(path)
+  if (!TOKEN.test(text) || text !== token) throw new Error("it holds another claim, or something mehen did not write")
+  await replaySeams.afterMarkerCheck?.()
+  await replayFs.unlink(path).catch((error: unknown) => {
+    if (codeOf(error) !== "ENOENT") throw error
+  })
 }
 
 // Claims a saved request for sending, right before it is sent: from the
@@ -234,6 +296,11 @@ export async function claimSavedRequest(env: Env, saved: SavedRequest, owner: Re
     await replayFs.createMarker(marker, token)
   } catch (error) {
     if (codeOf(error) === "EEXIST") throw rebuild(`The saved request for ${approval} was sent again already, or is being sent.`)
+    if (error instanceof MarkerLeft) {
+      throw new CliError("failed", `mehen could not mark the request for ${approval} as being sent (${errorText(error.failure)}), nor remove the marker it had begun, ${marker} (${errorText(error.removal)}); nothing was sent.`, {
+        say: `Deleting ${marker} lets the request be sent again; then run the command again.`,
+      })
+    }
     throw new CliError("failed", `mehen could not mark the request for ${approval} as being sent (${errorText(error)}); nothing was sent, and the saved request is as it was.`, { say: "Fix what the message names (free some space, say), then run the command again." })
   }
   let current: SavedRequest

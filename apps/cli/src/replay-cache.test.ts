@@ -4,19 +4,22 @@ import { join } from "node:path"
 import type { RelayRequestInput } from "@mehen/protocol/api"
 import { base64UrlEncode, utf8 } from "@mehen/protocol/bytes"
 import { CliError } from "./errors.ts"
-import { MAX_REPLAY_BODY_BYTES, REPLAY_TTL_SECONDS, SWEEP_BUDGET, claimSavedRequest, neverSent, readSavedRequest, replayFs, saveHeldRequest, savedRequestPath } from "./replay-cache.ts"
+import { MAX_REPLAY_BODY_BYTES, PENDING_APPROVAL_SECONDS, REPLAY_TTL_SECONDS, SKEW_SECONDS, SWEEP_AGE_SECONDS, SWEEP_BUDGET, claimSavedRequest, neverSent, readSavedRequest, replayFs, replaySeams, saveHeldRequest, savedRequestPath } from "./replay-cache.ts"
 import { tempDir } from "./testing/run-mehen.ts"
 import { RelayOutcomeUnknownError, VaultApiError, VaultNetworkError } from "./vault-api.ts"
 
 let dir: Awaited<ReturnType<typeof tempDir>>
 let env: Record<string, string>
 const realFs = { ...replayFs }
+const realSeams = { ...replaySeams }
 beforeEach(async () => {
   dir = await tempDir()
   env = { MEHEN_HOME: join(dir.path, "home") }
 })
 afterEach(async () => {
   Object.assign(replayFs, realFs)
+  for (const key of Object.keys(replaySeams)) delete replaySeams[key as keyof typeof replaySeams]
+  Object.assign(replaySeams, realSeams)
   await dir.remove()
 })
 
@@ -124,11 +127,12 @@ test("only a failure that certainly never left frees the replay", () => {
   expect(neverSent(new Error("aborted"), write, AbortSignal.abort())).toBe(false)
 })
 
-test("an unsent claim removes only its own marker", async () => {
+test("an unsent claim removes only its own marker: another claim's is kept and named", async () => {
   await saveHeldRequest(env, owner, "apr_1", request, now)
   const claimed = await claim()
   await writeFile(markerFile("apr_1"), "1.1.someoneelse", { mode: 0o600 })
-  await claimed.unsent()
+  const refused = await refusal(claimed.unsent())
+  expect(refused.message).toContain(markerFile("apr_1"))
   expect(await readFile(markerFile("apr_1"), "utf8")).toBe("1.1.someoneelse")
 })
 
@@ -229,7 +233,7 @@ test("a marker that is a link, a FIFO, open to others or not mehen's keeps the a
 // of .swept, and bounded, so one save never walks a folder of any size.
 test("one save examines at most the sweep's budget, sweeps about once a minute, and two sweeps at once are harmless", async () => {
   await mkdir(folder(), { recursive: true, mode: 0o700 })
-  const old = new Date(now.getTime() - 2 * REPLAY_TTL_SECONDS * 1000)
+  const old = new Date(now.getTime() - (SWEEP_AGE_SECONDS + 60) * 1000)
   const count = SWEEP_BUDGET + 100
   for (let i = 0; i < count; i++) {
     const path = join(folder(), `apr_old${i}.json`)
@@ -250,13 +254,137 @@ test("one save examines at most the sweep's budget, sweeps about once a minute, 
   expect((await listed()).filter((name) => !name.startsWith("apr_old"))).toEqual(["apr_a.json", "apr_b.json", "apr_new.json", "apr_newer.json"])
 })
 
-test("the sweep removes requests, markers and temp files past the hour, and nothing newer", async () => {
+test("the sweep removes requests, markers and temp files older than its age, and nothing newer", async () => {
   await saveHeldRequest(env, owner, "apr_keep", request, now)
-  const old = new Date(now.getTime() - 2 * REPLAY_TTL_SECONDS * 1000)
+  const old = new Date(now.getTime() - (SWEEP_AGE_SECONDS + 60) * 1000)
   for (const name of ["apr_1.json", "apr_1.spent", "apr_2.json.1.1.tmp"]) {
     await writeFile(join(folder(), name), "", { mode: 0o600 })
     await utimes(join(folder(), name), old, old)
   }
   await saveHeldRequest(env, owner, "apr_new", request, new Date(now.getTime() + 61_000))
   expect(await listed()).toEqual(["apr_keep.json", "apr_new.json"])
+})
+
+// Fault injection at each step after the marker's exclusive create: the
+// file this call made is its own, so it removes it again.
+for (const step of ["markerWrite", "markerSync", "markerClose"] as const) {
+  test(`a marker that fails at ${step} is removed again, and the retry claims the request`, async () => {
+    await saveHeldRequest(env, owner, "apr_1", request, now)
+    replayFs[step] = failing("ENOSPC")
+    const refused = await refusal(claim())
+    expect(refused.code).toBe("failed")
+    expect(refused.message).toContain("ENOSPC")
+    expect(await listed()).toEqual(["apr_1.json"])
+    Object.assign(replayFs, realFs)
+    expect((await claim()).request.approval).toBe("apr_1")
+  })
+}
+
+test("a marker that fails at write and cannot be removed is named, with how to free the replay", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  replayFs.markerWrite = failing("ENOSPC")
+  replayFs.unlink = failing("EROFS")
+  const refused = await refusal(claim())
+  expect(refused.message).toContain(markerFile("apr_1"))
+  expect(refused.next?.say).toContain(`Deleting ${markerFile("apr_1")} lets the request be sent again`)
+})
+
+// Only ENOENT is absence: any other failure to read the marker, before
+// removing it, is the caller's marker-naming error.
+test("a marker that cannot be read when an unsent claim releases it is named, and kept", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  const claimed = await claim()
+  replayFs.readMarker = failing("EIO")
+  const refused = await refusal(claimed.unsent())
+  expect(refused.message).toContain(markerFile("apr_1"))
+  expect(refused.message).toContain("EIO")
+  expect(await listed()).toEqual(["apr_1.json", "apr_1.spent"])
+})
+
+test("a marker that cannot be read after a failed request read is named, and kept", async () => {
+  await saveHeldRequest(env, owner, "apr_1", request, now)
+  const saved = await readSavedRequest(env, "apr_1", now)
+  replayFs.readRequest = failing("EIO")
+  replayFs.readMarker = failing("EACCES")
+  const refused = await refusal(claimSavedRequest(env, saved, owner, now))
+  expect(refused.message).toContain(markerFile("apr_1"))
+  expect(await listed()).toEqual(["apr_1.json", "apr_1.spent"])
+})
+
+// The invariant that lets the sweep and a stale release work without any
+// coordination: a request records when its held answer arrived; nothing
+// saves or claims one past its hour; and the sweep removes a file only once
+// every request of its approval is past its hour.
+test("a held answer is saved as of when it arrived, and one past its hour is not saved", async () => {
+  const arrived = new Date(now.getTime() - 30_000)
+  await saveHeldRequest(env, owner, "apr_1", request, now, arrived)
+  expect((JSON.parse(await readFile(savedRequestPath(env, "apr_1"), "utf8")) as { createdAt: string }).createdAt).toBe(arrived.toISOString())
+  const late = new Date(now.getTime() - REPLAY_TTL_SECONDS * 1000 - 1)
+  expect(await saveHeldRequest(env, owner, "apr_2", request, now, late)).toEqual({ saved: false, reason: "expired" })
+  await expect(stat(savedRequestPath(env, "apr_2"))).rejects.toMatchObject({ code: "ENOENT" })
+})
+
+test("the sweep's age covers the hour, the vault's pending approval and the clock skew", async () => {
+  expect(SKEW_SECONDS).toBe(15 * 60)
+  expect(SWEEP_AGE_SECONDS).toBe(REPLAY_TTL_SECONDS + PENDING_APPROVAL_SECONDS + SKEW_SECONDS)
+  expect(SWEEP_AGE_SECONDS).toBeGreaterThanOrEqual(REPLAY_TTL_SECONDS + PENDING_APPROVAL_SECONDS)
+  // The vault's own pending-approval lifetime, which this constant mirrors.
+  const vault = await Bun.file(new URL("../../vault/src/vault/areas/approvals.ts", import.meta.url)).text()
+  expect(Number(/export const APPROVAL_TTL_MS = ([0-9_]+)/.exec(vault)?.[1]?.replaceAll("_", ""))).toBe(PENDING_APPROVAL_SECONDS * 1000)
+})
+
+test("old stat, then a fresh save of the same approval, then the unlink: the fresh save is refused as expired", async () => {
+  await mkdir(folder(), { recursive: true, mode: 0o700 })
+  const written = new Date(now.getTime() - (SWEEP_AGE_SECONDS + 1) * 1000)
+  await writeFile(savedRequestPath(env, "apr_1"), "{}", { mode: 0o600 })
+  await utimes(savedRequestPath(env, "apr_1"), written, written)
+  let late: unknown = null
+  replaySeams.afterSweepStat = async (path) => {
+    // The latest a held answer for this approval can arrive: its creation
+    // (no later than the old file) plus the vault's pending lifetime and the skew.
+    if (path === savedRequestPath(env, "apr_1")) late = await saveHeldRequest(env, owner, "apr_1", request, now, new Date(written.getTime() + (PENDING_APPROVAL_SECONDS + SKEW_SECONDS) * 1000))
+  }
+  await saveHeldRequest(env, owner, "apr_other", request, now)
+  expect(late).toEqual({ saved: false, reason: "expired" })
+  expect(await listed()).toEqual(["apr_other.json"])
+})
+
+test("two sweeps against one old marker, then a fresh claim: the claim fails as expired, and nothing is sent", async () => {
+  await mkdir(folder(), { recursive: true, mode: 0o700 })
+  const written = new Date(now.getTime() - (SWEEP_AGE_SECONDS + 1) * 1000)
+  // A request of the approval saved as late as it could arrive, its file written late too.
+  await saveHeldRequest(env, owner, "apr_1", request, now, new Date(written.getTime() + (PENDING_APPROVAL_SECONDS + SKEW_SECONDS) * 1000)).catch(() => undefined)
+  await writeFile(savedRequestPath(env, "apr_1"), `${JSON.stringify({ version: 1, approval: "apr_1", createdAt: new Date(written.getTime() + (PENDING_APPROVAL_SECONDS + SKEW_SECONDS) * 1000).toISOString(), ...owner, request })}\n`, { mode: 0o600 })
+  await writeFile(markerFile("apr_1"), "1.1.abc", { mode: 0o600 })
+  await utimes(markerFile("apr_1"), written, written)
+  await Bun.$`rm -f ${join(folder(), ".swept")}`
+  await Promise.all([saveHeldRequest(env, owner, "apr_a", request, now), saveHeldRequest(env, owner, "apr_b", request, now)])
+  await expect(stat(markerFile("apr_1"))).rejects.toMatchObject({ code: "ENOENT" })
+  const saved = JSON.parse(await readFile(savedRequestPath(env, "apr_1"), "utf8")) as Parameters<typeof claimSavedRequest>[1]
+  const refused = await refusal(claimSavedRequest(env, saved, owner, now))
+  expect(refused.code).toBe("replay_missing")
+  expect(refused.message).toContain("expired")
+  await expect(stat(markerFile("apr_1"))).rejects.toMatchObject({ code: "ENOENT" })
+})
+
+test("a stale release, then the sweep, then a new claim, then the unlink: the new claim sends nothing", async () => {
+  const claimedAt = new Date(now.getTime() - (SWEEP_AGE_SECONDS + 1) * 1000)
+  await saveHeldRequest(env, owner, "apr_1", request, claimedAt)
+  const first = await claimSavedRequest(env, await readSavedRequest(env, "apr_1", claimedAt), owner, claimedAt)
+  await utimes(markerFile("apr_1"), claimedAt, claimedAt)
+  await utimes(savedRequestPath(env, "apr_1"), now, now)
+  let second: Promise<unknown> | null = null
+  replaySeams.afterMarkerCheck = async () => {
+    replaySeams.afterMarkerCheck = undefined
+    await Bun.$`rm -f ${join(folder(), ".swept")}`
+    await saveHeldRequest(env, owner, "apr_other", request, now)
+    await expect(stat(markerFile("apr_1"))).rejects.toMatchObject({ code: "ENOENT" })
+    const saved = JSON.parse(await readFile(savedRequestPath(env, "apr_1"), "utf8")) as Parameters<typeof claimSavedRequest>[1]
+    second = claimSavedRequest(env, saved, owner, now)
+    await (second as Promise<unknown>).catch(() => undefined)
+  }
+  await first.unsent().catch(() => undefined)
+  const refused = await refusal(second as unknown as Promise<unknown>)
+  expect(refused.code).toBe("replay_missing")
+  expect(refused.message).toContain("expired")
 })

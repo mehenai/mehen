@@ -155,9 +155,9 @@ export function replayOwner(session: VaultSession): ReplayOwner {
 
 // A held answer (approval_required with its apr_ id) saves the request for
 // sending again once approved, and says so beside the vault's refusal.
-export async function heldRequestNote(env: Env, session: VaultSession, request: RelayRequestInput, error: unknown): Promise<ReplayNote | null> {
+export async function heldRequestNote(env: Env, session: VaultSession, request: RelayRequestInput, error: unknown, arrivedAt: Date): Promise<ReplayNote | null> {
   if (!(error instanceof VaultApiError) || error.body.error !== "approval_required" || typeof error.body.approval !== "string") return null
-  return saveHeldRequest(env, replayOwner(session), error.body.approval, request)
+  return saveHeldRequest(env, replayOwner(session), error.body.approval, request, new Date(), arrivedAt)
 }
 
 export function withReplayNote(error: unknown, note: ReplayNote | null): unknown {
@@ -238,10 +238,12 @@ export async function sendFetch(env: Env, session: VaultSession, source: FetchSo
     }
     return EXIT.ok
   } catch (error) {
+    // When the held answer arrived: its saved request lasts an hour from then.
+    const arrivedAt = new Date()
     failed = true
     if (claimed && !reached) await (neverSent(error, request, controller.signal) ? claimed.unsent() : claimed.spent())
     if (controller.signal.aborted && maxTime !== null) throw timedOut(maxTime, request.method)
-    const held = await heldRequestNote(env, session, request, error)
+    const held = await heldRequestNote(env, session, request, error, arrivedAt)
     throw withReplayNote(replacingRefused(ruleEnded(await mandateCapped(api, error, controller.signal)), request, "cli"), held)
   } finally {
     if (timer) clearTimeout(timer)
