@@ -25,7 +25,7 @@ import { loadDeviceKey } from "../device-key.ts"
 import { type CliError, type CliErrorCode, exitCodeFor, toCliError } from "../errors.ts"
 import { PENDING_DIR, WORKSPACES_DIR, managedHost, resolveHome } from "../home.ts"
 import { HttpVaultApi } from "../http-client.ts"
-import { type CliState, type LockHolder, cliState, installation, lockGuardPresent, lockHolder, onPathCheck, readInstallState, selfExecutable, updateDoctorCheck } from "../install-state.ts"
+import { type CliState, type LockHolder, cliState, installation, lockGuardPresent, lockHolder, onPathCheck, readInstallState, selfExecutable, selfLaunchPath, updateDoctorCheck } from "../install-state.ts"
 import { isListedAsk, readLedger } from "../ledger.ts"
 import { type KeyringHost, LOCAL_VAULT_RECORD, defaultVault, keyringAdvice, keyringHost } from "../local-vault.ts"
 import { type MigrationJournal, type MigrationStep, ROOT_OWN, assertSafeRoot, legacyLayout, migrationState, readMigrationJournal } from "../migration.ts"
@@ -501,7 +501,7 @@ export async function doctorAll(env: Env, options: DoctorAllOptions = {}): Promi
     machine.push(skipped("update", "mehen runs from source; nothing is installed to update."))
   } else {
     const install = installation(self)
-    machine.push(onPathCheck(install, env))
+    machine.push(onPathCheck(install, env, selfLaunchPath(env) ?? self))
     const reason = (error: unknown) => (error instanceof Error ? error.message : String(error))
     const stateError = await readInstallState(install).then(() => null, reason)
     let holder: LockHolder | null = null
@@ -514,7 +514,7 @@ export async function doctorAll(env: Env, options: DoctorAllOptions = {}): Promi
     machine.push(updateDoctorCheck(cli, holder, install.files.lock, Date.now(), { state: install.files.state, stateError, lockError, guard: lockError === null && (await lockGuardPresent(install)) }))
   }
   machine.push(...(await skillCopies(resolve(env.HOME || homedir()), env.PATH ?? "")).map(skillCheck))
-  machine.push(...(await guardChecks(env, root, self)))
+  machine.push(...(await guardChecks(env, root, selfLaunchPath(env))))
   const local = root !== null && ready ? await localVaultCheck(root, fetcher, options.keyring ?? keyringHost(env)) : null
   if (local) machine.push(local)
 

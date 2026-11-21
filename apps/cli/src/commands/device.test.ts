@@ -443,7 +443,7 @@ describe("mehen status across the allowed set", () => {
     expect(Object.keys(all).sort()).toEqual(Object.keys(fixture).sort())
     // cli against its contract, values and not only keys, in both.
     // mehen status keeps what an agent reads; the install records are doctor's.
-    const STATUS_CLI_KEYS = ["autoUpdate", "build", "commit", "mcpHandover", "path", "pending", "version"]
+    const STATUS_CLI_KEYS = ["autoUpdate", "build", "commit", "install", "mcpHandover", "path", "pending", "version"]
     expect(Object.keys((all as unknown as { cli: Record<string, unknown> }).cli).sort()).toEqual(STATUS_CLI_KEYS)
     for (const cli of [(all as unknown as { cli: Record<string, unknown> }).cli, fixture.cli]) {
       expect(Object.keys(cli).sort()).toEqual(expect.arrayContaining(STATUS_CLI_KEYS))

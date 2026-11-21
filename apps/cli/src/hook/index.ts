@@ -16,7 +16,7 @@ import { usageError } from "../errors.ts"
 import { LOCKS_DIR, assertSafeRoot, ensureSafeRoot, resolveHome } from "../home.ts"
 import { withSlotLocks } from "../slot-lock.ts"
 import { printJson, printLine } from "../output.ts"
-import { selfExecutable } from "../install-state.ts"
+import { selfLaunchPath } from "../install-state.ts"
 import { codexAnswer } from "./codex.ts"
 import { cursorAnswer, cursorFailure } from "./cursor.ts"
 import { type GuardResult, installGuards } from "./install.ts"
@@ -231,7 +231,7 @@ export const guardCommand: Command = {
   async run({ args, json, env }) {
     const wanted = args.positionals[0]
     if (wanted === "install" || wanted === "remove") {
-      const binary = selfExecutable(env)
+      const binary = selfLaunchPath(env)
       if (binary === null) throw usageError("The guard hooks name the installed mehen, and this one runs from source. Install mehen with `curl -fsSL https://mehen.dev/install | sh`, then run `mehen guard install`.", "mehen guard --help")
       const options = { home: env.HOME || homedir(), binary, remove: wanted === "remove", dryRun: args.bool("dry-run") }
       const { root } = resolveHome(env)

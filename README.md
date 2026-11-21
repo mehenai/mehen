@@ -10,7 +10,7 @@ It is open source under the Apache 2.0 licence, and it runs on your own machine.
 curl -fsSL https://mehen.dev/install | sh && mehen up
 ```
 
-or, with Node.js, `npx @mehenai/cli up` (or `npm create mehen`), which runs the same signed installer the first time.
+or, with Node.js, `npx @mehenai/cli up` (or `npm create mehen`), which runs the same signed installer the first time. From 0.5.0, Homebrew installs it too: `brew install mehenai/tap/mehen && mehen up`.
 
 `mehen up` starts a vault on this machine at `http://localhost:7787`, opens a page where you make a passkey and your workspace, enrols this machine, registers Mehen with the agents it finds and installs guard hooks that stop them reading `.env` files. The docs are at **https://docs.mehen.dev**, starting with [Run Mehen on your machine](https://docs.mehen.dev/start).
 
@@ -109,7 +109,7 @@ The [threat model](https://docs.mehen.dev/security/threat-model) goes attacker b
 
 ## Platforms
 
-The `mehen` command line runs on macOS, and on Linux with glibc (WSL included), on arm64 and x64. Windows and musl-based Linux are not supported yet. Install with the script above or through npm (`npx @mehenai/cli up` or `npm create mehen`), both of which run the same signed installer and check the binary's SHA-256. Each release from the next one on is also on [GitHub Releases](https://github.com/mehenai/mehen/releases) with its signed manifest and a `SHA256SUMS`, and the self-hosted vault as an image, `ghcr.io/mehenai/mehen`. Mehen is not on Homebrew yet, and the unscoped npm package called `mehen` is an unrelated tool.
+The `mehen` command line runs on macOS, and on Linux with glibc (WSL included), on arm64 and x64. Windows and musl-based Linux are not supported yet. Install with the script above or through npm (`npx @mehenai/cli up` or `npm create mehen`), both of which run the same signed installer and check the binary's SHA-256. Each release from the next one on is also on [GitHub Releases](https://github.com/mehenai/mehen/releases) with its signed manifest and a `SHA256SUMS`, and the self-hosted vault as an image, `ghcr.io/mehenai/mehen`. From 0.5.0 it is also on Homebrew, `brew install mehenai/tap/mehen` (macOS and glibc Linux), and a Homebrew install is updated by `brew upgrade mehen` rather than by itself. The unscoped npm package called `mehen` is an unrelated tool.
 
 ## Repository layout
 

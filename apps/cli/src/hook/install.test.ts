@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runJv } from "../testing/run-mehen.ts"
+import { brewPrefix } from "../testing/brew-prefix.ts"
 import { CLAUDE_TOOLS, CODEX_TOOLS, CODEX_TRUST, CURSOR_WRITE_MATCHER, claudeHookCommand, claudeSettings, codexHooks, cursorHooks, installClaudeGuard, installCodexGuard, installCursorGuard, installPiGuard, ownsCommand } from "./install.ts"
 import { piExtension } from "./pi.ts"
 import { parseJson } from "../setup/formats.ts"
@@ -108,6 +109,30 @@ describe("the file", () => {
     expect(result.code).toBe(0)
     expect(JSON.parse(result.stdout)).toMatchObject({ agents: [{ agent: "claude-code", status: "added" }, { agent: "pi", status: "skipped" }, { agent: "cursor", status: "skipped", absent: true }, { agent: "codex", status: "skipped", absent: true }] })
     expect(JSON.parse(await readFile(file(), "utf8")).hooks.SessionStart[0].hooks[0].command).toBe(`${BIN} hook claude-code`)
+  })
+})
+
+describe("a mehen Homebrew installed", () => {
+  let home: string
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "mehen-guard-brew-"))
+  })
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true })
+  })
+
+  test("guard install names brew's opt/mehen link, which outlives brew upgrade, never the keg", async () => {
+    const brew = await brewPrefix(await import("node:fs").then((fs) => fs.realpathSync(home)))
+    for (const agent of [".claude", ".pi", ".cursor", ".codex"]) await mkdir(join(home, agent))
+    const result = await runJv(["guard", "install", "--json"], { HOME: home, MEHEN_SELF_EXECUTABLE: brew.bin })
+    expect(result.code).toBe(0)
+    expect(JSON.parse(await readFile(join(home, ".claude", "settings.json"), "utf8")).hooks.SessionStart[0].hooks[0].command).toBe(`${brew.opt} hook claude-code`)
+    expect(await readFile(join(home, ".pi", "agent", "extensions", "mehen-guard.ts"), "utf8")).toContain(JSON.stringify(brew.opt))
+    for (const file of [join(home, ".cursor", "hooks.json"), join(home, ".codex", "hooks.json")]) {
+      const text = await readFile(file, "utf8")
+      expect(text).toContain(brew.opt)
+      expect(text).not.toContain("Cellar")
+    }
   })
 })
 

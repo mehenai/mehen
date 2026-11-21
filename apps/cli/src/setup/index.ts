@@ -9,6 +9,7 @@ import type { Command } from "../command.ts"
 import type { Env } from "../config.ts"
 import { installedBinaryRequired, usageError } from "../errors.ts"
 import { printBlock, printJson, printLine } from "../output.ts"
+import { launchPath } from "../homebrew.ts"
 import { isCompiledBinary } from "../version.ts"
 import { TOOLSETS_ENV, type Toolset, parseToolsets, toolsetsValue } from "../mcp/registry.ts"
 import { type Agent, MCP_FILE, type PinnedBase, agents, assertPinnedBase, envField, legacyServerKey, mcpFileAgent, pinMcpFileBase, recordedMcpFile, serverEntry } from "./agents.ts"
@@ -526,6 +527,13 @@ export function setupRequest(args: ParsedArgs): SetupRequest {
   return { ...request, print: { workspaces, format: format ?? "json" } }
 }
 
+// The mehen an agent's entry runs: this binary, or for a Homebrew keg the
+// link brew keeps pointing at the current version, since brew deletes the
+// keg itself on the next upgrade.
+export function setupBinary(env: Env, binary: string = process.execPath): string {
+  return launchPath(binary, env)
+}
+
 export const setupCommand: Command = {
   summary: "register the Mehen MCP server and skills in your installed agents, at user level",
   spec: {
@@ -548,14 +556,14 @@ export const setupCommand: Command = {
     if (request.print) {
       // Rendered (and refused) from the environment first, then shown only
       // from an installed binary, whose path the entry names.
-      const printed = printSetup({ home, binary: process.execPath, env, workspaces: request.print.workspaces, format: request.print.format, toolsets: request.toolsets })
+      const printed = printSetup({ home, binary: setupBinary(env), env, workspaces: request.print.workspaces, format: request.print.format, toolsets: request.toolsets })
       if (!isCompiledBinary()) throw installedBinaryRequired("setup")
       if (json) printJson(printed)
       else printBlock(printed.text)
       return EXIT.ok
     }
     if (!isCompiledBinary()) throw installedBinaryRequired("setup")
-    const report = await setup({ home, binary: process.execPath, names: request.names, ...(request.mcpFile !== null ? { mcpFile: request.mcpFile } : {}), workspaces: request.workspaces, toolsets: request.toolsets, dryRun: request.dryRun, remove: request.remove, force: request.force, resetEnv: request.resetEnv, env, skillsOnly: env.MEHEN_SETUP_SKILLS_ONLY === "1" })
+    const report = await setup({ home, binary: setupBinary(env), names: request.names, ...(request.mcpFile !== null ? { mcpFile: request.mcpFile } : {}), workspaces: request.workspaces, toolsets: request.toolsets, dryRun: request.dryRun, remove: request.remove, force: request.force, resetEnv: request.resetEnv, env, skillsOnly: env.MEHEN_SETUP_SKILLS_ONLY === "1" })
     if (json) printJson(report)
     else for (const line of setupLines(report)) printLine(line)
     return setupExitCode(report)

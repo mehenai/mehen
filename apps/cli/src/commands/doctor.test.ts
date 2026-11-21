@@ -4,6 +4,7 @@ import { EXIT } from "@mehen/protocol/api"
 import { type DoctorCheck, type DoctorReport, doctorAll as doctor, guardRows } from "./doctor.ts"
 import { MOCK_TENANT, MockVault } from "../testing/mock-vault.ts"
 import { runJv, tempDir } from "../testing/run-mehen.ts"
+import { brewPrefix } from "../testing/brew-prefix.ts"
 
 let vault: MockVault
 let dir: { path: string; remove(): Promise<void> }
@@ -510,4 +511,23 @@ test("guard rows: no agent set up is one ok row; a file the guard could not read
   expect(guardRows([{ agent: "cursor", status: "skipped", file: "/h/.cursor/hooks.json", absent: true, reason: "no ~/.cursor folder" }], "block")).toEqual([{ check: "guard", status: "ok", detail: expect.stringContaining("No agent that runs the guard hooks") }])
   expect(guardRows([{ agent: "codex", status: "skipped", file: "/h/.codex/hooks.json", reason: "Malformed agent settings." }], "block")).toEqual([{ check: "guard", status: "warn", detail: "Codex: Malformed agent settings." }])
   expect(guardRows([{ agent: "codex", status: "updated", file: "/h/.codex/hooks.json" }], "warn")[0]?.next?.say).toContain("/hooks")
+})
+
+// A keg: doctor says Homebrew installed it, points updates at brew, finds
+// it on PATH through brew's bin, and reads the guard hooks guard install
+// wrote with the opt/mehen link as Mehen's own.
+test("a mehen Homebrew installed: install homebrew, updates through brew, on PATH through brew's bin, the guard hooks on the opt link", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  const { realpathSync } = await import("node:fs")
+  const brew = await brewPrefix(realpathSync(home.path))
+  await mkdir(join(home.path, ".claude"))
+  const installed = { ...env, MEHEN_SELF_EXECUTABLE: brew.bin, PATH: `/usr/bin:/bin:${join(brew.prefix, "bin")}`, CI: "" }
+  expect((await runJv(["guard", "install", "--json"], installed)).code).toBe(0)
+  const report = JSON.parse((await runJv(["doctor", "--json"], installed)).stdout) as DoctorReport
+  expect(report.cli).toMatchObject({ path: brew.keg, install: "homebrew", autoUpdate: "homebrew" })
+  expect(find(report, "update")).toMatchObject({ status: "ok", detail: expect.stringContaining("installed by Homebrew; brew upgrade mehen updates it") })
+  expect(find(report, "on_path")).toMatchObject({ status: "ok", detail: `${join(brew.prefix, "bin")} is on PATH.` })
+  expect(report.machine.filter((c) => c.check === "guard").map((r) => [r.status, r.detail.split(":")[0]])).toContainEqual(["ok", "Claude Code"])
+  const enrolled = find(report, "enrolled")
+  if (enrolled?.next?.command) expect(enrolled.next.command).not.toContain("Cellar")
 })

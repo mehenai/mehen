@@ -70,6 +70,7 @@
     "commit": "1a2b3c4",
     "build": "release",
     "path": "/Users/agent/.local/bin/mehen",
+    "install": "standalone",
     "autoUpdate": "on",
     "mcpHandover": { "handover": "off", "reason": "mcpHandover is false in settings.json" },
     "installed": null,

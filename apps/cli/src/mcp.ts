@@ -20,7 +20,8 @@ import { VERSION } from "./version.ts"
 import { flushCliAdvice } from "./http-client.ts"
 import { installation, mcpHandoverNow, selfExecutable } from "./install-state.ts"
 import { sha256 } from "./release-client.ts"
-import { healInForeground } from "./update.ts"
+import { BREW_UPGRADE } from "./homebrew.ts"
+import { healInForeground, homebrewOutdated } from "./update.ts"
 import { CallRegistry } from "./mcp/call-registry.ts"
 import { type McpResumePayload, StdinLines, assertStillVerified, prepareHandover, quietWithin, resumeInto, takeResume } from "./mcp/handover.ts"
 import { SelfWatch } from "./mcp/self-watch.ts"
@@ -239,7 +240,10 @@ async function healedRefusal(failure: CliError, deps: ToolDeps): Promise<CliErro
   if (failure.code !== "cli_outdated") return failure
   await flushCliAdvice()
   const healed = await healInForeground(deps.env)
-  if (healed === null) return failure
+  if (healed === null) {
+    const brew = homebrewOutdated(failure, deps.env)
+    return brew ? new CliError("cli_outdated", brew.message, { command: BREW_UPGRADE, say: `Homebrew installed this mehen; ask the human to run ${BREW_UPGRADE} and restart the agent, then retry` }, brew.extras) : failure
+  }
   return new CliError("cli_outdated", failure.message, { say: `mehen updated itself to ${healed.to} on disk; restart the agent to load it, then retry` }, failure.extras)
 }
 

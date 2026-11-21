@@ -441,6 +441,24 @@ describe("healing an outdated CLI", () => {
     expect(spawned).toBe("update --background\n")
   })
 
+  test("a Homebrew keg below the vault's minimum is never healed or re-executed: the refusal says brew upgrade mehen", async () => {
+    const { brewPrefix } = await import("./testing/brew-prefix.ts")
+    const { freshInstallState, installation, writeInstallState } = await import("./install-state.ts")
+    const brew = await brewPrefix(bin)
+    const script = `#!/bin/sh\nexec '${process.execPath}' '${MAIN}' "$@"\n`
+    await writeFile(brew.keg, script, { mode: 0o755 })
+    const state = freshInstallState()
+    state.vault[vault.url] = { minimum: "9.0.0", recommended: null, seenAt: "2026-10-28T12:00:00.000Z" }
+    await writeInstallState(installation(brew.keg), state)
+    vault.cliMinimum = "9.0.0"
+    vault.cliAdvice = "minimum=9.0.0"
+    const result = await runJv(["enrol", "--workspace", "mock-space", "--json"], { ...installed(), MEHEN_SELF_EXECUTABLE: brew.bin })
+    expect(result.code).toBe(EXIT.error)
+    expect(json(result)).toMatchObject({ error: "cli_outdated", next: { command: "brew upgrade mehen", say: expect.stringContaining("Homebrew installed this mehen") } })
+    expect(await readFile(brew.keg, "utf8")).toBe(script)
+    expect(await ran()).toBeNull()
+  })
+
   test("a refusal on the third request of a command renders once with the vault's next and is never retried", async () => {
     vault.enrolOutcome = { pendingPolls: 50, result: "active" }
     const started = await runJv(["enrol", "--workspace", "mock-space", "--json"], env)

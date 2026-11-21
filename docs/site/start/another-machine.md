@@ -21,6 +21,8 @@ curl -fsSL https://mehen.dev/install | sh
 mehen serve --origin https://vault.example.com
 ```
 
+From 0.5.0 you can install it with Homebrew instead, `brew install mehenai/tap/mehen`; it is then updated by `brew upgrade mehen`, not by itself.
+
 Use the name people will open, with no path. With `--origin`, the vault takes that name as its address and as the passkeys' site, answers only requests addressed to that name, and still listens on `127.0.0.1:7787` unless you say otherwise, so only the proxy on the same machine reaches it. `--port` changes the port, `--data` the data folder, which must be open to the vault's user alone, (by default `~/.local/share/mehen/vault` on Linux and `~/Library/Application Support/Mehen/vault` on macOS) and `--bind` the address it listens on, for a proxy on another machine.
 
 `mehen serve` runs until you stop it with Ctrl-C. It prints the vault's address and data folder, and, while the vault has no account, where to find the one-time sign-up code. `--json` prints one line, `{ origin, data, bootstrap, dumpable }`, once it is listening; on Linux `dumpable` is `off` when the process has stopped other programs reading its memory.

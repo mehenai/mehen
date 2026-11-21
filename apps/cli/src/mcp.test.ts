@@ -352,6 +352,18 @@ describe("mehen mcp tools", () => {
     expect(text(outdated)).toEndWith("next: Update mehen.\n  run:  mehen update")
   })
 
+  test("a Homebrew keg refused cli_outdated is not healed: the step is brew upgrade mehen and a restart", async () => {
+    const { brewPrefix } = await import("./testing/brew-prefix.ts")
+    const { realpathSync } = await import("node:fs")
+    const brew = await brewPrefix(realpathSync(dir.path))
+    await mcp.close()
+    mcp = new McpClient({ MEHEN_CONFIG_DIR: dir.path, MEHEN_VAULT_URL: vault.url, MEHEN_SESSION: "mcp-test", MEHEN_SELF_EXECUTABLE: brew.bin, CI: "" })
+    await vault.enrolSoftware(dir.path)
+    vault.overrides.set("GET /v1/items", () => vaultError("cli_outdated", "Too old.", { next: { command: "mehen update", say: "Update mehen." } }))
+    const outdated = await callTool("vault_list", {})
+    expect((outdated.structuredContent as { next: unknown }).next).toEqual({ command: "brew upgrade mehen", say: "Homebrew installed this mehen; ask the human to run brew upgrade mehen and restart the agent, then retry" })
+  })
+
   test("vault_check says allow, approve, refuse or outside the binding, and never sends the request", async () => {
     await vault.enrolSoftware(dir.path)
     vault.items.push(item("gmail-ish", { binding: { hosts: ["api.example.com"], paths: ["/v1/**"] }, policy: { default: "approve", rules: [{ methods: ["GET"], action: "allow", note: "read" }, { methods: ["DELETE"], action: "deny", note: "never delete" }] } }))

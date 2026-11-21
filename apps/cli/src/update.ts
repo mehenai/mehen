@@ -8,12 +8,13 @@ import { spawn, spawnSync } from "node:child_process"
 import { closeSync } from "node:fs"
 import { copyFile, lstat, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { basename, isAbsolute, join } from "node:path"
-import { EXIT } from "@mehen/protocol/api"
+import { EXIT, type NextStep } from "@mehen/protocol/api"
 import { canonicalJson } from "@mehen/protocol/canonical-json"
 import type { SignedManifest } from "@mehen/protocol/release-manifest"
 import type { Command } from "./command.ts"
 import type { Env } from "./config.ts"
 import { CliError, installedBinaryRequired, toCliError, usageError } from "./errors.ts"
+import { BREW_UPGRADE, type Homebrew, homebrewInstall } from "./homebrew.ts"
 import {
   type InstallState,
   type InstalledRecord,
@@ -44,7 +45,27 @@ import type { SkillReport } from "./setup/skills.ts"
 import { BUILD_COMMIT, BUILD_LIBC, type BuildKind, type Libc, VERSION } from "./version.ts"
 
 export type UpdateReport = { current: string; latest: string | null; available: boolean; updated: boolean; path: string; result: "updated" | "current" | "locked" | "held" | "rolled_back"; holder?: LockHolder; from?: string; to?: string; skills?: SkillReport[] }
-export type UpdateCheck = { current: string; latest: string | null; available: boolean; path: string; installed: InstalledRecord | null; pending: PendingJournal | null }
+// `install` and `next` only for a mehen Homebrew installed, which brew updates.
+export type UpdateCheck = { current: string; latest: string | null; available: boolean; path: string; installed: InstalledRecord | null; pending: PendingJournal | null; install?: "homebrew"; next?: NextStep }
+
+// Homebrew owns a keg's files and deletes the keg on its next upgrade, so
+// mehen never replaces a binary brew installed, by hand or by itself.
+export function homebrewNext(brew: Homebrew): NextStep {
+  return { command: BREW_UPGRADE, say: `Homebrew installed this mehen (${brew.version}, in ${brew.keg}); run ${BREW_UPGRADE} to update it.` }
+}
+
+// A vault's cli_outdated for a mehen Homebrew installed: the self-updater
+// does not run, so the step is brew's, whatever the vault suggested.
+export function homebrewOutdated(failure: CliError, env: Env): CliError | null {
+  const self = selfExecutable(env)
+  const brew = failure.code === "cli_outdated" && self !== null ? homebrewInstall(self, env) : null
+  if (brew === null) return null
+  return new CliError("cli_outdated", failure.message, { command: BREW_UPGRADE, say: `Homebrew installed this mehen (${brew.version}); run ${BREW_UPGRADE}, then run the command again.` }, failure.extras)
+}
+
+function homebrewRefusal(brew: Homebrew): CliError {
+  return new CliError("usage", `Homebrew installed this mehen, so mehen does not replace it: ${BREW_UPGRADE} updates it.`, homebrewNext(brew))
+}
 
 // The points a kill can land between, in order (src/update.test.ts kills
 // the updater at each one).
@@ -565,7 +586,12 @@ export async function update(options: UpdateOptions & { check: true }): Promise<
 export async function update(options: UpdateOptions): Promise<UpdateReport>
 export async function update(options: UpdateOptions): Promise<UpdateReport | UpdateCheck> {
   if (options.version !== undefined && options.version !== null && !VERSION_PATTERN.test(options.version)) throw usageError("--version needs a release version such as 0.3.0.")
-  if (options.check) return checkOnly(options)
+  const brew = homebrewInstall(options.install.binary, options.env)
+  if (options.check) {
+    const result = await checkOnly(options)
+    return brew ? { ...result, install: "homebrew", next: homebrewNext(brew) } : result
+  }
+  if (brew) throw homebrewRefusal(brew)
   const { platform, binary } = platformBinary(options)
   if (!(await installDirWritable(options.install))) throw new CliError("failed", `${options.install.dir} is not writable, so mehen cannot update itself there. ${notChanged}`, { say: "Update with the account that owns the install directory; mehen never uses sudo." })
   const locked = await withInstallLock(options.install, options.rollback ? "rollback" : options.by, () => underLock(options, platform, binary), options.wait === false ? { wait: false } : options.signal ? { signal: options.signal } : undefined)
@@ -621,9 +647,12 @@ export const updateCommand: Command = {
     if (check) {
       const result = await update({ ...options, check: true })
       if (json) printJson(result)
+      else if (result.install === "homebrew") printLine(`mehen ${result.current}; latest ${result.latest}. Homebrew installed this mehen: ${BREW_UPGRADE} updates it.`)
       else printLine(`mehen ${result.current}; latest ${result.latest}${result.available ? ". Run mehen update." : "."}`)
       return EXIT.ok
     }
+    // An updater child never touches a keg; the refusal is for a person.
+    if (background && homebrewInstall(install.binary, env)) return EXIT.ok
     if (background) {
       try {
         const report = await update(options)
@@ -656,7 +685,7 @@ async function autoInstallation(env: Env): Promise<{ install: Installation; buil
   const build = selfBuild(env)
   if (self === null || build !== "release") return null
   const install = installation(self)
-  const mode = autoUpdateMode(env, await installDirWritable(install), await readSettings(env), build)
+  const mode = autoUpdateMode(env, await installDirWritable(install), await readSettings(env), build, homebrewInstall(install.binary, env) !== null)
   return mode === "on" ? { install, build } : null
 }
 
