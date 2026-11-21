@@ -86,6 +86,14 @@ test("sign up, enrol the real CLI, store a key and relay with it", async () => {
   expect(refused.code).toBe(5)
   expect(refused.out + refused.err).toContain("binding_refused")
   expect(upstream).toHaveLength(1)
+
+  // Pushing is on in a local vault, and still needs the credential's own
+  // allowance, which a person turns on with a passkey: none asked, none sent.
+  const push = await cli("push", "openai#key", "--to", "github:acme/app/OPENAI_API_KEY", "--reason", "the evals workflow", "--json")
+  expect(push.out + push.err).not.toContain("not available yet")
+  expect(push.out + push.err).toContain("may not be put into other services' secret stores")
+  expect(push.out + push.err).not.toContain(FAKE_KEY)
+  expect(upstream).toHaveLength(1)
 }, 60_000)
 
 // Bun's server closes a connection idle for 10 s unless told otherwise, and

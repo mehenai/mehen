@@ -149,7 +149,7 @@ async function startLocked(config: LocalConfig, release: () => void, options: Lo
     STEPUP_GRACE: "on",
     MANDATES: "on",
     BROWSER_FILL: "on",
-    PUSH: "off",
+    PUSH: "on",
     BOOTSTRAP_CODE: undefined,
     ...secrets,
   }
