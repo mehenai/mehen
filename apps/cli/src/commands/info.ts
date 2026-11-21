@@ -23,6 +23,7 @@ export const GUIDE_TOPICS: Readonly<Record<string, string>> = {
   ask: "The ask block",
   request: "How to ask a human for a credential",
   approvals: "Approvals",
+  resume: "Sending an approved request again",
   "asking-less": "Asking less",
   plan: "Several writes at once",
   mandates: "Mandates",
