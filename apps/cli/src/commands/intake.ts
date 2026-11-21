@@ -14,6 +14,7 @@ import { type Attempt, type Finished, followAttempt } from "./activate.ts"
 import { CliError, exitCodeFor, toCliError, usageError } from "../errors.ts"
 import { type LedgerEntry, type LedgerScope, addLedgerEntry, findLedgerEntry, readLedger, removeLedgerEntry } from "../ledger.ts"
 import { type HumanWriter, errorJson, note, printAsk, printJson, printLine, reportError } from "../output.ts"
+import { resumeFetch } from "./fetch.ts"
 import {
   type ConnectInput,
   type IntakeInput,
@@ -587,6 +588,9 @@ export type RunWaitOptions = {
   json: boolean
   events: boolean
   noQr: boolean
+  // apr_ only: once approved (and not a push), send the saved request
+  // again and answer with its result instead of the wait's.
+  execute?: boolean
   timeoutSeconds: number
   // Print the ask block (stderr, on a TTY) before waiting: mehen wait does;
   // --wait on request and connect has just printed it as the result.
@@ -650,6 +654,7 @@ export async function runWait(env: Env, id: string, options: RunWaitOptions): Pr
   if (showBlock && known) printAsk(known.ask, { stream: "stderr", env, noQr: options.noQr, now, then: null })
   let settledId: string | null = null
   let sendingShown = false
+  let replay = false
   try {
     monitor.start()
     const result = await waitFor(api, id, {
@@ -680,11 +685,15 @@ export async function runWait(env: Env, id: string, options: RunWaitOptions): Pr
     })
     monitor.stop()
     settledId = id
-    const output = waitOutput(id, result, scope)
-    if (options.events) emit({ event: "settled", ...output } as WaitEvent)
-    else if (options.json) printJson(options.step ? { step: options.step, ...output } : output)
-    else for (const line of outcomeLines(result, styler(colourEnabled(process.stdout, env)), { now: new Date(), vault: scope })) printLine(line)
-    return EXIT.ok
+    // A push is performed by the vault itself: there is nothing to send.
+    replay = options.execute === true && result.kind === "approval" && result.status.status === "approved" && result.status.push === undefined
+    if (!replay) {
+      const output = waitOutput(id, result, scope)
+      if (options.events) emit({ event: "settled", ...output } as WaitEvent)
+      else if (options.json) printJson(options.step ? { step: options.step, ...output } : output)
+      else for (const line of outcomeLines(result, styler(colourEnabled(process.stdout, env)), { now: new Date(), vault: scope })) printLine(line)
+      return EXIT.ok
+    }
   } catch (error) {
     monitor.stop()
     const thrown = toCliError(error)
@@ -699,6 +708,8 @@ export async function runWait(env: Env, id: string, options: RunWaitOptions): Pr
   } finally {
     if (settledId) await removeLedgerEntry(configDir, scope, settledId).catch(() => undefined)
   }
+  note(`mehen: ${id} is approved; sending the saved request again`)
+  return resumeFetch(env, id, { json: options.json, output: null, select: null, selectText: null, include: false, fail: false, maxTime: null })
 }
 
 // The enrolment result as a wait reports it: the vault's verified active
@@ -778,14 +789,15 @@ async function runEnrolmentWait(env: Env, id: string, options: RunWaitOptions): 
 export const waitCommand: Command = {
   summary: "wait for an intake (int_), approval (apr_), connection (con_), enrolment (enr_), policy proposal (pol_), adoption batch (adp_), bundle (bnd_) or mandate proposal (mdp_)",
   spec: {
-    usage: "mehen wait <id> [--timeout <duration>] [--json [--events]]",
-    flags: { timeout: { type: "string" }, events: { type: "boolean" } },
+    usage: "mehen wait <id> [--timeout <duration>] [--execute] [--json [--events]]",
+    flags: { timeout: { type: "string" }, events: { type: "boolean" }, execute: { type: "boolean" } },
     positionals: { min: 1, max: 1 },
   },
-  examples: [["wait", "int_3kQ9vXyZ7", "--timeout", "10m"], ["wait", "apr_7Hq2", "--json", "--events"]],
+  examples: [["wait", "int_3kQ9vXyZ7", "--timeout", "10m"], ["wait", "apr_7Hq2", "--json", "--events"], ["wait", "apr_7Hq2", "--execute"]],
   notes: [
     "A human who has not acted by the timeout is exit 4 (timeout) with the ask handed back: relay it again and wait again. Ctrl-C leaves the link valid.",
     "A mandate proposal (mdp_, from mehen mandate propose) ends once a person signs it, or signs this machine another mandate first: exit 0 with the mandate; 1 (expired) when it lapsed unsigned.",
+    "--execute (apr_ only) sends the request mehen fetch saved when it was held, once it is approved, and exits as that fetch does; on a push it only waits, since the vault performs the push. Without a saved request it is replay_missing (exit 1): repeat the request byte for byte with --approval.",
     "A bundle (bnd_, from mehen plan submit) ends once none of its requests waits: exit 0 when all were approved, 5 when any was denied, stopped or replaced (the approved ones stay usable, and next.say names them), 4 on timeout.",
   ],
   async run({ args, json, env }) {
@@ -793,6 +805,9 @@ export const waitCommand: Command = {
     const timeout = timeoutSeconds(args.string("timeout"), "mehen wait --help")
     const events = args.bool("events")
     if (events && !json) throw usageError("--events prints one JSON object per line, so it needs --json.", "mehen wait --help")
-    return runWait(env, id, { json, events, noQr: args.bool("no-qr"), timeoutSeconds: timeout, showAsk: true })
+    const execute = args.bool("execute")
+    if (execute && !id.startsWith("apr_")) throw usageError("--execute sends a saved request once its approval comes, so it takes an approval id (apr_...).", "mehen wait --help")
+    if (execute && events) throw usageError("--execute answers with the request's own result, so it does not take --events.", "mehen wait --help")
+    return runWait(env, id, { json, events, noQr: args.bool("no-qr"), timeoutSeconds: timeout, showAsk: true, execute })
   },
 }

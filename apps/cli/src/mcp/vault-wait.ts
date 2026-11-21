@@ -6,7 +6,7 @@ import { followAttempt } from "../commands/activate.ts"
 import { SETTLED_CODES, enrolmentResult, waitOutput } from "../commands/intake.ts"
 import { type Config, workspaceLabel } from "../config.ts"
 import { readEnrolmentRecord } from "../enrolment-record.ts"
-import { CliError, toCliError } from "../errors.ts"
+import { CliError, toCliError, usageError } from "../errors.ts"
 import { rootAboveSlot } from "../home.ts"
 import { findLedgerEntry, ledgerOrigins, readLedger, readLegacyEnrolments, removeLedgerEntry } from "../ledger.ts"
 import { type WaitLedger, type WaitTarget, waitFor, waitTarget } from "../operations.ts"
@@ -15,6 +15,7 @@ import { contextMatches, workspaceMismatch, workspaceUnbound } from "../slots.ts
 import { isPinned, latchActivated, resolveSlot, spanSlots, workspaceArgument } from "./binding.ts"
 import { type JsonRpcNotification, type ProgressToken, type SpanSlot, type ToolCall, type ToolDeps, type ToolOutput, WORKSPACE_ARG, plain, tool } from "./shared.ts"
 import { WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS, PROGRESS_INTERVAL_MS } from "./constants.ts"
+import { resumeVaultFetch } from "./vault-fetch.ts"
 
 // "waiting for approval apr_7Hq2; the link expires in 48 min": ids, fixed
 // words and a relative time only. The id was checked by waitTarget.
@@ -87,13 +88,17 @@ export const vaultWait = tool({
   input: z.object({
     id: z.string().describe("int_..., apr_..., con_..., pol_..., adp_..., bnd_..., mdp_... or enr_..."),
     timeoutSeconds: z.number().int().min(0).max(WAIT_MAX_SECONDS).optional(),
+    execute: z.boolean().optional().describe("apr_ only: once approved, send the saved request and answer with its result"),
     workspace: WORKSPACE_ARG,
   }),
-  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  // With execute, a wait can send a saved write: the conservative hints,
+  // as vault_fetch has.
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async call(args, deps, call) {
     const target = waitTarget(args.id)
     const now = new Date()
     const timeoutSeconds = args.timeoutSeconds ?? WAIT_DEFAULT_SECONDS
+    if (args.execute && target.kind !== "approval") throw usageError("execute sends a saved request once its approval comes, so it takes an approval id (apr_...).", "vault_wait")
     if (target.kind === "enrol") return waitEnrolment(args.id, args.workspace ?? null, timeoutSeconds, deps, call)
     const { api, configDir: dir, ledger: scope } = await deps.open(await waitSlot(deps, args.id, args.workspace ?? null))
     const ledger = await readLedger(dir, scope, now)
@@ -103,6 +108,7 @@ export const vaultWait = tool({
     const waitLedger: WaitLedger = { reissueCommand: known?.command ?? null, replacedBy: newer?.ask.id ?? null }
     const progress = new WaitProgress(target, args.id, { token: call.progressToken, totalSeconds: timeoutSeconds, expiresAt: known?.ask.expiresAt ?? null, notify: deps.notify })
     let settled = false
+    let replay = false
     try {
       progress.start(call.signal)
       const result = await waitFor(api, args.id, {
@@ -114,7 +120,9 @@ export const vaultWait = tool({
         signal: call.signal,
       })
       settled = true
-      return plain(waitOutput(args.id, result, scope))
+      // A push is performed by the vault itself: there is nothing to send.
+      replay = args.execute === true && result.kind === "approval" && result.status.status === "approved" && result.status.push === undefined
+      if (!replay) return plain(waitOutput(args.id, result, scope))
     } catch (error) {
       // Cancelled by the host: nothing settled, nothing to render.
       if (call.signal.aborted) throw error
@@ -128,6 +136,7 @@ export const vaultWait = tool({
       progress.stop()
       if (settled) await removeLedgerEntry(dir, scope, args.id).catch(() => undefined)
     }
+    return resumeVaultFetch(args.id, deps, call)
   },
 })
 

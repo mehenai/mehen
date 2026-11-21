@@ -26,7 +26,7 @@ import { BACKENDS, type Backend, type Config, type Env, canonicalOrigin, readCon
 import { ENCLAVE_KEY_FILE, ENCLAVE_KEY_SCOPE_FILE, ENCLAVE_PUBLIC_KEY_FILE, SOFTWARE_KEY_FILE, SOFTWARE_KEY_SCOPE_FILE } from "./device-key.ts"
 import { type EnrolmentRecord, enrolmentRecordPath, parseEnrolmentRecord, readEnrolmentRecord, recordFromLegacyEntry, writeEnrolmentRecord } from "./enrolment-record.ts"
 import { CliError } from "./errors.ts"
-import { LOCKS_DIR, MIGRATION_JOURNAL_FILE, PENDING_DIR, ROOT_MARKER_FILE, SAFE_COMPONENT, WORKSPACES_DIR, assertPrivateDirs, assertSafeRoot, managedHost, mkdirPrivate, originKey, resolveHome } from "./home.ts"
+import { LOCKS_DIR, MIGRATION_JOURNAL_FILE, PENDING_DIR, REPLAY_DIR, ROOT_MARKER_FILE, SAFE_COMPONENT, WORKSPACES_DIR, assertPrivateDirs, assertSafeRoot, managedHost, mkdirPrivate, originKey, resolveHome } from "./home.ts"
 import { LEDGER_FILE, ledgerOrigins, ledgerPath, readLegacyEnrolments } from "./ledger.ts"
 import { rootLockPath, withSlotLocks } from "./slot-lock.ts"
 
@@ -58,7 +58,7 @@ const SLOT_FILES = [SOFTWARE_KEY_FILE, ENCLAVE_KEY_FILE, ENCLAVE_PUBLIC_KEY_FILE
 const KEY_FILES = [SOFTWARE_KEY_FILE, ENCLAVE_KEY_FILE, ENCLAVE_PUBLIC_KEY_FILE, SOFTWARE_KEY_SCOPE_FILE, ENCLAVE_KEY_SCOPE_FILE]
 // Names at the root that belong to layout 2, to setup and the updater, or
 // to mehen up and the guard: never in the journal, never strays.
-export const ROOT_OWN: ReadonlySet<string> = new Set([ROOT_MARKER_FILE, MIGRATION_JOURNAL_FILE, LOCKS_DIR, WORKSPACES_DIR, PENDING_DIR, "setup-state.json", "backups", "settings.json", "bin", "local-vault.json", "guard.json", "guard-installed.json"])
+export const ROOT_OWN: ReadonlySet<string> = new Set([ROOT_MARKER_FILE, MIGRATION_JOURNAL_FILE, LOCKS_DIR, WORKSPACES_DIR, PENDING_DIR, REPLAY_DIR, "setup-state.json", "backups", "settings.json", "bin", "local-vault.json", "guard.json", "guard-installed.json"])
 // Legacy files the migration deletes where it finds them.
 const DELETED = new Set(["default-context", "update-check.json"])
 
