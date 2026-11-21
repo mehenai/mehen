@@ -28,7 +28,7 @@ import {
 import { mandateAllowed, mandateAllowedText, mandateCapped } from "../mandate-operations.ts"
 import { note, printJson, writeStdout } from "../output.ts"
 import { postureAllowed, postureAllowedText, ruleAllowedText, ruleEnded, rulesAllowed } from "../policy-operations.ts"
-import { type ClaimedRequest, type ReplayNote, type ReplayOwner, assertSavedBy, claimSavedRequest, neverSent, readSavedRequest, saveHeldRequest } from "../replay-cache.ts"
+import { type ClaimedRequest, type ReplayNote, type ReplayOwner, assertSavedBy, claimSavedRequest, neverSent, readSavedRequest, replayClock, saveHeldRequest } from "../replay-cache.ts"
 import { type VaultSession, openSession, sessionLabel, sessionWithLabel } from "../session.ts"
 import { type VaultApi, VaultApiError, retrySafeMethod } from "../vault-api.ts"
 
@@ -155,9 +155,9 @@ export function replayOwner(session: VaultSession): ReplayOwner {
 
 // A held answer (approval_required with its apr_ id) saves the request for
 // sending again once approved, and says so beside the vault's refusal.
-export async function heldRequestNote(env: Env, session: VaultSession, request: RelayRequestInput, error: unknown): Promise<ReplayNote | null> {
+export async function heldRequestNote(env: Env, session: VaultSession, request: RelayRequestInput, error: unknown, sentAt: number): Promise<ReplayNote | null> {
   if (!(error instanceof VaultApiError) || error.body.error !== "approval_required" || typeof error.body.approval !== "string") return null
-  return saveHeldRequest(env, replayOwner(session), error.body.approval, request)
+  return saveHeldRequest(env, replayOwner(session), error.body.approval, request, { sentAt })
 }
 
 export function withReplayNote(error: unknown, note: ReplayNote | null): unknown {
@@ -187,11 +187,15 @@ export async function sendFetch(env: Env, session: VaultSession, source: FetchSo
   let answered: number | null = null
   let failed = false
   let reached = false
+  // When the request was sent, read before the relay call starts: a held
+  // answer's saved request lasts an hour from then.
+  let sentAt = replayClock.now()
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | null = null
   const api: VaultApi = session.api
   try {
     timer = maxTime === null ? null : setTimeout(() => controller.abort(), maxTime * 1000)
+    sentAt = replayClock.now()
     const response = await api.relay(request, { signal: controller.signal })
     reached = true
     await claimed?.spent()
@@ -241,7 +245,7 @@ export async function sendFetch(env: Env, session: VaultSession, source: FetchSo
     failed = true
     if (claimed && !reached) await (neverSent(error, request, controller.signal) ? claimed.unsent() : claimed.spent())
     if (controller.signal.aborted && maxTime !== null) throw timedOut(maxTime, request.method)
-    const held = await heldRequestNote(env, session, request, error)
+    const held = await heldRequestNote(env, session, request, error, sentAt)
     throw withReplayNote(replacingRefused(ruleEnded(await mandateCapped(api, error, controller.signal)), request, "cli"), held)
   } finally {
     if (timer) clearTimeout(timer)

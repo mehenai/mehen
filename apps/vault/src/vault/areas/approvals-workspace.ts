@@ -1,5 +1,6 @@
 // Workspace consent is immutable evidence, not a cached permission decision.
 
+import { APPROVAL_TTL_MS } from "@mehen/protocol/approval-ttl"
 import { canonicalJson, type ApprovalViewProjection, type WorkspaceRef, type WorkspaceStepUpAction } from "@mehen/protocol"
 import { can, effectiveAccess, eligibility, fourEyesProjects, type AccessAsk, type AccessPrincipal, type AccessState } from "../access.ts"
 import { one, randomId, type VaultContext } from "../core.ts"
@@ -323,8 +324,8 @@ export function requestWorkspaceApproval(ctx: VaultContext, state: AccessState, 
   const name = devicePolicyState(ctx, device.id)?.name
   if (name === undefined) throw new VaultError("not_found", "No such object.")
   const group = batches ? approvalReviewGroup(workspace.id, ask) : null
-  ctx.sql.exec("INSERT INTO approvals(id,device,device_name,session,item,digest,subject,presentation,binding_code,status,created_at,expires_at,ask,snapshot,binding_digest,workspace,snapshot_digest,presentation_digest,workload,review_group,shape,floor,bundle) VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)", id, device.id, name, session, subject.item, binding, JSON.stringify(subject), JSON.stringify(presentation), bindingCode(), now, now + 3_600_000, JSON.stringify(ask), canonicalJson(snapshot), binding, JSON.stringify(workspace), snapshotDigest, presentationDigest, ask.workload ?? null, group, batches ? batch.shape : null, batches && batch.floor !== null ? JSON.stringify([...new Set(batch.floor)].sort()) : null, batches ? batch.bundle ?? null : null)
-  if (group !== null && batch.bundle === undefined) keepGroupCode(ctx, group, id, now + 3_600_000, now)
+  ctx.sql.exec("INSERT INTO approvals(id,device,device_name,session,item,digest,subject,presentation,binding_code,status,created_at,expires_at,ask,snapshot,binding_digest,workspace,snapshot_digest,presentation_digest,workload,review_group,shape,floor,bundle) VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?,?,?,?)", id, device.id, name, session, subject.item, binding, JSON.stringify(subject), JSON.stringify(presentation), bindingCode(), now, now + APPROVAL_TTL_MS, JSON.stringify(ask), canonicalJson(snapshot), binding, JSON.stringify(workspace), snapshotDigest, presentationDigest, ask.workload ?? null, group, batches ? batch.shape : null, batches && batch.floor !== null ? JSON.stringify([...new Set(batch.floor)].sort()) : null, batches ? batch.bundle ?? null : null)
+  if (group !== null && batch.bundle === undefined) keepGroupCode(ctx, group, id, now + APPROVAL_TTL_MS, now)
   const credential = state.credentials.find((c) => c.id === ask.credential)
   if (credential?.home.kind === "member") auditPrivateEvent(ctx, { action: "approval.request", at: now, actor: { kind: "device", device: device.id, owner: device.owner.kind === "member" ? { kind: "member", member: device.owner.id } : { kind: "team", team: device.owner.id } }, session: null, item: credential.id, slug: subject.item, outcome: "pending", run: null }, credential.home.member)
   else ctx.audit({ actor: `device:${device.id}`, action: "approval.request", target: id, detail: { item: subject.item, outcome: "pending" } })

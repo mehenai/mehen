@@ -1,6 +1,7 @@
 export * from "./adopt.ts"
 export * from "./adopt-names.ts"
 export * from "./api.ts"
+export * from "./approval-ttl.ts"
 export * from "./backup.ts"
 export * from "./binding.ts"
 export * from "./body-match.ts"
