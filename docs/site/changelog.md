@@ -13,15 +13,17 @@ Changes to the hosted vault first, newest at the top, then the release notes of 
 
 ## The platform
 
-### Unreleased
+### 21 November 2026: `mehen` 0.5.0: one credential with no project, a safer `mehen run`, and releases on GitHub and GHCR
+
+`mehen` 0.5.0 is out, the first release since 0.4.1; it carries the changes announced below for "the next release" as well. `mehen run --item <slug> -- <command>` gives a program one credential with no project and no `mehen.toml`: it gets a stand-in, and the vault checks each of its requests as it checks `vault_fetch` ([One credential, no project](guides/projects.md#one-credential-no-project)). A held request's approval link now shows on `mehen run`'s own stderr. Mehen is on Homebrew: `brew install mehenai/tap/mehen`, updated with `brew upgrade mehen`. `mehen push` works on a vault you run yourself, `mehen up` over SSH prints the tunnel to its passkey page, and a new Claude Desktop entry gets `vault_connect` and the inspect tools, since it has no shell.
 
 `mehen adopt submit` no longer needs a snapshot first for a single `.env` planned with `mehen adopt file`; `mehen adopt retire` still holds the file until a snapshot holds it ([Back up a machine before adopting](guides/backup.md#when-submit-and-retire-need-the-snapshot)). The guard's advice on a blocked `.env` read now names `mehen adopt file <path>`.
 
-From the next release on, each release publishes `ghcr.io/mehenai/mehen` for linux/amd64 and linux/arm64, tagged with its version and `latest`, with provenance and an SBOM attached, and `compose.yaml` pulls it instead of building from the checkout. See [Run it on another machine](start/another-machine.md#or-run-it-in-docker).
+From this release on, each release publishes `ghcr.io/mehenai/mehen` for linux/amd64 and linux/arm64, tagged with its version and `latest`, with provenance and an SBOM attached, and `compose.yaml` pulls it instead of building from the checkout. See [Run it on another machine](start/another-machine.md#or-run-it-in-docker).
 
 `mehen run` now warns, once each and without stopping the run, when a `.env` or `.env.*` file next to the run could hand the program its old plaintext value (with `mehen adopt file <path>` as the next step), when the command starts a Node older than 22.21.0 or 24.5.0, which ignores `NODE_USE_ENV_PROXY`, and when a run with placeholders ends with no connection to their hosts through the local relay. The run CA bundle is also set as `AWS_CA_BUNDLE` and `DENO_CERT`. A new guide, [Which programs work with mehen run](guides/run-compatibility.md), lists the clients checked with placeholders, the ones that do not work, and lease delivery for those.
 
-From the next release, each release is also published on [GitHub Releases](https://github.com/mehenai/mehen/releases), with the same files as `https://mehen.dev/dl/`, its signed manifest and a `SHA256SUMS`. The next `mehen` also accepts a release that lists builds for musl-based Linux such as Alpine, so a later release can add them without stopping older machines' updates; until then, the installer on a musl system says the release has no build for it. A Homebrew tap, `mehenai/homebrew-tap`, exists but has no formula yet. See the CLI's release notes below.
+Each release is also published on [GitHub Releases](https://github.com/mehenai/mehen/releases), with the same files as `https://mehen.dev/dl/`, its signed manifest and a `SHA256SUMS`. `mehen` 0.5.0 also accepts a release that lists builds for musl-based Linux such as Alpine, so a later release can add them without stopping older machines' updates; until then, the installer on a musl system says the release has no build for it. See the CLI's release notes below.
 
 ### 20 November 2026: an approved request is sent again without rebuilding it
 
