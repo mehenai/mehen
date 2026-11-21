@@ -23,7 +23,7 @@ import { selfExecutable } from "../install-state.ts"
 import { LOCAL_VAULT_RECORD, keyringAdvice, keyringHost } from "../local-vault.ts"
 import { printJson, printLine } from "../output.ts"
 import { type Segment, type Text, colourEnabled, styler } from "../tty.ts"
-import { openUrl } from "./browser.ts"
+import { openUrl, sshTunnel, tunnelLine } from "./browser.ts"
 import { type ServiceKind, ServiceError, installService, removeService, serviceEnvironment, serviceKind } from "./service.ts"
 
 const USAGE = "mehen up [--port <port>] [--data <dir>] [--guard <warn|block|off>] [--no-agents] [--timeout <seconds>] | mehen up --remove"
@@ -184,9 +184,9 @@ export function ensureUpGuardLevel(root: string, requested: GuardLevel | null): 
 // the fingerprint, since the page hides one of its groups and accepts only
 // once that group is typed from here. `words` are mehen enrol's lines for
 // the fingerprint's coloured words and the hidden group.
-export function enrolLines(url: string, opened: boolean, fingerprint: string | null, words: readonly Segment[][] = []): Text[] {
+export function enrolLines(url: string, opened: boolean, fingerprint: string | null, words: readonly Segment[][] = [], tunnel: string | null = null): Text[] {
   const check = fingerprint ? `This machine's fingerprint is ${fingerprint}. The page shows all but one of its groups: type the one it hides, then accept with your passkey.` : "Accept this machine with your passkey."
-  return [`${opened ? "Opened" : "Open"} ${url}`, check, ...(fingerprint ? words : []), "This carries on by itself."]
+  return [`${opened ? "Opened" : "Open"} ${url}`, ...(tunnel ? [tunnelLine(tunnel)] : []), check, ...(fingerprint ? words : []), "This carries on by itself."]
 }
 
 // The words and hidden group for the pending enrolment, from the key in its
@@ -320,7 +320,8 @@ export const upCommand: Command = {
       // one-time code, so the code never appears here or in argv.
       const url = state.accounts ? `${origin}/signin` : `${origin}/local/v1/start`
       const opened = openUrl(url, env)
-      out.event("ask", { ask: { kind: "signup", url, title: state.accounts ? "Create your workspace" : "Make your passkey", what: "Make a passkey, save the recovery codes and create a workspace; this command carries on by itself", opened } }, `${opened ? "Opened" : "Open"} ${url}\nMake your passkey, save the recovery codes and create a workspace there. This carries on by itself.`)
+      const tunnel = opened ? null : sshTunnel(origin, env, hostname())
+      out.event("ask", { ask: { kind: "signup", url, title: state.accounts ? "Create your workspace" : "Make your passkey", what: "Make a passkey, save the recovery codes and create a workspace; this command carries on by itself", opened, ...(tunnel ? { tunnel } : {}) } }, `${opened ? "Opened" : "Open"} ${url}\n${tunnel ? `${tunnelLine(tunnel)}\n` : ""}Make your passkey, save the recovery codes and create a workspace there. This carries on by itself.`)
       state = await until(deadline, async () => {
         const now = await ours()
         return now && now.accounts && now.workspaces.length > 0 ? now : null
@@ -342,9 +343,10 @@ export const upCommand: Command = {
       const ask = machine.ask as { url: string; check?: { value: string } } | undefined
       const id = String(machine.enrolment)
       const opened = ask ? openUrl(ask.url, env) : false
+      const tunnel = opened ? null : sshTunnel(origin, env, hostname())
       const fingerprint = ask?.check?.value ?? null
       const words = json ? [] : await fingerprintWordLines(machine.slot, id, machine.code, fingerprint, colourEnabled(process.stdout, env))
-      out.event("ask", { ask: { ...(ask ?? {}), opened, context: enrolContext(origin, workspace) } }, enrolLines(ask?.url ?? "", opened, fingerprint, words))
+      out.event("ask", { ask: { ...(ask ?? {}), opened, ...(tunnel ? { tunnel } : {}), context: enrolContext(origin, workspace) } }, enrolLines(ask?.url ?? "", opened, fingerprint, words, tunnel))
       const remaining = Math.max(1, Math.ceil((deadline - Date.now()) / 1000))
       const waited = await self(command, ["wait", id, "--timeout", String(remaining), "--json"], childEnv)
       if (waited.code !== 0) {
