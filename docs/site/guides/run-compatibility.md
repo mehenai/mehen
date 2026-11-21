@@ -68,7 +68,7 @@ For a program that cannot use the relay, the variable needs the real value, whic
 
 `mehen run --item <slug>` works with the same clients: the program gets a stand-in in the variable, and the same proxy and CA variables. The difference is behind the relay. Each request that carries the stand-in goes to the vault as a fetch, the call `mehen fetch` and `vault_fetch` make, so:
 
-- every request is decided on its own, and a write the credential's policy holds asks for approval request by request. The program gets HTTP 409 `approval_required` with the link, and must send the request again once a person approves;
+- every request is decided on its own, and a write the credential's policy holds asks for approval request by request. The program gets HTTP 409 `approval_required` with the link, `mehen run` prints the ask block on its own stderr once per approval, and the program must send the request again once a person approves;
 - the audit records each request as a fetch of the credential by this machine, not as a run;
 - a request to the credential's host without the stand-in is refused by the relay, and nothing is sent;
 - there are no leases, so a program that needs a real value (a database URL, a raw TCP client) still needs a project ([One credential, no project](projects.md#one-credential-no-project)).

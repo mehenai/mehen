@@ -660,6 +660,83 @@ describe("mehen run --item", () => {
   })
 })
 
+describe("a held request's ask on mehen run's stderr", () => {
+  const expiresAt = () => new Date(Date.now() + 58 * 60_000).toISOString()
+  const held = (approval: string | undefined, url: string) =>
+    new VaultApiError(409, { error: "approval_required", message: "This request needs approval.", ...(approval ? { approval } : {}), bindingCode: "KQ7M", expiresAt: expiresAt(), next: { say: "Send this link to Alex.", url, command: approval ? `mehen wait ${approval}` : "mehen pending" } })
+  const posts = (out: string, count: number, auth = '-H "Authorization: Bearer $OPENAI_API_KEY"') =>
+    ["sh", "-c", Array.from({ length: count }, (_, i) => `curl -sS --max-time 10 -X POST ${auth} https://api.openai.com/v1/files > ${out}.${i}`).join("; ")]
+  const placed = () => vars({ OPENAI_API_KEY: { name: "OPENAI_API_KEY", delivery: "placeholder", value: placeholder, item: "openai-personal", hosts: ["api.openai.com"] } })
+  const thenLine = "  then:    mehen wait apr_9 --timeout 60 --json waits for the decision; once approved, have the program send the same request again: the vault lets that exact request through once. mehen run does not save or resend it.\n"
+
+  test("run mode: a held write prints the ask block once, with the vault's link, for two requests held under one approval; the child's answer is unchanged", async () => {
+    const api = apiWith(placed(), { interceptHosts: ["api.openai.com"] })
+    api.relayHandler = () => {
+      throw held("apr_9", "https://vault.test/w/test-space/a/apr_9")
+    }
+    const out = join(repo, "held")
+    const deps = fakeDeps(api, repo)
+    expect(await withTimeout(runCommand(["--", ...posts(out, 2)], deps), 20_000, "mehen run")).toBe(0)
+    expect(api.relayCalls).toHaveLength(2)
+    for (const i of [0, 1]) expect(JSON.parse(readFileSync(`${out}.${i}`, "utf8"))).toMatchObject({ error: "approval_required", approval: "apr_9" })
+    const err = deps.err.text()
+    expect(err.match(/Human needed:/g)).toHaveLength(1)
+    expect(err).toContain("mehen: This request needs approval.\nnext: Send this link to Alex.\nHuman needed: approve a request\n  open:    https://vault.test/w/test-space/a/apr_9\n")
+    expect(err).toContain("  check:   the page shows code KQ7M\n")
+    expect(err).toMatch(/ {2}expires: in 58 min \(/)
+    expect(err).toContain(thenLine)
+  })
+
+  test("--item mode: the same block, once per approval id; a second approval gets its own", async () => {
+    const api = new FakeVaultApi().on("GET", "/v1/items/openai", () => itemDescription())
+    let calls = 0
+    api.relayHandler = () => {
+      calls++
+      throw calls < 3 ? held("apr_9", "https://vault.test/w/test-space/a/apr_9") : held("apr_10", "https://vault.test/w/test-space/a/apr_10")
+    }
+    const dir = tempDir("mehen-run-held-")
+    try {
+      const deps = fakeDeps(api, dir)
+      expect(await withTimeout(runCommand(["--item", "openai", "--", ...posts(join(dir, "held"), 3)], deps), 20_000, "mehen run --item")).toBe(0)
+      const err = deps.err.text()
+      expect(api.relayCalls.map((c) => c.item)).toEqual(["openai", "openai", "openai"])
+      expect(err.match(/Human needed:/g)).toHaveLength(2)
+      expect(err.match(/a\/apr_9\n/g)).toHaveLength(1)
+      expect(err).toContain("  open:    https://vault.test/w/test-space/a/apr_10\n")
+      expect(err).toContain(thenLine)
+    } finally {
+      removeDir(dir)
+    }
+  })
+
+  test("a link off the vault is never printed: with an approval id the vault's own link stands in, without one a warning does, once per refusal", async () => {
+    const api = apiWith(placed(), { interceptHosts: ["api.openai.com"] })
+    let calls = 0
+    api.relayHandler = () => {
+      calls++
+      throw calls === 1 ? held("apr_9", "https://evil.example/a/apr_9") : held(undefined, "https://evil.example/a/apr_11")
+    }
+    const deps = fakeDeps(api, repo)
+    expect(await withTimeout(runCommand(["--", ...posts(join(repo, "foreign"), 3)], deps), 20_000, "mehen run")).toBe(0)
+    const err = deps.err.text()
+    expect(err).not.toContain("evil.example")
+    expect(err).toContain("  open:    https://vault.test/w/test-space/a/apr_9\n")
+    // One warning with the rebuilt block, one for the held request with no id; its second refusal prints nothing more.
+    expect(err.match(/mehen: warning: The vault returned a link that is not on https:\/\/vault\.test/g)).toHaveLength(2)
+    expect(err.match(/Human needed:/g)).toHaveLength(1)
+  })
+
+  test("a refusal that carries no ask prints nothing on mehen run's stderr", async () => {
+    const api = apiWith(placed(), { interceptHosts: ["api.openai.com"] })
+    api.relayHandler = () => {
+      throw new VaultApiError(403, { error: "policy_denied", message: "Denied by policy.", next: { say: "Ask a human to change the policy." } })
+    }
+    const deps = fakeDeps(api, repo)
+    expect(await withTimeout(runCommand(["--", ...posts(join(repo, "denied"), 1)], deps), 20_000, "mehen run")).toBe(0)
+    expect(deps.err.text()).not.toContain("Denied by policy")
+  })
+})
+
 describe("runHelp", () => {
   test("is mehen run's own --help, not the child's", () => {
     expect(runHelp(["--help"])).toBe(RUN_USAGE)

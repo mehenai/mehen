@@ -17,7 +17,11 @@ import * as tty from "node:tty"
 import { EXIT, type NextStep, type RunCreated } from "@mehen/protocol/api"
 import type { RedactionSecret, WorkspaceRunCreated } from "@mehen/protocol"
 import { startRunRelay, type RunRelay } from "../relay/index.ts"
-import { usageError } from "../errors.ts"
+import { toCliError, usageError } from "../errors.ts"
+import { askForError } from "../ask.ts"
+import { errorLines } from "../output.ts"
+import { terminalText } from "../tty.ts"
+import type { VaultApiError } from "../vault-api.ts"
 import { CommandError, type Deps, askVault, cwdOf, envOf, mehenLine, nextLines, reportFailure, stylerFor, wantsHelp, warningLine, writeLine, writeNext } from "./deps.ts"
 import { inheritedEnv, resolveEnv, writeBanner } from "./environment.ts"
 import { locateProjectManifest } from "./bound-project.ts"
@@ -128,6 +132,31 @@ type RunWithOverrides = RunCreated & Partial<Pick<WorkspaceRunCreated, "override
 // `signal`: the first SIGINT or SIGTERM mehen run received while the child ran.
 type Finished = { start: Omit<RunLogEntry, "endedAt" | "exit" | "signal" | "forwarded"> | null; exit: number | string | null; signal: (typeof FORWARDED_SIGNALS)[number] | null }
 
+// The ask a refusal of one of the child's requests carries, on mehen run's
+// own stderr: the block mehen fetch prints, with its links checked the same
+// way, once per approval (or link) per run. The child gets its answer as
+// before; most programs never show a 409, so the person would not see the
+// link otherwise. The relay saves nothing to resend, so then: says to send
+// the request again. The block goes out in one write, so it is not cut by the
+// child's own output, though it can land after a partial line of the child's.
+export function heldAskEcho(deps: Deps): (error: VaultApiError) => void {
+  const shown = new Set<string>()
+  const env = envOf(deps)
+  const vault = askVault(deps)
+  return (error) => {
+    const failure = toCliError(error)
+    const { ask, refusedLink } = askForError(failure, env, vault)
+    if (ask === null && !refusedLink) return
+    const key = failure.extras.approval ?? (ask !== null ? `${ask.kind}:${ask.id}:${ask.url}` : `refused:${failure.code}:${failure.message}`)
+    if (shown.has(key)) return
+    shown.add(key)
+    const then = (held: { kind: string; wait: string | null }) =>
+      held.kind === "approval" ? `${held.wait ? `${held.wait} waits for the decision; once approved, ` : "once approved, "}have the program send the same request again: the vault lets that exact request through once. mehen run does not save or resend it.` : held.wait
+    const lines = errorLines(failure, deps.stderr, { env, vaultUrl: vault, then })
+    deps.stderr.write(`${lines.map(terminalText).join("\n")}\n`)
+  }
+}
+
 function writeWarning(deps: Deps, warning: RunWarning | null): void {
   if (warning === null) return
   const s = stylerFor(deps, deps.stderr)
@@ -235,6 +264,7 @@ async function runOnce(argv: string[], deps: Deps, finished: Finished): Promise<
         baseUrls,
         ...(items.length > 0 ? { itemRoutes: items } : {}),
         proxy: standIns,
+        onVaultRefusal: heldAskEcho(deps),
         parentEnv,
         streamWrites: streamsWrites(args, parentEnv),
       }).catch((error: unknown) => {

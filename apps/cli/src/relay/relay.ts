@@ -68,6 +68,10 @@ export type LocalRelayOptions = {
   // Null when nothing is intercepted: every CONNECT is then tunnelled or fenced.
   ca: RunCa | null
   itemRoutes?: readonly ItemRoute[]
+  // Told of each refusal the vault itself made, after the program's answer is
+  // decided and whatever it does: mehen run shows an ask's link on its own
+  // stderr, since most programs never show the 409 they get.
+  onVaultRefusal?: (error: VaultApiError) => void
   // Pass every write's answer on as it comes, as streamed types always are
   // (mehen run --stream-writes): a break mid-body then reaches the program
   // as an incomplete body, which some transports retry.
@@ -476,6 +480,13 @@ export async function startLocalRelay(options: LocalRelayOptions): Promise<Local
     try {
       return await options.api.relay({ ...relay, ...(body.length > 0 ? { body: body.toString("base64url") } : {}) })
     } catch (error) {
+      if (error instanceof VaultApiError && !(error instanceof RelayUnmarkedAnswerError)) {
+        try {
+          options.onVaultRefusal?.(error)
+        } catch {
+          // What the program gets never depends on what mehen run could print.
+        }
+      }
       // 424, not a 5xx, and both should-retry headers: SDKs retry a 5xx on
       // their own, and repeating this write could do it twice.
       if (!retrySafeMethod(relay.method) && writeOutcomeUnknown(error)) return outcomeUnknownAnswer(error.message)
