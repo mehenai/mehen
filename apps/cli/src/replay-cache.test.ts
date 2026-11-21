@@ -320,13 +320,14 @@ test("a marker that cannot be read after a failed request read is named, and kep
 })
 
 // The invariant that lets the sweep and a stale release work without any
-// coordination: a request records when its held answer arrived; nothing
-// saves or claims one past its hour; and the sweep removes a file only once
-// every request of its approval is past its hour.
+// coordination: a request records when it was sent; a save never reports a
+// request it cannot replay, and nothing claims one past its hour; and the
+// sweep removes a file only once every request of its approval is past its
+// hour.
 test("a held request is saved as of when it was sent, and one past its hour is not saved", async () => {
-  const arrived = new Date(now.getTime() - 30_000)
-  await saveHeldRequest(env, owner, "apr_1", request, { clock: at(now), sentAt: (arrived).getTime() })
-  expect((JSON.parse(await readFile(savedRequestPath(env, "apr_1"), "utf8")) as { createdAt: string }).createdAt).toBe(arrived.toISOString())
+  const sentAt = new Date(now.getTime() - 30_000)
+  await saveHeldRequest(env, owner, "apr_1", request, { clock: at(now), sentAt: sentAt.getTime() })
+  expect((JSON.parse(await readFile(savedRequestPath(env, "apr_1"), "utf8")) as { createdAt: string }).createdAt).toBe(sentAt.toISOString())
   const late = new Date(now.getTime() - REPLAY_TTL_SECONDS * 1000 - 1)
   expect(await saveHeldRequest(env, owner, "apr_2", request, { clock: at(now), sentAt: (late).getTime() })).toEqual({ saved: false, reason: "expired" })
   await expect(stat(savedRequestPath(env, "apr_2"))).rejects.toMatchObject({ code: "ENOENT" })
@@ -350,7 +351,7 @@ test("old stat, then a fresh save of the same approval, then the unlink: the fre
   await utimes(savedRequestPath(env, "apr_1"), written, written)
   let late: unknown = null
   replaySeams.afterSweepStat = async (path) => {
-    // The latest a held answer for this approval can arrive: its creation
+    // The latest a request for this approval can have been sent: its creation
     // (no later than the old file) plus the vault's pending lifetime and the skew.
     if (path === savedRequestPath(env, "apr_1")) late = await saveHeldRequest(env, owner, "apr_1", request, { clock: at(now), sentAt: (new Date(written.getTime() + (PENDING_APPROVAL_SECONDS + SKEW_SECONDS) * 1000)).getTime() })
   }
@@ -472,4 +473,22 @@ test("a held answer that arrives after the hour has passed since sending is not 
   expect(held.extras.replay).toEqual({ saved: false, reason: "expired" })
   await expect(stat(savedRequestPath(env, "apr_late"))).rejects.toMatchObject({ code: "ENOENT" })
   expect((await refusal(readSavedRequest(env, "apr_late", () => t))).code).toBe("replay_missing")
+})
+
+// A rename delayed past the hour lands a file nobody can replay: the save
+// says expired rather than saved, and leaves the file to the sweep.
+test("a save whose rename lands after the hour reports expired, and a claim of what it wrote is replay_missing", async () => {
+  let t = now.getTime()
+  replayFs.rename = async (from, to) => {
+    t += (REPLAY_TTL_SECONDS + 1) * 1000
+    return realFs.rename(from, to)
+  }
+  expect(await saveHeldRequest(env, owner, "apr_1", request, { clock: () => t, sentAt: now.getTime() })).toEqual({ saved: false, reason: "expired" })
+  expect(await listed()).toEqual(["apr_1.json"])
+  Object.assign(replayFs, realFs)
+  const saved = JSON.parse(await readFile(savedRequestPath(env, "apr_1"), "utf8")) as Parameters<typeof claimSavedRequest>[1]
+  const refused = await refusal(claimSavedRequest(env, saved, owner, () => t))
+  expect(refused.code).toBe("replay_missing")
+  expect(refused.message).toContain("expired")
+  expect(await listed()).toEqual(["apr_1.json"])
 })

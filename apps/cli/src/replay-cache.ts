@@ -54,8 +54,10 @@ export const SKEW_SECONDS = 15 * 60
 // steps backwards by more than SKEW; and file times come from this clock
 // (a local file system: a network home folder with its own clock is out
 // of scope). Rules: a request's createdAt is its sentAt, read before the
-// relay call starts; a save or a claim accepts it only while its local
-// clock reads within TTL of createdAt, read again at the point it accepts.
+// relay call starts; a claim accepts it only while its local clock reads
+// within TTL of createdAt, read at the point it accepts; and a save never
+// reports a request it cannot replay (an expired file a late rename left
+// is refused on read and swept).
 // Take an approval X created at vault time c.
 //  1. The vault holds a request for X only while X is pending, so every
 //     request of X was sent by c + PENDING: createdAt <= c + PENDING + SKEW.
@@ -189,9 +191,10 @@ async function marked(env: Env, approval: string): Promise<boolean> {
 
 // The request as it was held, saved for an hour from `sentAt`, read just
 // before its relay call started (never later: a slow or suspended answer
-// cannot stretch the hour). A save that comes past that hour writes
-// nothing and says expired; the clock is read again just before the
-// rename. A spent approval's is
+// cannot stretch the hour). A save never reports a request it cannot
+// replay: past that hour before the rename it writes nothing, and when the
+// rename itself lands past it, it says expired and leaves the file, which a
+// claim refuses on read and the sweep removes. A spent approval's is
 // never saved again: the vault reuses one pending approval for identical
 // asks, so a duplicate request can be held after the first was sent.
 // Concurrent saves of one approval write the same request; the last rename
@@ -225,6 +228,7 @@ export async function saveHeldRequest(env: Env, owner: ReplayOwner, approval: st
       return { saved: false, reason: "expired" }
     }
     await replayFs.rename(temp, path)
+    if (expired()) return { saved: false, reason: "expired" }
   } catch (error) {
     return { saved: false, reason: `mehen could not save it (${errorText(error)})` }
   }
