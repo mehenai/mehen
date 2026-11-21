@@ -6,7 +6,7 @@ import { errorJson, errorLines } from "../output.ts"
 import { tempDir } from "../testing/run-mehen.ts"
 import { plainText, segments, styler } from "../tty.ts"
 import { STOP_WAIT_MS, isServeOf, LAUNCHD_LABEL, type Runner, SYSTEMD_UNIT, ServiceError, defaultRunner, installService, serviceEnvironment, systemdState, launchdPath, launchdPlist, removeService, serviceKind, systemdPath, systemdUnit } from "./service.ts"
-import { openerFor } from "./browser.ts"
+import { openerFor, sshTunnel, tunnelLine } from "./browser.ts"
 import { agentLines, custodyLine, enrolContext, enrolLines, ensureUpGuardLevel, parseUpGuard, textLines, timedOut } from "./index.ts"
 import { keyringAdvice } from "../local-vault.ts"
 
@@ -102,12 +102,22 @@ describe("the browser", () => {
     expect(openerFor({ DISPLAY: ":0" }, "linux")).toEqual(["xdg-open"])
     expect(openerFor({}, "linux")).toBeNull()
   })
+
+  test("over SSH, a loopback vault's page is reached through a tunnel on the same port", () => {
+    const ssh = { SSH_CONNECTION: "10.0.0.2 51234 10.0.0.9 22" }
+    expect(sshTunnel("http://localhost:7787", ssh, "devbox")).toBe("ssh -L 7787:localhost:7787 devbox")
+    expect(sshTunnel("http://127.0.0.1:7790", { SSH_CLIENT: "10.0.0.2 51234 22" }, "devbox")).toBe("ssh -L 7790:localhost:7790 devbox")
+    expect(sshTunnel("http://localhost:7787", {}, "devbox")).toBeNull()
+    expect(sshTunnel("https://vault.example", ssh, "devbox")).toBeNull()
+    expect(tunnelLine("ssh -L 7787:localhost:7787 devbox")).toContain("run `ssh -L 7787:localhost:7787 devbox`")
+  })
 })
 
 describe("the enrolment lines", () => {
   test("a person at the terminal gets the fingerprint the page asks them to complete", () => {
     expect(enrolLines("http://localhost:7787/w/home/e/ABCD", true, "M6W2 SXSX GAJJ 855Q")).toEqual(["Opened http://localhost:7787/w/home/e/ABCD", "This machine's fingerprint is M6W2 SXSX GAJJ 855Q. The page shows all but one of its groups: type the one it hides, then accept with your passkey.", "This carries on by itself."])
     expect(enrolLines("http://localhost:7787/w/home/e/ABCD", false, null)).toEqual(["Open http://localhost:7787/w/home/e/ABCD", "Accept this machine with your passkey.", "This carries on by itself."])
+    expect(enrolLines("http://localhost:7787/w/home/e/ABCD", false, null, [], "ssh -L 7787:localhost:7787 devbox")).toEqual(["Open http://localhost:7787/w/home/e/ABCD", tunnelLine("ssh -L 7787:localhost:7787 devbox"), "Accept this machine with your passkey.", "This carries on by itself."])
   })
 
   test("carries mehen enrol's coloured words and hidden group under the fingerprint, and none without one", () => {

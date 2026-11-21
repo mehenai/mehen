@@ -46,6 +46,8 @@ Its data folder is `~/Library/Application Support/Mehen/vault` on macOS and `~/.
 
 The terminal waits while you do this, for up to 15 minutes (`--timeout <seconds>` changes that), and carries on by itself. On a machine with no display, no browser opens: open the link it prints.
 
+Over SSH, the link is on the other machine's loopback, so your own browser cannot open it directly. `mehen up` sees the SSH session and prints the tunnel to run on your own computer, such as `ssh -L 7787:localhost:7787 devbox`; with it running, open the link in your browser as printed. The passkey you make belongs to `localhost`, so approve through the same tunnel later. Keep the same port at both ends, since the vault answers only requests addressed to its own port; if your own computer already runs a Mehen vault on 7787, give this one another with `mehen up --port <port>`.
+
 ### 3. It enrols this machine
 
 It enrols this machine in your new workspace, named after its host name, and opens the machine's page. The terminal shows the machine's fingerprint, four groups of four characters. The page shows three of the groups and hides one: check that the three match, type the hidden one from the terminal, and accept with your passkey. `mehen pending` shows the fingerprint again if you need it.
