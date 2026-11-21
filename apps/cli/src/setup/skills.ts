@@ -62,6 +62,7 @@ export const RELEASED_SKILL_SHA256: Readonly<Record<string, string>> = {
   "0.3.19": "847b53ec6490fbf1fdecfb3ac440c5b65714bae827e5735311dcd02de5fa4555", // 97e8ade
   "0.4.0": "412e8a2324c6d922bff76b0e79f87b7f86c47f61f21d8bd1c5bb9268b13224d5", // f52635f
   "0.4.1": "33fad9a8036e5d1e641b7f98ad7b45205268e2e76b76798dccb5467085f3d0e2", // a49c8aa
+  "0.5.0": "80690c63ee1d926692ab02d11029aa8bf204e5bc8d5dd55ebf41cd0d2c27c968", // 6dc71e9
 }
 const RELEASED = new Set(Object.values(RELEASED_SKILL_SHA256))
 // The version a managed copy is stamped with, or null when it has none.
