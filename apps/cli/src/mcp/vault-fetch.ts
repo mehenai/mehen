@@ -6,7 +6,7 @@ import { usageError } from "../errors.ts"
 import { bodyForJson, rejectedHint, type UpstreamHead, fetchContext, parseSelectPath, readLimited, relayReplaces, relayRequest, replacingRefused, selectBody, upstreamHead } from "../operations.ts"
 import { mandateAllowed, mandateCapped } from "../mandate-operations.ts"
 import { type PostureAllowed, type RuleAllowed, postureAllowed, ruleEnded, rulesAllowed } from "../policy-operations.ts"
-import { type ClaimedRequest, assertSavedBy, claimSavedRequest, neverSent, readSavedRequest } from "../replay-cache.ts"
+import { type ClaimedRequest, assertSavedBy, claimSavedRequest, neverSent, readSavedRequest, replayClock } from "../replay-cache.ts"
 import { type VaultSession, sessionLabel, sessionWithLabel } from "../session.ts"
 import { retrySafeMethod } from "../vault-api.ts"
 import { type ToolCall, type ToolDeps, type ToolOutput, WORKSPACE_ARG, outputSchema, plain, tool } from "./shared.ts"
@@ -50,6 +50,8 @@ async function relayOutput(session: VaultSession, source: RelayRequestInput | ((
   const timeout = options.timeoutSeconds === undefined ? null : AbortSignal.timeout(options.timeoutSeconds * 1000)
   const signal = timeout ? AbortSignal.any([call.signal, timeout]) : call.signal
   let reached = false
+  // Read before the relay call starts: the saved request's hour runs from here.
+  const sentAt = replayClock.now()
   try {
     const response = await api.relay(request, { signal })
     reached = true
@@ -73,10 +75,9 @@ async function relayOutput(session: VaultSession, source: RelayRequestInput | ((
     }
     return await fetchOutput(head, response, request.method)
   } catch (error) {
-    const arrivedAt = new Date()
     if (claimed && !reached) await (neverSent(error, request, signal) ? claimed.unsent() : claimed.spent())
     if (timeout?.aborted && !call.signal.aborted && options.timeoutSeconds !== undefined) throw timedOut(options.timeoutSeconds, request.method)
-    const held = call.signal.aborted ? null : await heldRequestNote(deps.env, session, request, error, arrivedAt)
+    const held = call.signal.aborted ? null : await heldRequestNote(deps.env, session, request, error, sentAt)
     throw withReplayNote(replacingRefused(ruleEnded(await mandateCapped(api, error, signal)), request, "mcp"), held)
   }
 }

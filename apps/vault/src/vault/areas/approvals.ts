@@ -9,7 +9,7 @@ import { workspaceApprovalOps, WORKSPACE_APPROVAL_MIGRATION, WORKSPACE_APPROVAL_
 import { WORKSPACE_PROTECTED_GRANTS_MIGRATION } from "./projects-workspace.ts"
 import { workspaceApprovalBatchOps } from "./approvals-batch-workspace.ts"
 
-export const APPROVAL_TTL_MS = 3600_000
+export { APPROVAL_TTL_MS } from "@mehen/protocol/approval-ttl"
 export const BINDING_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
 const BINDING_CODE_LENGTH = 6
 
