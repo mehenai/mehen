@@ -74,7 +74,7 @@ The second command starts your user's services when the machine boots, before an
 
 ### Or run it in Docker
 
-Each release from the next one on publishes an image, `ghcr.io/mehenai/mehen`, for linux/amd64 and linux/arm64, tagged with its version and `latest`, with build provenance and an SBOM attached. It runs `mehen serve` as an unprivileged `mehen` user against a `0700` data volume, and does not update itself: pull a newer tag to update. The repository's `compose.yaml` runs it with a read-only root filesystem, no capabilities and the port bound to `127.0.0.1`.
+Each release from 0.5.0 on publishes an image, `ghcr.io/mehenai/mehen`, for linux/amd64 and linux/arm64, tagged with its version and `latest`, with build provenance and an SBOM attached. It runs `mehen serve` as an unprivileged `mehen` user against a `0700` data volume, and does not update itself: pull a newer tag to update. The repository's `compose.yaml` runs it with a read-only root filesystem, no capabilities and the port bound to `127.0.0.1`.
 
 With an existing reverse proxy on the host (Tailscale serve or your own Caddy):
 
