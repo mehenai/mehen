@@ -139,6 +139,19 @@ function entryEnv(agent: Agent, current: unknown, ceiling: SetupCeiling, resetEn
   return { env }
 }
 
+// Claude Desktop runs no shell, so a next step that names a mehen command
+// is one it cannot take: its entry serves the tools that do those steps
+// unless --toolsets or the entry itself says otherwise.
+export const AGENT_TOOLSETS: Partial<Record<Agent["name"], readonly Toolset[]>> = { "claude-desktop": ["core", "inspect", "connect"] }
+
+// The toolsets an entry is written with: --toolsets when given, else the
+// agent's own default for a new entry or one --reset-env clears, else null
+// to keep what the entry has (--toolsets core taking it out included).
+function entryToolsets(agent: Agent, fresh: boolean, toolsets: readonly Toolset[] | null): readonly Toolset[] | null {
+  if (toolsets !== null || !fresh) return toolsets
+  return AGENT_TOOLSETS[agent.name] ?? null
+}
+
 // The entry's env with MEHEN_MCP_TOOLSETS as --toolsets asked: written,
 // taken out for the core alone, or left as it was without the flag.
 function withToolsets(result: { env: Record<string, unknown> } | { skip: string }, toolsets: readonly Toolset[] | null): { env: Record<string, unknown> } | { skip: string } {
@@ -252,7 +265,7 @@ async function planAgent(context: PlanContext, agent: Agent, server: string, rem
     return { before, after: before, status: "skipped", owned, handEdited: true, reason: current === undefined ? `The ${server} entry setup wrote was removed by hand since, so setup left it out; --force registers it again.` : `The ${server} entry changed after setup, by hand, so setup left it as it is; --force replaces it with setup's entry.` }
   }
   if (ceiling === null) throw new Error("setup registers an entry only with a resolved ceiling")
-  const env = withToolsets(entryEnv(agent, current, ceiling, resetEnv, context.home), context.toolsets)
+  const env = withToolsets(entryEnv(agent, current, ceiling, resetEnv, context.home), entryToolsets(agent, current === undefined || resetEnv, context.toolsets))
   if ("skip" in env) return { before, after: before, status: "skipped", ...(owned ? { owned } : {}), reason: env.skip }
   const expected = serverEntry(agent, binary, env.env)
   if (owned && digest(current) === digest(expected)) return { before, after: before, status: "unchanged", owned }

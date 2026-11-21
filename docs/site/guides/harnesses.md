@@ -44,7 +44,7 @@ Other options:
 
 ## Claude Desktop and the Codex app
 
-- **Claude Desktop's Chat and Cowork tabs** read `claude_desktop_config.json` (the `claude-desktop` entry) and have no skills folder. They draw [cards](../reference/mcp.md#cards-in-apps-that-draw-them) for asks and adoption scans.
+- **Claude Desktop's Chat and Cowork tabs** read `claude_desktop_config.json` (the `claude-desktop` entry) and have no skills folder. They draw [cards](../reference/mcp.md#cards-in-apps-that-draw-them) for asks and adoption scans. They run no shell either, so setup gives a new entry the `inspect` and `connect` [toolsets](../reference/mcp.md) beside the core: the tools that do the steps a shell would, such as `vault_connect` for an OAuth account. `--toolsets core` takes them out, and a later setup leaves them out.
 - **Claude Desktop's Code tab** is Claude Code: the same `~/.claude.json` and `~/.claude/skills` as the CLI (the `claude-code` entry), and no cards.
 - **The Codex app** uses the same `~/.codex/config.toml` and `~/.agents/skills` as the Codex CLI (the `codex` entry). Its sandbox blocks the Secure Enclave and the network for shell commands, so use the `vault_*` tools there rather than `mehen` at a shell. It draws cards when its MCP Apps support is on.
 

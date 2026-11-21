@@ -12,7 +12,7 @@ import { activeSlotPath, pendingSlotPath } from "../home.ts"
 import { pendingLockPath, withSlotLocks } from "../slot-lock.ts"
 import { runJv } from "../testing/run-mehen.ts"
 import { VERSION } from "../version.ts"
-import { printSetup, setup, setupCommand, setupExitCode, setupLines, setupRequest } from "./index.ts"
+import { AGENT_TOOLSETS, printSetup, setup, setupCommand, setupExitCode, setupLines, setupRequest } from "./index.ts"
 import { type Agent, agents, serverEntry } from "./agents.ts"
 import { editJson, editToml, jsonEntry, tomlEntry, tomlRange } from "./formats.ts"
 import { RELEASED_SKILL_SHA256, skillSha256, stampedSkill } from "./skills.ts"
@@ -36,11 +36,14 @@ async function put(path: string, text: string) { await mkdir(dirname(path), { re
 for (const definition of agents("/unused", "darwin")) describe(definition.name, () => {
   const agent = () => agents(home, "darwin").find(a => a.name === definition.name)!
   const read = (text: string) => agent().toml ? tomlEntry(text) : jsonEntry(text, agent().section)
+  // A new entry carries the agent's default toolsets, if it has any.
+  const defaults = AGENT_TOOLSETS[definition.name]
+  const written = () => serverEntry(agent(), join(home, "bin/mehen"), defaults ? { MEHEN_MCP_TOOLSETS: defaults.filter((name) => name !== "core").join(",") } : null)
   const fresh = () => agent().toml ? '# Keep my settings\nmodel = "other-model"\n\n[mcp_servers.other]\ncommand = "other"\n' : JSON.stringify({ preference: "kept", [agent().section]: { other: { command: "other" } } }, null, 4) + "\n"
   test("fresh file, unrelated servers, indentation, backup and idempotency", async () => {
     const first = await run([definition.name], { platform: "darwin" })
     expect(first.agents[0]?.mcp).toBe("added")
-    expect(read(await readFile(agent().file, "utf8"))).toEqual(serverEntry(agent(), join(home, "bin/mehen")))
+    expect(read(await readFile(agent().file, "utf8"))).toEqual(written())
     // A file that did not exist has nothing to back up.
     expect(await Bun.file(`${agent().file}.mehen-backup`).exists()).toBe(false)
     expect((await run([definition.name], { platform: "darwin" })).agents[0]?.mcp).toBe("unchanged")
@@ -101,7 +104,7 @@ for (const definition of agents("/unused", "darwin")) describe(definition.name, 
     const elsewhere = `{"other":1,"other":2,${section}:{"other":{"command":"a"},"other":{"command":"b"}}}\n`
     await put(agent().file, elsewhere)
     expect((await run([definition.name], { platform: "darwin" })).agents[0]?.mcp).toBe("added")
-    expect(read(await readFile(agent().file, "utf8"))).toEqual(serverEntry(agent(), join(home, "bin/mehen")))
+    expect(read(await readFile(agent().file, "utf8"))).toEqual(written())
   })
   test("dry run changes nothing, remove leaves foreign entries alone", async () => {
     expect((await run([definition.name], { platform: "darwin", dryRun: true })).agents[0]?.mcp).toBe("added")
@@ -1462,6 +1465,27 @@ describe("the skills report", () => {
 // MEHEN_MCP_TOOLSETS, `core` takes it out, and a setup without the flag
 // (the update's refresh among them) leaves it as it is.
 describe("--toolsets", () => {
+  const desktop = () => agents(home, "darwin").find((a) => a.name === "claude-desktop")!
+  const desktopToolsets = async () => (jsonEntry(await readFile(desktop().file, "utf8"), "mcpServers") as { env?: Record<string, string> } | undefined)?.env?.MEHEN_MCP_TOOLSETS
+
+  test("Claude Desktop, which runs no shell, gets inspect and connect in a new entry; --toolsets core takes them out and they stay out", async () => {
+    expect((await run(["claude-desktop"], { platform: "darwin" })).agents[0]?.mcp).toBe("added")
+    expect(await desktopToolsets()).toBe("inspect,connect")
+    expect((await run(["claude-desktop"], { platform: "darwin", toolsets: ["core"] })).agents[0]?.mcp).toBe("updated")
+    expect(await desktopToolsets()).toBeUndefined()
+    expect((await run(["claude-desktop"], { platform: "darwin" })).agents[0]?.mcp).toBe("unchanged")
+    expect(await desktopToolsets()).toBeUndefined()
+    expect((await run(["claude-desktop"], { platform: "darwin", resetEnv: true })).agents[0]?.mcp).toBe("updated")
+    expect(await desktopToolsets()).toBe("inspect,connect")
+    expect((await run(["claude-desktop"], { platform: "darwin", toolsets: ["core", "writes"] })).agents[0]?.mcp).toBe("updated")
+    expect(await desktopToolsets()).toBe("writes")
+  })
+
+  test("an agent with a shell gets no toolsets by default", async () => {
+    expect((await run(["claude-code"])).agents[0]?.mcp).toBe("added")
+    expect((await claudeEntry())?.env).toBeUndefined()
+  })
+
   const toolsetsOf = async () => (await claudeEntry())?.env?.MEHEN_MCP_TOOLSETS
   test("writes MEHEN_MCP_TOOLSETS as a normalised list, into a new entry and over an existing one", async () => {
     expect((await run(["claude-code"], { toolsets: ["core", "inspect", "connect"] })).agents[0]?.mcp).toBe("added")
