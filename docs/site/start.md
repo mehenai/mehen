@@ -30,6 +30,8 @@ brew install mehenai/tap/mehen && mehen up
 
 Homebrew then keeps it up to date: `brew upgrade mehen` installs each release, and `mehen` does not update itself. `mehen setup`, the guard hooks and the vault's service name `$(brew --prefix)/opt/mehen/bin/mehen`, which stays put when brew upgrades it.
 
+Already ran `mehen up` with the install script? The script's `mehen` in `~/.local/bin` usually comes first on your `PATH`, so it would keep running instead of brew's, and the vault's service still names it. To switch, stop the vault and take its service off with `mehen up --remove` (the data folder stays), delete `~/.local/bin/mehen`, then `brew install mehenai/tap/mehen && mehen up`: it brings the same vault back and names brew's `mehen` in the service, the agents' entries and the guard hooks.
+
 You need macOS, or Linux with glibc (WSL included), on arm64 or x64. Windows and musl-based Linux, such as Alpine, are not supported yet. The installer checks the binary's SHA-256 and puts `mehen` in `~/.local/bin`. The npm package called `mehen` is an unrelated tool: Mehen's are `@mehenai/cli` and `create-mehen`.
 
 Would you rather your agent ran it? [Let your agent do it](#let-your-agent-do-it).
