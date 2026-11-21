@@ -702,13 +702,23 @@ describe("the manifest's signature, checked before any hash in it", () => {
 
   test("a base that only looks like loopback, with 127.0.0.1:80 as its user name, is not loopback: no test key, no plain http", async () => {
     // A server on another address that answers as the release channel, with
-    // a manifest the test key signed.
-    const elsewhere = Bun.serve({ hostname: "127.0.0.2", port: 0, async fetch(req) {
-      requests.push(`elsewhere:${new URL(req.url).pathname}`)
-      return fetch(`http://127.0.0.1:${server.port}${new URL(req.url).pathname}`)
-    } })
+    // a manifest the test key signed. macOS gives lo0 127.0.0.1 alone, so
+    // there nothing can listen on 127.0.0.2: an installer that wrongly took
+    // the base for loopback then fails to connect rather than installing,
+    // which the exit code and the message below still catch.
+    const elsewhere = (() => {
+      try {
+        return Bun.serve({ hostname: "127.0.0.2", port: 0, async fetch(req) {
+          requests.push(`elsewhere:${new URL(req.url).pathname}`)
+          return fetch(`http://127.0.0.1:${server.port}${new URL(req.url).pathname}`)
+        } })
+      } catch {
+        return null
+      }
+    })()
+    const port = elsewhere?.port ?? server.port
     try {
-      for (const base of [`http://127.0.0.1:80@127.0.0.2:${elsewhere.port}`, `http://localhost:1@127.0.0.2:${elsewhere.port}`, `http://127.0.0.1:${elsewhere.port}#@127.0.0.2:${elsewhere.port}`, `http://127.0.0.1:${elsewhere.port}?@x`, `http://127.0.0.1:x${elsewhere.port}`, "http://127.0.0.1", "http://127.0.0.1.example:80", "http://[::1]", "http://localhost.:80"]) {
+      for (const base of [`http://127.0.0.1:80@127.0.0.2:${port}`, `http://localhost:1@127.0.0.2:${port}`, `http://127.0.0.1:${port}#@127.0.0.2:${port}`, `http://127.0.0.1:${port}?@x`, `http://127.0.0.1:x${port}`, "http://127.0.0.1", "http://127.0.0.1.example:80", "http://[::1]", "http://localhost.:80"]) {
         requests = []
         const refused = await run("sh", { MEHEN_DL_BASE: base })
         expect({ base, code: refused.code }).toEqual({ base, code: 2 })
@@ -717,7 +727,7 @@ describe("the manifest's signature, checked before any hash in it", () => {
       }
       expect(await readdir(bin()).catch(() => [] as string[])).toEqual([])
     } finally {
-      elsewhere.stop(true)
+      elsewhere?.stop(true)
     }
   })
 
