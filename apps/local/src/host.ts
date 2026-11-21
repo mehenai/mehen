@@ -139,7 +139,7 @@ async function startLocked(config: LocalConfig, release: () => void, options: Lo
     VAULT_ORIGIN: "",
     RP_ID: "",
     CLI_MINIMUM_VERSION: "0.3.0",
-    CLI_RECOMMENDED_VERSION: "0.4.2",
+    CLI_RECOMMENDED_VERSION: "0.5.0",
     WORKSPACE_CREATION: "accounts",
     SIGNUP_MODE_MAX: "invite",
     POLICY_RULES: "on",
